@@ -23,6 +23,7 @@
 | 做音视频 / DataChannel | **Pion WebRTC** |
 | 做文件夹同步产品 | **Syncthing** |
 | 做内容寻址网络 | **Kubo / IPFS** |
+| 做类似 TUTK 的设备连通后台 | **iroh**（见 [TUTK类后台选型.md](./TUTK类后台选型.md)） |
 
 ---
 
