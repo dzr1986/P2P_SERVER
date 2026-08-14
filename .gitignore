@@ -1,0 +1,45 @@
+# 编译产物
+*.o
+*.obj
+*.so
+*.a
+*.dylib
+*.exe
+
+# 可执行文件
+p2p_natserver
+p2p_proxy
+p2p_client
+test_*
+*.out
+
+# 构建目录
+build/
+bin/
+obj/
+
+# IDE / 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 日志
+*.log
+logs/
+
+# 临时文件
+*.tmp
+*.bak
+*.cache
+
+# 密钥 / 配置（含敏感信息）
+*.key
+*.pem
+*.secret
+
+# Python
+__pycache__/
+*.pyc

@@ -1,0 +1,1055 @@
+#include "client/sdk/api/P2PClient.h"
+
+#include <cstdio>
+#include <cstring>
+
+namespace p2p {
+
+namespace {
+
+inline uint64_t addr_key(const sockaddr_in& a) {
+    return ((uint64_t)(uint32_t)ntohl(a.sin_addr.s_addr) << 16) |
+           (uint64_t)ntohs(a.sin_port);
+}
+
+inline bool is_private_ip(const char* ip) {
+    unsigned a = 0, b = 0, c = 0, d = 0;
+    if (sscanf(ip, "%u.%u.%u.%u", &a, &b, &c, &d) != 4) return false;
+    if (a == 10) return true;
+    if (a == 172 && b >= 16 && b <= 31) return true;
+    if (a == 192 && b == 168) return true;
+    if (a == 127) return true;
+    return false;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// 生命周期
+// ---------------------------------------------------------------------------
+bool P2PClient::start(const Config& cfg) {
+    if (running_.load()) return false;
+    if (cfg.uuid.empty() || cfg.uuid.size() > MAX_UUID_LEN || cfg.nat_servers.empty())
+        return false;
+
+    cfg_ = cfg;
+    secret_ = cfg.secret;
+    nat_server_ = cfg.nat_servers[0];
+    if (!sockaddr_from(nat_server_.ip, nat_server_.port, nat_sock_)) return false;
+
+    if (!sock_.open(0, "0.0.0.0")) return false;
+
+    // #19 验证 libjuice 静态链接（最小调用，后续替换为真实 ICE 打洞逻辑）
+    {
+        juice_config_t jcfg {};
+        jcfg.concurrency_mode = JUICE_CONCURRENCY_MODE_POLL;
+        juice_agent_t* jagent = juice_create(&jcfg);
+        if (jagent) juice_destroy(jagent);
+    }
+
+    nat_type_ = NAT_UNKNOWN;
+    authed_ = secret_.empty();       // 无密钥视为免鉴权
+    heartbeat_enc_ = false;
+    auth_denied_ = false;
+    auth_inflight_ = false;
+    tunnel_enc_ = !secret_.empty();  // 共享密钥即开启对端间隧道负载加密
+    tunnel_keys_.clear();
+    relay_registered_ = false;
+    heartbeat_fail_ = 0;
+    alt_port_ = 0;
+    memset(pub_ip_, 0, sizeof(pub_ip_));
+    pub_port_ = 0;
+
+    proxies_ = cfg.proxy_servers;        // 启动即可用命令行/配置中的中继
+    next_relay_reg_ = proxies_.empty() ? 0 : plat_now_ms();
+    running_.store(true);
+    pending_remote_sdp_.clear();
+    thread_ = std::thread([this] { worker_loop(); });
+    return true;
+}
+
+void P2PClient::stop() {
+    if (!running_.exchange(false)) return;
+    // 尽力注销中继
+    if (relay_registered_ && !proxies_.empty()) {
+        ProxyRegReq req;
+        memset(&req, 0, sizeof(req));
+        strncpy(req.uuid, cfg_.uuid.c_str(), MAX_UUID_LEN);
+        sockaddr_in to;
+        if (sockaddr_from(proxies_[0].ip, proxies_[0].port, to))
+            send_proto(MSG_PROXY_UNREGISTER_REQ, &req, sizeof(req), to);
+    }
+    if (thread_.joinable()) thread_.join();
+    sock_.close();
+    conns_.clear();
+    sessions_.clear();
+    addr_to_peer_.clear();
+}
+
+// ---------------------------------------------------------------------------
+// 外部接口
+// ---------------------------------------------------------------------------
+void P2PClient::connect(const std::string& peer_uuid) {
+    if (!running_.load() || peer_uuid.empty() || peer_uuid == cfg_.uuid) return;
+    std::lock_guard<std::recursive_mutex> lk(mu_);
+    auto& c = conns_[peer_uuid];
+    c.peer_uuid = peer_uuid;
+    if (c.connecting || c.connected) return;
+    c.connecting = true;
+    c.punch.have_direct = false;
+    c.punch.direct_ok = false;
+    c.relay.relay_ok = false;
+    c.punch.punch_deadline = plat_now_ms() + cfg_.connect_timeout_ms;
+    c.punch.next_punch = 0;
+    c.relay.next_relay_ping = 0;
+    c.self = this; // #19 reverse ptr for ICE callback
+
+    ConnectReq req;
+    memset(&req, 0, sizeof(req));
+    strncpy(req.src_uuid, cfg_.uuid.c_str(), MAX_UUID_LEN);
+    strncpy(req.dst_uuid, peer_uuid.c_str(), MAX_UUID_LEN);
+    // #19 创建 libjuice ICE agent 并启动候选收集
+    ensure_ice_agent(c);
+    send_proto(MSG_CONNECT_REQ, &req, sizeof(req));
+}
+
+void P2PClient::disconnect(const std::string& peer_uuid) {
+    std::lock_guard<std::recursive_mutex> lk(mu_);
+    auto it = conns_.find(peer_uuid);
+    if (it == conns_.end()) return;
+    if (auto* s = session_for(peer_uuid)) {
+        std::vector<uint8_t> frame(14);
+        codec_write_tunnel(frame.data(), (int)frame.size(), TT_CLOSE, s->id(),
+                           0, 0, 0, 0, nullptr, 0);
+        send_tunnel_via(it->second, frame.data(), frame.size());
+    }
+    close_conn(it->second);
+}
+
+int P2PClient::send(const std::string& peer_uuid, uint8_t channel,
+                    const void* data, size_t len, bool reliable) {
+    std::lock_guard<std::recursive_mutex> lk(mu_);
+    auto it = conns_.find(peer_uuid);
+    if (it == conns_.end() || !it->second.connected) return -1;
+    return session_for(peer_uuid)->send(channel, data, len, reliable);
+}
+
+// ---------------------------------------------------------------------------
+// 工作线程
+// ---------------------------------------------------------------------------
+void P2PClient::worker_loop() {
+    uint64_t now = plat_now_ms();
+    next_heartbeat_ms_ = now + 100;
+    if (!secret_.empty()) {
+        do_auth_challenge();          // 优先完成鉴权再注册
+        next_heartbeat_ms_ = now + 500;
+    }
+
+    while (running_.load()) {
+        // #17 聚合全局信令 socket 与所有 Conn 的打洞 socket 收包
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        // select() 的 nfds 必须是最大 fd + 1，否则主信令 socket 永远进不了可读集合
+        int maxfd = sock_.fd() + 1;
+        FD_SET(sock_.fd(), &rfds);
+        std::vector<std::pair<std::string, int>> punch_fds; // peer_uuid -> socket fd
+        for (auto& kv : conns_) {
+            for (auto& ps : kv.second.punch.punch_socks) {
+                int fd = ps.fd();
+                if (fd < 0) continue;
+                FD_SET(fd, &rfds);
+                if (fd + 1 > maxfd) maxfd = fd + 1;
+                punch_fds.emplace_back(kv.first, fd);
+            }
+        }
+        timeval tv; tv.tv_sec = 0; tv.tv_usec = 50000;
+        int r = select(maxfd, &rfds, nullptr, nullptr, &tv);
+        now = plat_now_ms();
+        if (r > 0) {
+            std::lock_guard<std::recursive_mutex> lk(mu_);
+            if (FD_ISSET(sock_.fd(), &rfds)) {
+                sockaddr_in from;
+                int n = sock_.recv_from(recv_buf_, sizeof(recv_buf_), from);
+                if (n > 0) handle_packet(recv_buf_, (size_t)n, from);
+            }
+            for (auto& pf : punch_fds) {
+                if (FD_ISSET(pf.second, &rfds)) {
+                    auto it = conns_.find(pf.first);
+                    if (it == conns_.end()) continue;
+                    Conn& c = it->second;
+                    for (size_t si = 0; si < c.punch.punch_socks.size(); si++) {
+                        auto& ps = c.punch.punch_socks[si];
+                        if (ps.fd() != pf.second) continue;
+                        sockaddr_in from;
+                        int n = ps.recv_from(recv_buf_, sizeof(recv_buf_), from);
+                        if (n > 0) {
+                            // 记录直连确认所用的打洞 socket 索引
+                            if (c.punch.direct_sock_idx < 0 &&
+                                addr_to_peer_.count(addr_key(from)))
+                                c.punch.direct_sock_idx = (int)si;
+                            handle_packet(recv_buf_, (size_t)n, from);
+                        }
+                    }
+                }
+            }
+        }
+        std::lock_guard<std::recursive_mutex> lk(mu_);
+        tick(now);
+    }
+}
+
+void P2PClient::tick(uint64_t now) {
+    // 按阶段驱动状态机（各处理器职责单一、行为与原实现等价）
+    tick_heartbeat(now);
+    tick_auth(now);
+    tick_nat_detect(now);
+    tick_relay(now);
+    tick_connections(now);
+    tick_sessions(now);
+}
+
+// 心跳发送与重试间隔
+void P2PClient::tick_heartbeat(uint64_t now) {
+    if (now >= next_heartbeat_ms_) {
+        do_heartbeat();
+        uint32_t gap;
+        if (heartbeat_fail_ > 0) {
+            gap = heartbeat_backoff_.next_delay();   // #18 指数退避
+        } else {
+            heartbeat_backoff_.reset();
+            gap = cfg_.heartbeat_ms;
+        }
+        next_heartbeat_ms_ = now + gap;
+    }
+}
+
+// 鉴权状态机（challenge 重试）
+void P2PClient::tick_auth(uint64_t now) {
+    if (!authed_ && !secret_.empty() && !auth_inflight_ && !auth_denied_ &&
+        now >= next_auth_try_) {
+        do_auth_challenge();
+    }
+}
+
+// NAT 检测推进
+void P2PClient::tick_nat_detect(uint64_t now) {
+    if (nat_detect_.done() && nat_type_ == NAT_UNKNOWN) {
+        nat_type_ = nat_detect_.nattype();
+    }
+    if (!nat_detect_.done()) {
+        auto sendfn = [this](const sockaddr_in& to, const uint8_t* b, size_t n) {
+            return sock_.send_to(b, n, to);
+        };
+        nat_detect_.tick(sendfn, nat_server_.ip.c_str(), nat_server_.port,
+                         alt_port_, now);
+    }
+}
+
+// 中继注册重试
+void P2PClient::tick_relay(uint64_t now) {
+    if (cfg_.auto_relay && !relay_registered_ && !proxies_.empty() &&
+        now >= next_relay_reg_) {
+        relay_register();
+        next_relay_reg_ = now + cfg_.relay_register_ms;
+    }
+}
+
+// 连接状态机（打洞/超时/降级中继）
+void P2PClient::tick_connections(uint64_t now) {
+    for (auto& kv : conns_) {
+        Conn& c = kv.second;
+        if (!c.connecting || c.connected) continue;
+        tick_conn_punch(c, now);
+        tick_conn_relay(c, now);
+        tick_conn_fsm(c, now);
+    }
+}
+
+// 打洞子状态机：周期发包与超时判定
+void P2PClient::tick_conn_punch(Conn& c, uint64_t now) {
+    if (c.punch.have_direct && now < c.punch.punch_deadline && now >= c.punch.next_punch) {
+        do_punch(c);
+        c.punch.next_punch = now + cfg_.punch_interval_ms;
+    }
+    // force_relay 时 have_direct=false 是预期行为，不视为“服务器无响应”
+    if (!cfg_.force_relay && !c.punch.have_direct &&
+        now >= c.punch.punch_deadline + cfg_.connect_timeout_ms) {
+        // 始终未拿到对端地址（服务器无响应/离线）
+        if (on_error) on_error("connect " + c.peer_uuid + ": server no response");
+        close_conn(c);
+    }
+}
+
+// 中继子状态机：超时降级与保活
+void P2PClient::tick_conn_relay(Conn& c, uint64_t now) {
+    const bool need_relay = cfg_.force_relay ||
+        (c.punch.have_direct && now >= c.punch.punch_deadline && !c.punch.direct_ok);
+    if (need_relay) {
+        // 打洞超时或强制中继：走中继
+        if (cfg_.auto_relay && !relay_registered_ && !proxies_.empty()) {
+            relay_register();
+            // #18 中继注册重试指数退避（base=relay_register_ms, cap=30s）
+            uint32_t d = cfg_.relay_register_ms;
+            for (uint32_t i = 0; i + 1 < c.backoff_attempt && d < 30000; i++) d *= 2;
+            if (d > 30000) d = 30000;
+            c.backoff_attempt++;
+            next_relay_reg_ = now + d;
+        }
+        if (cfg_.auto_relay && !proxies_.empty() && now >= c.relay.next_relay_ping) {
+            if (auto* s = session_for(c.peer_uuid)) {
+                std::vector<uint8_t> frame(14);
+                codec_write_tunnel(frame.data(), (int)frame.size(), TT_PING,
+                                   s->id(), 0, 0, 0, 0, nullptr, 0);
+                send_tunnel_via(c, frame.data(), frame.size());
+            }
+            c.relay.next_relay_ping = now + cfg_.punch_interval_ms;
+        } else if (!cfg_.force_relay && (!cfg_.auto_relay || proxies_.empty()) &&
+                   c.punch.have_direct && now >= c.punch.punch_deadline && !c.punch.direct_ok) {
+            // 无中继可用：判失败（force_relay 时继续等代理列表）
+            if (on_error) on_error("connect " + c.peer_uuid + ": no relay, direct failed");
+            close_conn(c);
+        }
+    }
+}
+
+// 连接主状态机：中继路径建立判定
+void P2PClient::tick_conn_fsm(Conn& c, uint64_t now) {
+    if (c.relay.relay_ok && !c.connected) {
+        c.connected = true;
+        if (on_connected) on_connected(c.peer_uuid, true);
+    }
+}
+
+// 会话周期驱动
+void P2PClient::tick_sessions(uint64_t now) {
+    for (auto& kv : sessions_) kv.second->tick(now);
+}
+
+// ---------------------------------------------------------------------------
+// 收发
+// ---------------------------------------------------------------------------
+void P2PClient::send_proto(uint8_t msg_id, const void* payload, size_t plen,
+                           const sockaddr_in& to) {
+    uint8_t buf[MAX_PKT];
+    if (plen + 8 > sizeof(buf)) return;
+    codec_write_head(buf, msg_id, (uint32_t)plen);
+    if (plen > 0 && payload) memcpy(buf + 8, payload, plen);
+    sock_.send_to(buf, 8 + plen, to);
+}
+
+void P2PClient::send_proto(uint8_t msg_id, const void* payload, size_t plen) {
+    send_proto(msg_id, payload, plen, nat_sock_);
+}
+
+void P2PClient::handle_packet(const uint8_t* buf, size_t len,
+                              const sockaddr_in& from) {
+    WireHead h;
+    if (codec_read_head(buf, len, h)) {
+        handle_proto(h.msg_id, buf + 8, h.length <= len - 8 ? h.length : 0, from);
+        return;
+    }
+    if (len >= 2 && buf[0] == (uint8_t)(TUNNEL_MAGIC >> 8) &&
+        buf[1] == (uint8_t)(TUNNEL_MAGIC & 0xFF)) {
+        // 直连隧道帧
+        auto it = addr_to_peer_.find(addr_key(from));
+        if (it != addr_to_peer_.end()) {
+            auto& c = conns_[it->second];
+            on_tunnel_frame(buf, len, it->second);
+            if (!c.punch.direct_ok) {
+                c.punch.direct_ok = true;
+                if (!c.connected && on_connected) {
+                    c.connected = true;
+                    on_connected(c.peer_uuid, false);
+                }
+            }
+        }
+        return;
+    }
+    // 未知报文，忽略
+}
+
+void P2PClient::handle_proto(uint8_t msg_id, const uint8_t* p, size_t plen,
+                             const sockaddr_in&) {
+    switch (msg_id) {
+    case MSG_HEARTBEAT_RSP:          on_heartbeat_rsp(p, plen); break;
+    case MSG_HEARTBEAT_RSP_ENC:      on_heartbeat_rsp_enc(p, plen); break;
+    case MSG_AUTH_CHALLENGE_RSP:     on_auth_challenge_rsp(p, plen); break;
+    case MSG_AUTH_LOGIN_RSP:         on_auth_login_rsp(p, plen); break;
+    case MSG_NAT_DETECT_RSP: {
+        nat_detect_.feed(p, plen);
+        break;
+    }
+    case MSG_CONNECT_ACK:            on_connect_ack(p, plen); break;
+    case MSG_CONNECT_INVITE:         on_connect_invite(p, plen); break;
+    case MSG_ICE_SDP:                on_ice_sdp(p, plen); break;
+    case MSG_PROXY_REGISTER_RSP: {
+        if (plen >= 1) {
+            uint8_t result = p[0];
+            if (result == 0) {
+                relay_registered_ = true;
+                for (auto& kv : conns_) kv.second.backoff_attempt = 0;  // #18 注册成功重置退避
+            } else if (on_error) {
+                char tmp[64];
+                snprintf(tmp, sizeof(tmp), "relay register failed result=%d", result);
+                on_error(tmp);
+            }
+        }
+        break;
+    }
+    case MSG_PROXY_RELAY_DATA: {
+        if (plen < sizeof(RelayFrame) + 14) break;
+        const char* src = (const char*)p;
+        const char* dst = (const char*)p + MAX_UUID_LEN + 1;
+        if (strncmp(dst, cfg_.uuid.c_str(), MAX_UUID_LEN) != 0) break;
+        std::string peer_uuid(src, strnlen(src, MAX_UUID_LEN));
+        if (peer_uuid.empty()) break;
+        auto& c = conns_[peer_uuid];
+        if (c.peer_uuid.empty()) {
+            c.peer_uuid = peer_uuid;   // 中继侧未知对端
+        }
+        on_tunnel_frame(p + sizeof(RelayFrame), plen - sizeof(RelayFrame), peer_uuid);
+        if (!c.relay.relay_ok) {
+            c.relay.relay_ok = true;
+            if (!c.connected && on_connected) {
+                c.connected = true;
+                on_connected(peer_uuid, true);
+            }
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 心跳 / 注册
+// ---------------------------------------------------------------------------
+void P2PClient::do_heartbeat() {
+    UuidReq req;
+    memset(&req, 0, sizeof(req));
+    strncpy(req.uuid, cfg_.uuid.c_str(), MAX_UUID_LEN);
+    req.dev_type = 2;
+    req.nattype = nat_type_;
+    req.lan_port = htons(sock_.local_port());
+    req.session_pts = htonl(1);
+    req.extlen = 0;
+
+    if (heartbeat_enc_) {
+        // 加密心跳：uuid(33B) || iv(8) || cipher(UuidReq)
+        uint8_t payload[33 + 8 + sizeof(UuidReq)];
+        memset(payload, 0, sizeof(payload));
+        memcpy(payload, cfg_.uuid.c_str(), cfg_.uuid.size());
+        uint8_t iv[8];
+        plat_rand_bytes(iv, sizeof(iv));
+        memcpy(payload + 33, iv, sizeof(iv));
+        memcpy(payload + 41, &req, sizeof(UuidReq));
+        p2p_stream_xor((const uint8_t*)secret_.data(), secret_.size(),
+                       (const char*)payload, iv, payload + 41, sizeof(UuidReq));
+        send_proto(MSG_HEARTBEAT_REQ_ENC, payload, sizeof(payload));
+        return;
+    }
+    send_proto(MSG_HEARTBEAT_REQ, &req, sizeof(req));
+}
+
+void P2PClient::on_heartbeat_rsp_enc(const uint8_t* p, size_t plen) {
+    // 负载 = uuid(33B) || iv(8) || cipher(ExtInfoRsp)
+    if (plen < 33 + 8 + 2 || plen - 41 > sizeof(ExtInfoRsp)) return;
+    const uint8_t* iv = p + 33;
+    size_t clen = plen - 41;
+    uint8_t body[sizeof(ExtInfoRsp)];
+    memcpy(body, p + 41, clen);
+    p2p_stream_xor((const uint8_t*)secret_.data(), secret_.size(),
+                   (const char*)p, iv, body, clen);
+    on_heartbeat_rsp(body, clen);
+}
+
+void P2PClient::on_heartbeat_rsp(const uint8_t* p, size_t plen) {
+    if (plen < 2) return;
+    uint8_t result = p[0];
+    if (result == 1) {                    // 需鉴权
+        if (secret_.empty()) {
+            if (on_error) on_error("server requires auth but no secret configured");
+        } else if (!auth_inflight_ && !auth_denied_) {
+            do_auth_challenge();
+        }
+        return;
+    }
+    if (result == 2) {
+        if (on_error) on_error("server rejected this uuid");
+        return;
+    }
+    if (plen < sizeof(ExtInfoRsp)) return;
+    heartbeat_fail_ = 0;
+    heartbeat_backoff_.reset();   // #18 心跳成功，重置退避
+    memcpy(pub_ip_, p + 1, MAX_IP_LEN);
+    pub_port_ = (uint16_t)((p[17] << 8) | p[18]);
+    alt_port_ = (uint16_t)((p[37] << 8) | p[38]);   // nat_sock2_port @37
+
+    if (!authed_ && !secret_.empty() && !auth_inflight_ && !auth_denied_) {
+        do_auth_challenge();               // 服务器未强制鉴权，但仍补做
+        return;
+    }
+    if (!nat_detect_.done()) {
+        auto sendfn = [this](const sockaddr_in& to, const uint8_t* b, size_t n) {
+            return sock_.send_to(b, n, to);
+        };
+        nat_detect_.start(nat_server_.ip.c_str(), nat_server_.port, sendfn,
+                          plat_now_ms());
+    }
+    if (on_ready && !ready_fired_) {
+        ready_fired_ = true;
+        on_ready(pub_ip_, pub_port_, nat_type_);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 鉴权
+// ---------------------------------------------------------------------------
+void P2PClient::do_auth_challenge() {
+    AuthChallengeReq req;
+    memset(&req, 0, sizeof(req));
+    strncpy(req.uuid, cfg_.uuid.c_str(), MAX_UUID_LEN);
+    send_proto(MSG_AUTH_CHALLENGE_REQ, &req, sizeof(req));
+    auth_inflight_ = true;
+}
+
+void P2PClient::on_auth_challenge_rsp(const uint8_t* p, size_t plen) {
+    if (plen < 19) { auth_inflight_ = false; next_auth_try_ = plat_now_ms() + auth_backoff_.next_delay(); return; }
+    uint8_t result = p[0];
+    if (result != 0) {
+        auth_inflight_ = false;
+        if (result == 1 && on_error) on_error("uuid blacklisted");
+        else if (result == 2 && on_error) on_error("uuid not in whitelist");
+        if (result == 1 || result == 2) {
+            auth_denied_ = true;
+            next_auth_try_ = plat_now_ms() + 3600000;   // 永久性拒绝：不再重试
+        } else {
+            next_auth_try_ = plat_now_ms() + auth_backoff_.next_delay();   // #18 指数退避
+        }
+        return;
+    }
+    memcpy(auth_nonce_, p + 1, 16);
+    do_auth_login();
+}
+
+void P2PClient::do_auth_login() {
+    // mac = HMAC-SHA256(secret, uuid(33B, 补零) || nonce(16B))
+    uint8_t msg[16 + MAX_UUID_LEN + 1];
+    memset(msg, 0, sizeof(msg));
+    memcpy(msg, cfg_.uuid.c_str(), cfg_.uuid.size());
+    memcpy(msg + MAX_UUID_LEN + 1, auth_nonce_, 16);
+
+    AuthLoginReq req;
+    memset(&req, 0, sizeof(req));
+    strncpy(req.uuid, cfg_.uuid.c_str(), MAX_UUID_LEN);
+    memcpy(req.nonce, auth_nonce_, 16);
+    hmac_sha256((const uint8_t*)secret_.data(), secret_.size(),
+                msg, sizeof(msg), req.mac);
+    send_proto(MSG_AUTH_LOGIN_REQ, &req, sizeof(req));
+}
+
+void P2PClient::on_auth_login_rsp(const uint8_t* p, size_t plen) {
+    auth_inflight_ = false;
+    if (plen < 1) return;
+    uint8_t result = p[0];
+    if (result == AUTH_OK) {
+        authed_ = true;
+        auth_backoff_.reset();               // #18 鉴权成功，重置退避
+        heartbeat_enc_ = true;                // 后续心跳走加密通道
+        next_heartbeat_ms_ = plat_now_ms() + 100;   // 鉴权成功立即心跳确认注册
+        // 重发等待鉴权期间的连接请求
+        for (auto& kv : conns_) {
+            Conn& c = kv.second;
+            if (c.connecting && !c.punch.have_direct && !c.relay.relay_ok) {
+                ConnectReq req;
+                memset(&req, 0, sizeof(req));
+                strncpy(req.src_uuid, cfg_.uuid.c_str(), MAX_UUID_LEN);
+                strncpy(req.dst_uuid, c.peer_uuid.c_str(), MAX_UUID_LEN);
+                send_proto(MSG_CONNECT_REQ, &req, sizeof(req));
+                // #18 CONNECT 重发指数退避（下次若仍无响应由 tick 驱动）
+                uint32_t d = cfg_.connect_timeout_ms;
+                for (uint32_t i = 0; i + 1 < c.backoff_attempt && d < 30000; i++) d *= 2;
+                if (d > 30000) d = 30000;
+                c.backoff_attempt++;
+            }
+        }
+    } else {
+        if (result == AUTH_WHITELIST_REJ && on_error) on_error("uuid rejected by whitelist");
+        else if (result == AUTH_BLACKLIST && on_error) on_error("uuid blacklisted");
+        else if (result == AUTH_BAD_MAC && on_error) on_error("auth login failed (bad secret?)");
+        else if (on_error) on_error("auth login failed");
+        if (result != AUTH_BAD_NONCE) {
+            auth_denied_ = true;                  // 永久性拒绝：不再重试
+            next_auth_try_ = plat_now_ms() + 3600000;
+        } else {
+            next_auth_try_ = plat_now_ms() + auth_backoff_.next_delay();  // #18 nonce 失效指数退避
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CONNECT 协调
+// ---------------------------------------------------------------------------
+bool P2PClient::parse_proxies(uint8_t count, const ProxyCandidate* cands,
+                              std::vector<ServerAddr>& out) {
+    if (count == 0 || !cands) return false;
+    for (int i = 0; i < count && i < 3; i++) {
+        ServerAddr a;
+        a.ip = std::string(cands[i].ip, strnlen(cands[i].ip, MAX_IP_LEN));
+        a.port = ntohs(cands[i].port);
+        if (a.ip.empty() || a.port == 0) continue;
+        bool dup = false;
+        for (auto& x : out) if (x.ip == a.ip && x.port == a.port) { dup = true; break; }
+        if (!dup) out.push_back(a);
+    }
+    return !out.empty();
+}
+
+void P2PClient::on_connect_ack(const uint8_t* p, size_t plen) {
+    if (plen < sizeof(ConnectAck)) return;
+    ConnectAck ack;
+    memcpy(&ack, p, sizeof(ConnectAck));
+    std::string peer(ack.dst_uuid, strnlen(ack.dst_uuid, MAX_UUID_LEN));
+
+    if (ack.result == 3) {                 // 需鉴权
+        if (!secret_.empty() && !auth_inflight_ && !auth_denied_) do_auth_challenge();
+        return;
+    }
+    auto& c = conns_[peer];
+    if (!c.connecting) { c.peer_uuid = peer; c.connecting = true; }
+    if (ack.result != CONNECT_OK) {
+        if (on_error) on_error("connect " + peer + ": peer offline/not found");
+        close_conn(c);
+        return;
+    }
+    if (cfg_.force_relay) {
+        c.punch.have_direct = false;   // 强制中继：不打洞
+        c.punch.punch_deadline = plat_now_ms(); // 立即允许走中继发送
+    } else {
+        c.punch.have_direct = true;
+        c.punch.next_punch = plat_now_ms() + 100;
+
+        sockaddr_from(ack.dst_pub_ip, ntohs(ack.dst_pub_port), c.punch.direct);
+        addr_to_peer_[addr_key(c.punch.direct)] = peer;
+        // 私网目标同样尝试（同一局域网场景）
+        c.punch.have_lan = false;
+        if (is_private_ip(ack.dst_lan_ip) &&
+            strncmp(ack.dst_lan_ip, ack.dst_pub_ip, MAX_IP_LEN) != 0) {
+            if (sockaddr_from(ack.dst_lan_ip, ntohs(ack.dst_lan_port), c.punch.direct_lan)) {
+                c.punch.have_lan = true;
+                addr_to_peer_[addr_key(c.punch.direct_lan)] = peer;
+            }
+        }
+        c.punch.punch_deadline = plat_now_ms() + cfg_.connect_timeout_ms;
+    }
+
+    std::vector<ServerAddr> cands;
+    parse_proxies(ack.proxy_count, ack.proxies, cands);
+    if (proxies_.empty() && !cands.empty()) {
+        proxies_ = cands;
+        next_relay_reg_ = plat_now_ms();
+    } else if (proxies_.empty() && !cfg_.proxy_servers.empty()) {
+        proxies_ = cfg_.proxy_servers;
+        next_relay_reg_ = plat_now_ms();
+    }
+}
+
+void P2PClient::on_connect_invite(const uint8_t* p, size_t plen) {
+    if (plen < sizeof(ConnectInvite)) return;
+    ConnectInvite inv;
+    memcpy(&inv, p, sizeof(ConnectInvite));
+    std::string peer(inv.src_uuid, strnlen(inv.src_uuid, MAX_UUID_LEN));
+    if (peer.empty()) return;
+
+    auto& c = conns_[peer];
+    c.peer_uuid = peer;
+    c.connecting = true;
+    c.punch.direct_ok = false;
+    c.self = this;
+    if (cfg_.force_relay) {
+        c.punch.have_direct = false;   // 强制中继：不打洞
+        c.punch.punch_deadline = plat_now_ms();
+    } else {
+        c.punch.have_direct = true;
+        c.punch.next_punch = plat_now_ms() + 100;
+        c.punch.punch_deadline = plat_now_ms() + cfg_.connect_timeout_ms;
+
+        sockaddr_from(inv.src_pub_ip, ntohs(inv.src_pub_port), c.punch.direct);
+        addr_to_peer_[addr_key(c.punch.direct)] = peer;
+        // 被邀方也创建 ICE agent，才能交换 SDP / 完成直连
+        ensure_ice_agent(c);
+        if (!pending_remote_sdp_.empty()) {
+            apply_remote_ice_sdp(c, pending_remote_sdp_);
+            pending_remote_sdp_.clear();
+        }
+    }
+
+    std::vector<ServerAddr> cands;
+    parse_proxies(inv.proxy_count, inv.proxies, cands);
+    if (proxies_.empty() && !cands.empty()) {
+        proxies_ = cands;
+        next_relay_reg_ = plat_now_ms();
+    } else if (proxies_.empty() && !cfg_.proxy_servers.empty()) {
+        proxies_ = cfg_.proxy_servers;
+        next_relay_reg_ = plat_now_ms();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// #19 libjuice ICE 回调
+// ---------------------------------------------------------------------------
+void P2PClient::on_juice_state(juice_agent_t* agent, juice_state_t state, void* user_ptr) {
+    auto* c = static_cast<Conn*>(user_ptr);
+    if (!c) return;
+    if (state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED) {
+        P2PClient* self = c->self;
+        if (!self) return;
+        std::lock_guard<std::recursive_mutex> lk(self->mu_);
+        if (c->self != self) return;  // 已被 close_conn 置空
+        c->punch.direct_ok = true;
+        if (!c->connected) {
+            c->connected = true;
+            if (self->on_connected) self->on_connected(c->peer_uuid, false);
+        }
+    }
+}
+
+void P2PClient::on_juice_candidate(juice_agent_t* agent, const char* sdp, void* user_ptr) {
+    auto* c = static_cast<Conn*>(user_ptr);
+    if (!c || !sdp) return;
+    P2PClient* self = c->self;
+    if (!self) return;
+    std::lock_guard<std::recursive_mutex> lk(self->mu_);
+    if (c->self != self) return;
+    // 阶段 B：候选累积至 local_sdp（信令交换待扩展协议）
+    if (!c->punch.local_sdp.empty()) c->punch.local_sdp += "\n";
+    c->punch.local_sdp += sdp;
+}
+
+void P2PClient::on_juice_gathering_done(juice_agent_t* agent, void* user_ptr) {
+    auto* c = static_cast<Conn*>(user_ptr);
+    if (!c) return;
+    P2PClient* self = c->self;
+    if (!self) return;
+    std::lock_guard<std::recursive_mutex> lk(self->mu_);
+    if (c->self != self) return;
+    // gather 完成后取完整 local description（含全部候选），勿使用追加拼接的半成品
+    char sdp[JUICE_MAX_SDP_STRING_LEN] = {0};
+    if (juice_get_local_description(agent, sdp, sizeof(sdp)) == JUICE_ERR_SUCCESS)
+        c->punch.local_sdp = sdp;
+    self->send_ice_sdp(c->peer_uuid, c->punch.local_sdp);
+}
+void P2PClient::ensure_ice_agent(Conn& c) {
+    if (c.punch.juice || cfg_.force_relay) return;
+    juice_config_t jcfg {};
+    jcfg.concurrency_mode = JUICE_CONCURRENCY_MODE_THREAD;
+    jcfg.cb_state_changed = &P2PClient::on_juice_state;
+    jcfg.cb_candidate = &P2PClient::on_juice_candidate;
+    jcfg.cb_gathering_done = &P2PClient::on_juice_gathering_done;
+    jcfg.cb_recv = &P2PClient::on_juice_recv;
+    jcfg.user_ptr = &c;
+    c.punch.juice = juice_create(&jcfg);
+    if (c.punch.juice) {
+        char sdp[JUICE_MAX_SDP_STRING_LEN] = {0};
+        if (juice_get_local_description(c.punch.juice, sdp, sizeof(sdp)) == JUICE_ERR_SUCCESS)
+            c.punch.local_sdp = sdp;
+        juice_gather_candidates(c.punch.juice);
+    }
+}
+
+void P2PClient::apply_remote_ice_sdp(Conn& c, const std::string& remote_sdp) {
+    if (!c.punch.juice || remote_sdp.empty()) return;
+    c.punch.remote_sdp = remote_sdp;
+    juice_set_remote_description(c.punch.juice, remote_sdp.c_str());
+    juice_set_remote_gathering_done(c.punch.juice);
+    fprintf(stderr, "[P2PClient] ICE_SDP applied for %s, remote gathering done\n",
+            c.peer_uuid.c_str());
+}
+
+void P2PClient::send_ice_sdp(const std::string& peer, const std::string& local_sdp) {
+    if (peer.empty() || local_sdp.empty()) return;
+    size_t plen = local_sdp.size();
+    if (plen > 4096) plen = 4096;  // SDP 安全上限
+    size_t msglen = sizeof(IceSdpMsg) - 1 + plen;
+    std::vector<uint8_t> buf(msglen);
+    IceSdpMsg* m = reinterpret_cast<IceSdpMsg*>(buf.data());
+    // uuid = 路由目标（NatServer 按此转发）；接收端需自行映射到对端 Conn
+    strncpy(m->uuid, peer.c_str(), MAX_UUID_LEN);
+    m->uuid[MAX_UUID_LEN] = 0;
+    m->sdp_len = htons(static_cast<uint16_t>(plen));
+    memcpy(m->sdp, local_sdp.data(), plen);
+    send_proto(MSG_ICE_SDP, buf.data(), static_cast<int>(msglen));
+    fprintf(stderr, "[P2PClient] ICE_SDP sent to %s len=%zu\n", peer.c_str(), plen);
+}
+
+void P2PClient::on_ice_sdp(const uint8_t* p, size_t plen) {
+    if (!p || plen < (sizeof(IceSdpMsg) - 1)) return;
+    const IceSdpMsg* m = reinterpret_cast<const IceSdpMsg*>(p);
+    std::string dst(m->uuid, strnlen(m->uuid, MAX_UUID_LEN));
+    uint16_t slen = ntohs(m->sdp_len);
+    if (plen < (sizeof(IceSdpMsg) - 1 + slen)) return;
+    std::string remote_sdp(m->sdp, slen);
+    std::lock_guard<std::recursive_mutex> lk(mu_);
+
+    // 协议字段 uuid 是 dst（供 NatServer 路由），不是 src。
+    // 本端收到后应落到“正在连接的对端” Conn 上。
+    Conn* target = nullptr;
+    if (dst == cfg_.uuid) {
+        for (auto& kv : conns_) {
+            Conn& c = kv.second;
+            if (c.connecting && c.punch.juice && c.punch.remote_sdp.empty()) {
+                target = &c;
+                break;
+            }
+        }
+        if (!target) {
+            // CONNECT_INVITE 可能尚未到达：暂存，邀方创建后再应用
+            pending_remote_sdp_ = remote_sdp;
+            fprintf(stderr, "[P2PClient] ICE_SDP buffered (invite not ready yet)\n");
+            return;
+        }
+    } else {
+        auto it = conns_.find(dst);
+        if (it == conns_.end()) {
+            fprintf(stderr, "[P2PClient] ICE_SDP from unknown peer %s, drop\n", dst.c_str());
+            return;
+        }
+        target = &it->second;
+    }
+    if (!target->punch.juice) {
+        fprintf(stderr, "[P2PClient] ICE_SDP but no juice agent for %s\n",
+                target->peer_uuid.c_str());
+        pending_remote_sdp_ = remote_sdp;
+        return;
+    }
+    apply_remote_ice_sdp(*target, remote_sdp);
+}
+
+
+void P2PClient::on_juice_recv(juice_agent_t* agent, const char* data, size_t size, void* user_ptr) {
+    auto* c = static_cast<Conn*>(user_ptr);
+    if (!c || !data || size == 0) return;
+    P2PClient* self = c->self;
+    if (!self) return;
+    std::lock_guard<std::recursive_mutex> lk(self->mu_);
+    if (c->self != self) return;
+    // libjuice 已解 ICE，data 为应用负载，直接送入隧道帧处理
+    self->on_tunnel_frame(reinterpret_cast<const uint8_t*>(data), size, c->peer_uuid);
+}
+
+void P2PClient::do_punch(Conn& c) {
+    if (c.punch.juice) return; // #19 ICE 由 libjuice 线程驱动，跳过自研发包
+    auto* s = session_for(c.peer_uuid);
+    std::vector<uint8_t> frame(14);
+    codec_write_tunnel(frame.data(), (int)frame.size(), TT_PING, s->id(),
+                       0, 0, 0, 0, nullptr, 0);
+    // #17 多 socket 打洞池：每个 socket 均向目标发送，提升穿透概率
+    for (auto& ps : c.punch.punch_socks) {
+        ps.send_to(frame.data(), frame.size(), c.punch.direct);
+        if (c.punch.have_lan) ps.send_to(frame.data(), frame.size(), c.punch.direct_lan);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 中继
+// ---------------------------------------------------------------------------
+void P2PClient::relay_register() {
+    if (proxies_.empty()) return;
+    // 与 proxy 端共享的注册鉴权密钥（HMAC-SHA256(key, uuid)，防伪造注册）
+    static const uint8_t kProxyAuthKey[] = "p2p-proxy-auth-2024";
+    ProxyRegReq req;
+    memset(&req, 0, sizeof(req));
+    strncpy(req.uuid, cfg_.uuid.c_str(), MAX_UUID_LEN);
+    hmac_sha256(kProxyAuthKey, sizeof(kProxyAuthKey) - 1,
+                reinterpret_cast<const uint8_t*>(cfg_.uuid.data()), cfg_.uuid.size(),
+                req.hmac);
+    sockaddr_in to;
+    if (sockaddr_from(proxies_[0].ip, proxies_[0].port, to))
+        send_proto(MSG_PROXY_REGISTER_REQ, &req, sizeof(req), to);
+}
+
+void P2PClient::send_tunnel_via(Conn& c, const uint8_t* frame, size_t len) {
+    uint64_t now = plat_now_ms();
+    bool direct_proven = c.punch.direct_ok && c.punch.have_direct;
+    bool relay_ready = c.relay.relay_ok ||
+                       (relay_registered_ && !proxies_.empty() &&
+                        (cfg_.force_relay || now >= c.punch.punch_deadline));
+
+    // 鉴权开启时对隧道负载做流加密（iv[8]+cipher，负载>0 才加密）
+    uint8_t encbuf[MAX_PKT];
+    const uint8_t* tx = frame;
+    size_t txlen = len;
+    if (tunnel_enc_ && encrypt_tunnel_frame(c.peer_uuid, encbuf, frame, len, &txlen))
+        tx = encbuf;
+
+    // ICE 已连通时优先走 juice_send（候选对由 libjuice 选定）
+    if (c.punch.juice && c.punch.direct_ok) {
+        juice_send(c.punch.juice, reinterpret_cast<const char*>(tx), txlen);
+        return;
+    }
+
+    if (direct_proven || (!relay_ready && c.punch.have_direct)) {
+        // 直连已打通 / 打洞窗口内：优先使用确认直连的打洞 socket 发送
+        if (c.punch.direct_sock_idx >= 0 &&
+            (size_t)c.punch.direct_sock_idx < c.punch.punch_socks.size()) {
+            auto& ps = c.punch.punch_socks[c.punch.direct_sock_idx];
+            ps.send_to(tx, txlen, c.punch.direct);
+            if (c.punch.have_lan) ps.send_to(tx, txlen, c.punch.direct_lan);
+        } else {
+            sock_.send_to(tx, txlen, c.punch.direct);
+            if (c.punch.have_lan) sock_.send_to(tx, txlen, c.punch.direct_lan);
+        }
+        return;
+    }
+    if (relay_ready && relay_registered_ && !proxies_.empty()) {
+        // 中继兜底
+        uint8_t buf[MAX_PKT];
+        size_t need = 8 + sizeof(RelayFrame) + txlen;
+        if (need > sizeof(buf)) return;
+        codec_write_head(buf, MSG_PROXY_RELAY_DATA,
+                         (uint32_t)(sizeof(RelayFrame) + txlen));
+        RelayFrame* rf = (RelayFrame*)(buf + 8);
+        memset(rf, 0, sizeof(RelayFrame));
+        strncpy(rf->src_uuid, cfg_.uuid.c_str(), MAX_UUID_LEN);
+        strncpy(rf->dst_uuid, c.peer_uuid.c_str(), MAX_UUID_LEN);
+        memcpy(buf + 8 + sizeof(RelayFrame), tx, txlen);
+        sockaddr_in to;
+        if (sockaddr_from(proxies_[0].ip, proxies_[0].port, to))
+            sock_.send_to(buf, need, to);
+        return;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 隧道负载加密
+// ---------------------------------------------------------------------------
+bool P2PClient::get_tunnel_key(const std::string& peer, uint8_t out[32]) {
+    if (secret_.empty() || peer.empty() || peer == cfg_.uuid) return false;
+    auto it = tunnel_keys_.find(peer);
+    if (it != tunnel_keys_.end()) {
+        memcpy(out, it->second.data(), 32);
+        return true;
+    }
+    // 双方按字典序取 uuid，保证两端派生出相同密钥
+    std::string a = cfg_.uuid < peer ? cfg_.uuid : peer;
+    std::string b = cfg_.uuid < peer ? peer : cfg_.uuid;
+    std::string msg = std::string(TUNNEL_KEY_PREFIX) + a + ":" + b;
+    uint8_t key[32];
+    hmac_sha256((const uint8_t*)secret_.data(), secret_.size(),
+                (const uint8_t*)msg.data(), msg.size(), key);
+    std::array<uint8_t, 32> arr;
+    memcpy(arr.data(), key, 32);
+    tunnel_keys_[peer] = arr;
+    memcpy(out, key, 32);
+    return true;
+}
+
+bool P2PClient::encrypt_tunnel_frame(const std::string& peer, uint8_t* out,
+                                     const uint8_t* in, size_t inlen, size_t* outlen) {
+    if (inlen < 14) return false;
+    uint16_t plen = (uint16_t)((in[12] << 8) | in[13]);
+    if (plen == 0 || 14 + 12 + plen + 16 > MAX_PKT) return false;
+    uint8_t key[32];
+    if (!get_tunnel_key(peer, key)) return false;
+
+    memcpy(out, in, 14);                       // 帧头保持明文（type/seq/ack 元数据）
+    uint8_t nonce[12];
+    p2p_random_bytes(nonce, sizeof(nonce));
+    memcpy(out + 14, nonce, 12);
+
+    // AEAD 加密：AES-256-CTR + HMAC-SHA256
+    size_t cipher_len = 0;
+    uint8_t tag[16];
+    if (p2p_aead_encrypt(key, nonce, in + 14, plen, out + 14 + 12, plen, &cipher_len, tag) != 0) {
+        return false;
+    }
+    memcpy(out + 14 + 12 + cipher_len, tag, 16);
+
+    out[7] |= TF_ENC;                          // flags
+    uint16_t nl = (uint16_t)(12 + cipher_len + 16);
+    out[12] = (uint8_t)(nl >> 8);
+    out[13] = (uint8_t)(nl & 0xFF);
+    *outlen = 14 + 12 + cipher_len + 16;
+    tunnel_enc_tx_.fetch_add(1);
+    return true;
+}
+
+bool P2PClient::decrypt_tunnel_frame(const std::string& peer, uint8_t* out,
+                                     const uint8_t* in, size_t inlen, size_t* outlen) {
+    if (inlen < 14 || !(in[7] & TF_ENC)) return false;
+    uint16_t plen = (uint16_t)((in[12] << 8) | in[13]);
+    if (plen < 12 + 16 || 14 + plen - 12 - 16 > MAX_PKT) return false;
+    uint8_t key[32];
+    if (!get_tunnel_key(peer, key)) return false;
+
+    memcpy(out, in, 14);
+    const uint8_t* nonce = in + 14;
+    size_t cipher_len = plen - 12 - 16;
+    const uint8_t* tag = in + 14 + 12 + cipher_len;
+
+    // AEAD 解密：AES-256-CTR + HMAC-SHA256
+    size_t plain_len = 0;
+    if (p2p_aead_decrypt(key, nonce, in + 14 + 12, cipher_len, out + 14, cipher_len, &plain_len, tag) != 0) {
+        return false;
+    }
+
+    out[7] &= (uint8_t)~TF_ENC;
+    uint16_t nl = (uint16_t)(plain_len);
+    out[12] = (uint8_t)(nl >> 8);
+    out[13] = (uint8_t)(nl & 0xFF);
+    *outlen = 14 + plain_len;
+    tunnel_enc_rx_.fetch_add(1);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// 会话
+// ---------------------------------------------------------------------------
+Session* P2PClient::session_for(const std::string& peer) {
+    auto it = sessions_.find(peer);
+    if (it != sessions_.end()) return it->second.get();
+    auto s = std::make_unique<Session>(next_session_id_++);
+    s->on_data = [this, peer](uint8_t ch, const uint8_t* d, size_t n) {
+        if (on_message) on_message(peer, ch, d, n);
+    };
+    s->on_tx = [this, peer](const uint8_t* f, size_t n) {
+        auto it2 = conns_.find(peer);
+        if (it2 != conns_.end()) send_tunnel_via(it2->second, f, n);
+    };
+    Session* raw = s.get();
+    sessions_.emplace(peer, std::move(s));
+    return raw;
+}
+
+void P2PClient::on_tunnel_frame(const uint8_t* frame, size_t len,
+                                const std::string& peer_uuid) {
+    uint8_t decbuf[MAX_PKT];
+    const uint8_t* f = frame;
+    size_t fl = len;
+    if (tunnel_enc_ && decrypt_tunnel_frame(peer_uuid, decbuf, frame, len, &fl))
+        f = decbuf;
+    if (auto* s = session_for(peer_uuid)) s->on_frame(f, fl);
+}
+
+void P2PClient::close_conn(Conn& c) {
+    for (auto it = addr_to_peer_.begin(); it != addr_to_peer_.end();) {
+        if (it->second == c.peer_uuid) it = addr_to_peer_.erase(it);
+        else ++it;
+    }
+    // #17 关闭打洞 socket 池
+    for (auto& ps : c.punch.punch_socks) ps.close();
+    c.punch.punch_socks.clear();
+    c.punch.direct_sock_idx = -1;
+    // #19 销毁 libjuice ICE agent（加锁保护，防止 ICE 线程回调访问已销毁对象）
+    {
+        std::lock_guard<std::recursive_mutex> lk(mu_);
+        if (c.punch.juice) { juice_destroy(c.punch.juice); c.punch.juice = nullptr; }
+        c.self = nullptr;  // 使在途 ICE 回调能检测失效
+    }
+    sessions_.erase(c.peer_uuid);
+    conns_.erase(c.peer_uuid);
+    if (on_disconnected) on_disconnected(c.peer_uuid);
+}
+
+} // namespace p2p

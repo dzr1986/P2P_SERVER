@@ -1,0 +1,30 @@
+def gmul(a,b):
+    r=0
+    for _ in range(8):
+        if b&1: r^=a
+        hi=a&0x80
+        a=(a<<1)&0xff
+        if hi: a^=0x1b
+        b>>=1
+    return r
+def ginv(a):
+    res=1; base=a; e=254
+    while e:
+        if e&1: res=gmul(res,base)
+        base=gmul(base,base)
+        e>>=1
+    return res
+def rotl8(x,n): return ((x<<n)|(x>>(8-n)))&0xff
+sbox=[0]*256
+for i in range(256):
+    x=0 if i==0 else ginv(i)
+    s=x^rotl8(x,1)^rotl8(x,2)^rotl8(x,3)^rotl8(x,4)^0x63
+    sbox[i]=s&0xff
+for idx in [0x00,0x01,0x2b,0x52,0x53,0x63,0x7c,0x7b,0x0f,0x16,0xeb,0x11]:
+    print("sbox[%02x]=%02x  published=%s" % (idx, sbox[idx], {0x00:0x63,0x01:0x7c,0x2b:0xf1,0x52:0x00,0x53:0xed,0x63:0xfb,0x7c:0x10,0x7b:0x21,0x0f:0x76,0x16:0x47,0xeb:0xb9,0x11:0x82}[idx]))
+
+def check(a):
+    x=ginv(a)
+    print("ginv(%02x)=%02x  gmul(g,a)=%02x (want 01)" % (a, x, gmul(x,a)))
+for a in [0x02,0x03,0x9a,0xeb]:
+    check(a)
