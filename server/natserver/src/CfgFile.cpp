@@ -95,7 +95,9 @@ static void parse_value(CfgData& out, const std::string& key, const std::string&
         else LOGE("CfgFile", "bad NatServer value: %s", val.c_str());
         return;
     }
-    if (key.rfind("Proxy", 0) == 0) {
+    // Proxy1_1 / Proxy2_3 …（必须以数字开头，避免吃掉 ProxyRegions）
+    if (key.rfind("Proxy", 0) == 0 && key.size() > 5 &&
+        key[5] >= '0' && key[5] <= '9') {
         std::string ip;
         if (split_ip_port(val, ip, nullptr)) out.proxy_ips.push_back(ip);
         else LOGE("CfgFile", "bad Proxy value: %s", val.c_str());
