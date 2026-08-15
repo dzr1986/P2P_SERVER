@@ -87,8 +87,17 @@ void wire_callbacks(IotcCtx& c) {
         if (ch >= IOTC_MAX_CHANNELS) return;
         std::lock_guard<std::mutex> lk(c.mu);
         auto it = c.peer2sid.find(peer);
-        if (it == c.peer2sid.end()) return;
-        auto& q = c.sess[it->second].ch[ch];
+        int sid;
+        if (it != c.peer2sid.end()) {
+            sid = it->second;
+        } else {
+            // 对端已发数据但本端 on_connected 尚未到达：先建句柄，避免首包丢失
+            sid = alloc_sid_locked(c, peer);
+            if (sid < 0) return;
+            c.sess[sid].connected = true;
+            c.incoming.push_back(sid);
+        }
+        auto& q = c.sess[sid].ch[ch];
         if (q.size() >= kChannelQueueCap) q.pop_front();
         q.emplace_back(data, data + len);
         c.cv.notify_all();

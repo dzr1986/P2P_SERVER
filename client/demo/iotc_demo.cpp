@@ -191,6 +191,8 @@ int run_client(const char* uid, const char* dev_uid, const char* secret, const c
     printf("[iotc] connected sid=%d peer=%s relay=%d\n",
            sid, info.peer_uid, info.via_relay);
     fflush(stdout);
+    // 给对端 Listen 返回后拉起回声线程的时间（避免首包到达时接收循环尚未启动）
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
 
     const int av_v = avStart(sid, kVideoCh, 0);
     const int av_a = avStart(sid, kAudioCh, 0);
@@ -200,16 +202,22 @@ int run_client(const char* uid, const char* dev_uid, const char* secret, const c
         return 1;
     }
 
-    // ---- IOCtrl ----
+    // ---- IOCtrl（短重试：ICE 刚就绪时首包可能仍在路上）----
     const char* ping = "START";
-    r = avSendIOCtrl(av_v, kCmdPing, ping, (int)strlen(ping));
-    if (r != AV_ER_NoERROR) {
-        fprintf(stderr, "[iotc] ioctl send err=%d\n", r);
-        return 1;
-    }
     uint16_t cmd = 0;
     char iobuf[64] = {};
-    r = avRecvIOCtrl(av_v, &cmd, iobuf, (int)sizeof(iobuf), 5000);
+    r = -1;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        const int sr = avSendIOCtrl(av_v, kCmdPing, ping, (int)strlen(ping));
+        if (sr != AV_ER_NoERROR) {
+            fprintf(stderr, "[iotc] ioctl send err=%d\n", sr);
+            return 1;
+        }
+        memset(iobuf, 0, sizeof(iobuf));
+        cmd = 0;
+        r = avRecvIOCtrl(av_v, &cmd, iobuf, (int)sizeof(iobuf), 3000);
+        if (r == (int)strlen(ping) && cmd == kCmdPing && strcmp(iobuf, ping) == 0) break;
+    }
     if (r != (int)strlen(ping) || cmd != kCmdPing || strcmp(iobuf, ping) != 0) {
         fprintf(stderr, "[iotc] ioctl echo mismatch n=%d cmd=%u\n", r, cmd);
         return 1;
