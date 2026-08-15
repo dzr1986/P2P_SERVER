@@ -94,8 +94,8 @@ void P2PClient::connect(const std::string& peer_uuid) {
     std::lock_guard<std::recursive_mutex> lk(mu_);
     auto& c = conns_[peer_uuid];
     c.peer_uuid = peer_uuid;
-    if (c.connecting || c.connected) return;
-    c.connecting = true;
+    if (c.state != ConnState::Idle) return;
+    c.state = ConnState::Connecting;
     c.punch.have_direct = false;
     c.punch.direct_ok = false;
     c.relay.relay_ok = false;
@@ -130,7 +130,7 @@ int P2PClient::send(const std::string& peer_uuid, uint8_t channel,
                     const void* data, size_t len, bool reliable) {
     std::lock_guard<std::recursive_mutex> lk(mu_);
     auto it = conns_.find(peer_uuid);
-    if (it == conns_.end() || !it->second.connected) return -1;
+    if (it == conns_.end() || !it->second.connected()) return -1;
     return session_for(peer_uuid)->send(channel, data, len, reliable);
 }
 
@@ -266,7 +266,7 @@ void P2PClient::tick_relay(uint64_t now) {
 void P2PClient::tick_connections(uint64_t now) {
     for (auto& kv : conns_) {
         Conn& c = kv.second;
-        if (!c.connecting || c.connected) continue;
+        if (c.state != ConnState::Connecting) continue;
         tick_conn_punch(c, now);
         tick_conn_relay(c, now);
         tick_conn_fsm(c, now);
@@ -322,10 +322,15 @@ void P2PClient::tick_conn_relay(Conn& c, uint64_t now) {
 
 // 连接主状态机：中继路径建立判定
 void P2PClient::tick_conn_fsm(Conn& c, uint64_t /*now*/) {
-    if (c.relay.relay_ok && !c.connected) {
-        c.connected = true;
-        if (on_connected) on_connected(c.peer_uuid, true);
-    }
+    if (c.relay.relay_ok) set_connected(c, true);
+}
+
+// 连接建立唯一转移点（幂等）：Connecting -> Connected 并触发回调
+void P2PClient::set_connected(Conn& c, bool relay) {
+    if (c.state == ConnState::Connected) return;
+    c.state = ConnState::Connected;
+    c.via_relay = relay;
+    if (on_connected) on_connected(c.peer_uuid, relay);
 }
 
 // 会话周期驱动
@@ -365,10 +370,7 @@ void P2PClient::handle_packet(const uint8_t* buf, size_t len,
             on_tunnel_frame(buf, len, it->second);
             if (!c.punch.direct_ok) {
                 c.punch.direct_ok = true;
-                if (!c.connected && on_connected) {
-                    c.connected = true;
-                    on_connected(c.peer_uuid, false);
-                }
+                set_connected(c, false);
             }
         }
         return;
@@ -539,7 +541,7 @@ void P2PClient::on_auth_login_rsp(const uint8_t* p, size_t plen) {
         // 重发等待鉴权期间的连接请求
         for (auto& kv : conns_) {
             Conn& c = kv.second;
-            if (c.connecting && !c.punch.have_direct && !c.relay.relay_ok) {
+            if (c.connecting() && !c.punch.have_direct && !c.relay.relay_ok) {
                 ConnectReq req;
                 memset(&req, 0, sizeof(req));
                 strncpy(req.src_uuid, cfg_.uuid.c_str(), MAX_UUID_LEN);
@@ -609,10 +611,7 @@ void P2PClient::on_proxy_relay_data(const uint8_t* p, size_t plen) {
     on_tunnel_frame(p + sizeof(RelayFrame), plen - sizeof(RelayFrame), peer_uuid);
     if (!c.relay.relay_ok) {
         c.relay.relay_ok = true;
-        if (!c.connected && on_connected) {
-            c.connected = true;
-            on_connected(peer_uuid, true);
-        }
+        set_connected(c, true);
     }
 }
 
@@ -638,7 +637,7 @@ void P2PClient::on_connect_ack(const uint8_t* p, size_t plen) {
         return;
     }
     auto& c = conns_[peer];
-    if (!c.connecting) { c.peer_uuid = peer; c.connecting = true; }
+    if (c.state == ConnState::Idle) { c.peer_uuid = peer; c.state = ConnState::Connecting; }
     if (ack.result != CONNECT_OK) {
         if (on_error) on_error("connect " + peer + ": peer offline/not found");
         close_conn(c);
@@ -687,7 +686,7 @@ void P2PClient::on_connect_invite(const uint8_t* p, size_t plen) {
 
     auto& c = conns_[peer];
     c.peer_uuid = peer;
-    c.connecting = true;
+    if (c.state == ConnState::Idle) c.state = ConnState::Connecting;
     c.punch.direct_ok = false;
     c.self = this;
     if (cfg_.force_relay) {
@@ -732,10 +731,7 @@ void P2PClient::on_juice_state(juice_agent_t* /*agent*/, juice_state_t state, vo
         std::lock_guard<std::recursive_mutex> lk(self->mu_);
         if (c->self != self) return;  // 已被 close_conn 置空
         c->punch.direct_ok = true;
-        if (!c->connected) {
-            c->connected = true;
-            if (self->on_connected) self->on_connected(c->peer_uuid, false);
-        }
+        self->set_connected(*c, false);
     }
 }
 
@@ -822,7 +818,7 @@ void P2PClient::on_ice_sdp(const uint8_t* p, size_t plen) {
     if (dst == cfg_.uuid) {
         for (auto& kv : conns_) {
             Conn& c = kv.second;
-            if (c.connecting && c.punch.juice && c.punch.remote_sdp.empty()) {
+            if (c.connecting() && c.punch.juice && c.punch.remote_sdp.empty()) {
                 target = &c;
                 break;
             }

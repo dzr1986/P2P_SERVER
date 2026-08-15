@@ -110,15 +110,25 @@ private:
         std::vector<ServerAddr> proxies;
     };
 
+    // 连接生命周期状态（转移：Idle → Connecting → Connected；close_conn 直接移除条目）
+    enum class ConnState : uint8_t {
+        Idle,        // 条目刚创建，尚未发起
+        Connecting,  // 已发起，等待直连打洞或中继路径就绪
+        Connected,   // 任一路径就绪（路径类型见 via_relay）
+    };
+
     // 连接主状态机（组合打洞/中继子状态，负责整体连接生命周期）
     struct Conn {
         std::string peer_uuid;
         PunchState punch;
         RelayState relay;
-        bool connecting = false;
-        bool connected = false;
+        ConnState state = ConnState::Idle;
+        bool via_relay = false;         // Connected 时的路径类型（true=中继）
         uint32_t backoff_attempt = 0;   // #18 连接级退避尝试计数（CONNECT 重发/中继注册）
         P2PClient* self = nullptr;      // #19 反向指针，供 libjuice 回调触发 on_connected
+
+        bool connecting() const { return state == ConnState::Connecting; }
+        bool connected() const { return state == ConnState::Connected; }
     };
 
     // #18 统一指数退避辅助结构
@@ -186,6 +196,8 @@ private:
                          const std::string& peer_uuid);
     Session* session_for(const std::string& peer);
     void close_conn(Conn& c);
+    // 连接建立唯一转移点（幂等）：置 Connected 并触发 on_connected
+    void set_connected(Conn& c, bool relay);
 
     // ---- 隧道负载加密（鉴权开启时对端间共享密钥派生） ----
     bool get_tunnel_key(const std::string& peer, uint8_t out[32]);
