@@ -147,7 +147,7 @@ int run_device(const char* uid, const char* secret, const char* key) {
         }
     });
     std::thread t_r([rdt, &run] {
-        uint8_t buf[MAX_TUNNEL_PAYLOAD];
+        uint8_t buf[p2p::MAX_TUNNEL_PAYLOAD];
         while (run.load()) {
             const int n = RDT_Read(rdt, buf, (int)sizeof(buf), 300);
             if (n < 0) continue;

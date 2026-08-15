@@ -11,7 +11,7 @@
 
 namespace {
 
-constexpr size_t kChunk = MAX_TUNNEL_PAYLOAD;
+constexpr size_t kChunk = p2p::MAX_TUNNEL_PAYLOAD;
 
 struct RdtSlot {
     bool used = false;
@@ -94,7 +94,7 @@ int RDT_Read(int rdt, void* buf, int cap, int timeout_ms) {
         channel = g_rdt[rdt].channel;
     }
 
-    uint8_t msg[MAX_TUNNEL_PAYLOAD];
+    uint8_t msg[p2p::MAX_TUNNEL_PAYLOAD];
     const int n = IOTC_Session_Read(sid, channel, msg, sizeof(msg), timeout_ms);
     if (n == IOTC_ER_Timeout) return RDT_ER_Timeout;
     if (n <= 0) return RDT_ER_ChannelNoExist;
