@@ -21,6 +21,8 @@ BIN_AVTEST  := tests/bin/av_frame_test
 BIN_SCHEDTEST := tests/bin/sched_test
 BIN_STUNTEST := tests/bin/stun_test
 BIN_ABRTEST := tests/bin/abr_test
+BIN_ICESDPTEST := tests/bin/ice_sdp_test
+BIN_TWCCTEST := tests/bin/twcc_test
 BIN_IOTCDEMO := client/bin/iotc_demo
 BIN_WAKE    := server/wakeserver/bin/p2p_wakeserver
 
@@ -45,7 +47,7 @@ PROXY_SRCS := server/proxyserver/src/P2PProxy.cpp
 PEER_SRCS  := client/demo/peer.cpp \
               client/sdk/api/P2PClient.cpp
 
-all: $(LIBJUICE) $(BIN_NAT) $(BIN_PROXY) $(BIN_PEER) $(BIN_CRYPTOTEST) $(BIN_SESSIONTEST) $(BIN_UIDTEST) $(BIN_UIDGEN) $(BIN_TOKENGEN) $(BIN_TOKENTEST) $(BIN_AVTEST) $(BIN_SCHEDTEST) $(BIN_STUNTEST) $(BIN_ABRTEST) $(BIN_IOTCDEMO) $(BIN_WAKE)
+all: $(LIBJUICE) $(BIN_NAT) $(BIN_PROXY) $(BIN_PEER) $(BIN_CRYPTOTEST) $(BIN_SESSIONTEST) $(BIN_UIDTEST) $(BIN_UIDGEN) $(BIN_TOKENGEN) $(BIN_TOKENTEST) $(BIN_AVTEST) $(BIN_SCHEDTEST) $(BIN_STUNTEST) $(BIN_ABRTEST) $(BIN_ICESDPTEST) $(BIN_TWCCTEST) $(BIN_IOTCDEMO) $(BIN_WAKE)
 
 $(LIBJUICE):
 	cmake -B third_party/libjuice/build -S third_party/libjuice -DCMAKE_BUILD_TYPE=Release
@@ -103,6 +105,14 @@ $(BIN_STUNTEST): tests/stun_test.cpp common/StunBind.h
 $(BIN_ABRTEST): tests/abr_test.cpp common/AbrEstimate.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tests/abr_test.cpp
+
+$(BIN_ICESDPTEST): tests/ice_sdp_test.cpp common/IceSdp.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -o $@ tests/ice_sdp_test.cpp
+
+$(BIN_TWCCTEST): tests/twcc_test.cpp common/TwccEstimate.h common/AbrEstimate.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -o $@ tests/twcc_test.cpp
 
 $(BIN_IOTCDEMO): client/demo/iotc_demo.cpp $(IOTC_SRCS) $(COMMON_SRCS) common/ProtoDef.h $(LIBJUICE)
 	@mkdir -p $(dir $@)

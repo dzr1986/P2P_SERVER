@@ -1,4 +1,5 @@
 #include "client/sdk/api/P2PClient.h"
+#include "common/IceSdp.h"
 #include "common/ConnectToken.h"
 
 #include <cstdio>
@@ -174,6 +175,47 @@ void P2PClient::connect(const std::string& peer_uuid, const std::string& token_h
     ensure_ice_agent(c, false);
     send_connect_req(c);
     if (lan_enabled_) send_lan_beacon(MSG_LAN_QUERY, peer_uuid, nullptr);
+}
+
+void P2PClient::restart_ice(const std::string& peer_uuid) {
+    std::lock_guard<std::recursive_mutex> lk(mu_);
+    Conn* c = conn_of(peer_uuid);
+    if (!c || cfg_.force_relay) return;
+    begin_ice_restart(*c, true);
+}
+
+void P2PClient::reap_juice(juice_agent_t*& agent) {
+    if (!agent) return;
+    juice_reap_.push_back(agent);
+    agent = nullptr;
+}
+
+void P2PClient::reset_ice_flags(Conn& c) {
+    c.punch.ice_gathered = false;
+    c.punch.ice_host_sdp_sent = false;
+    c.punch.ice_remote_gather_done = false;
+    c.punch.ice_remote_applied_ms = 0;
+    c.punch.ice_sdp_rtx_ms = 0;
+    c.punch.ice_sdp_rtx_n = 0;
+    c.punch.local_sdp.clear();
+    c.punch.remote_sdp.clear();
+    c.punch.direct_ok = false;
+}
+
+void P2PClient::begin_ice_restart(Conn& c, bool as_offerer) {
+    if (cfg_.force_relay) return;
+    if (c.punch.juice) {
+        if (c.punch.juice_prev) reap_juice(c.punch.juice_prev);
+        c.punch.juice_prev = c.punch.juice;
+        c.punch.juice = nullptr;
+    }
+    reset_ice_flags(c);
+    c.punch.ice_restarting = true;
+    c.punch.ice_gen++;
+    ensure_ice_agent(c, as_offerer);
+    fprintf(stderr, "[P2PClient] ICE restart %s %s gen=%u\n",
+            as_offerer ? "offer" : "answer", c.peer_uuid.c_str(),
+            (unsigned)c.punch.ice_gen);
 }
 
 void P2PClient::disconnect(const std::string& peer_uuid) {
@@ -457,6 +499,11 @@ void P2PClient::set_connected(Conn& c, bool relay) {
     if (c.state == ConnState::Connected) {
         if (c.via_relay && !relay) {
             c.via_relay = false;
+            if (on_connected) on_connected(c.peer_uuid, false);
+        } else if (!relay && c.punch.ice_restarting) {
+            c.punch.ice_restarting = false;
+            ice_restarts_.fetch_add(1);
+            fprintf(stderr, "[P2PClient] ICE restarted with %s\n", c.peer_uuid.c_str());
             if (on_connected) on_connected(c.peer_uuid, false);
         }
         return;
@@ -989,7 +1036,7 @@ void P2PClient::on_connect_invite(const uint8_t* p, size_t plen) {
 // ---------------------------------------------------------------------------
 // #19 libjuice ICE 回调
 // ---------------------------------------------------------------------------
-void P2PClient::on_juice_state(juice_agent_t* /*agent*/, juice_state_t state, void* user_ptr) {
+void P2PClient::on_juice_state(juice_agent_t* agent, juice_state_t state, void* user_ptr) {
     auto* c = static_cast<Conn*>(user_ptr);
     if (!c) return;
     fprintf(stderr, "[P2PClient] ICE state=%s peer=%s\n",
@@ -999,7 +1046,9 @@ void P2PClient::on_juice_state(juice_agent_t* /*agent*/, juice_state_t state, vo
         if (!self) return;
         std::lock_guard<std::recursive_mutex> lk(self->mu_);
         if (c->self != self) return;  // 已被 close_conn 置空
+        if (agent != c->punch.juice) return;  // 旧 agent 的状态忽略
         c->punch.direct_ok = true;
+        if (c->punch.juice_prev) self->reap_juice(c->punch.juice_prev);
         self->set_connected(*c, false);
     }
 }
@@ -1011,6 +1060,7 @@ void P2PClient::on_juice_candidate(juice_agent_t* agent, const char* sdp, void* 
     if (!self) return;
     std::lock_guard<std::recursive_mutex> lk(self->mu_);
     if (c->self != self) return;
+    if (agent != c->punch.juice) return;
     // 阶段 B：候选累积至 local_sdp（信令交换待扩展协议）
     if (!c->punch.local_sdp.empty()) c->punch.local_sdp += "\n";
     c->punch.local_sdp += sdp;
@@ -1036,6 +1086,7 @@ void P2PClient::on_juice_gathering_done(juice_agent_t* agent, void* user_ptr) {
     if (!self) return;
     std::lock_guard<std::recursive_mutex> lk(self->mu_);
     if (c->self != self) return;
+    if (agent != c->punch.juice) return;
     // gather 完成后取完整 local description（含全部候选），勿使用追加拼接的半成品
     char sdp[JUICE_MAX_SDP_STRING_LEN] = {0};
     if (juice_get_local_description(agent, sdp, sizeof(sdp)) == JUICE_ERR_SUCCESS)
@@ -1075,7 +1126,11 @@ void P2PClient::start_ice_gather(Conn& c) {
 }
 
 void P2PClient::apply_remote_ice_sdp(Conn& c, const std::string& remote_sdp) {
-    if (!c.punch.juice || remote_sdp.empty()) return;
+    if (remote_sdp.empty()) return;
+    if (!c.punch.remote_sdp.empty() && ice_sdp_is_restart(c.punch.remote_sdp, remote_sdp))
+        begin_ice_restart(c, false);
+    if (!c.punch.juice) ensure_ice_agent(c, false);
+    if (!c.punch.juice) return;
     if (c.punch.remote_sdp.empty()) {
         c.punch.remote_sdp = remote_sdp;
         c.punch.ice_remote_applied_ms = plat_now_ms();
@@ -1177,16 +1232,18 @@ void P2PClient::on_ice_sdp(const uint8_t* p, size_t plen) {
 }
 
 
-void P2PClient::on_juice_recv(juice_agent_t* /*agent*/, const char* data, size_t size, void* user_ptr) {
+void P2PClient::on_juice_recv(juice_agent_t* agent, const char* data, size_t size, void* user_ptr) {
     auto* c = static_cast<Conn*>(user_ptr);
     if (!c || !data || size == 0) return;
     P2PClient* self = c->self;
     if (!self) return;
     std::lock_guard<std::recursive_mutex> lk(self->mu_);
     if (c->self != self) return;
+    if (agent != c->punch.juice && agent != c->punch.juice_prev) return;
     // 对端已能把应用数据打过来：视为直连就绪（controlling 偶发不打 CONNECTED）
-    if (!c->punch.direct_ok) {
+    if (agent == c->punch.juice && !c->punch.direct_ok) {
         c->punch.direct_ok = true;
+        if (c->punch.juice_prev) self->reap_juice(c->punch.juice_prev);
         self->set_connected(*c, false);
     }
     // libjuice 已解 ICE，data 为应用负载，直接送入隧道帧处理
@@ -1233,7 +1290,8 @@ void P2PClient::tick_ice(uint64_t now) {
     const uint64_t wait_ms = is_loopback_host(nat_server_.ip) ? 400 : 25000;
     for (auto& kv : conns_) {
         Conn& c = *kv.second;
-        if (!c.connecting() || !c.punch.juice) continue;
+        if (!c.punch.juice) continue;
+        if (!c.connecting() && !c.punch.ice_restarting) continue;
         // 完整 SDP 重传：跨服/多收包线程下 UDP 信令偶发丢第二包，controlling 会只剩错误 host
         if (!c.punch.direct_ok && !c.punch.local_sdp.empty() &&
             c.punch.ice_sdp_rtx_n < 8 &&
@@ -1339,9 +1397,11 @@ void P2PClient::relay_register() {
     hmac_sha256(kProxyAuthKey, sizeof(kProxyAuthKey) - 1,
                 reinterpret_cast<const uint8_t*>(cfg_.uuid.data()), cfg_.uuid.size(),
                 req.hmac);
-    sockaddr_in to;
-    if (sockaddr_from(proxies_[0].ip, proxies_[0].port, to))
-        send_proto(MSG_PROXY_REGISTER_REQ, &req, sizeof(req), to);
+    for (const auto& px : proxies_) {
+        sockaddr_in to;
+        if (sockaddr_from(px.ip, px.port, to))
+            send_proto(MSG_PROXY_REGISTER_REQ, &req, sizeof(req), to);
+    }
 }
 
 void P2PClient::send_tunnel_via(Conn& c, const uint8_t* frame, size_t len) {
@@ -1361,6 +1421,11 @@ void P2PClient::send_tunnel_via(Conn& c, const uint8_t* frame, size_t len) {
     // ICE 已连通时优先走 juice_send（候选对由 libjuice 选定）
     if (c.punch.juice && c.punch.direct_ok) {
         juice_send(c.punch.juice, reinterpret_cast<const char*>(tx), txlen);
+        return;
+    }
+    // restart 换代期间旧 agent 继续扛媒体，避免音视频中断
+    if (c.punch.juice_prev) {
+        juice_send(c.punch.juice_prev, reinterpret_cast<const char*>(tx), txlen);
         return;
     }
 
@@ -1553,6 +1618,10 @@ void P2PClient::close_conn(Conn& c) {
     if (c.punch.juice) {
         juice_reap_.push_back(c.punch.juice);
         c.punch.juice = nullptr;
+    }
+    if (c.punch.juice_prev) {
+        juice_reap_.push_back(c.punch.juice_prev);
+        c.punch.juice_prev = nullptr;
     }
     c.self = nullptr;  // 使在途 ICE 回调能检测失效
     {

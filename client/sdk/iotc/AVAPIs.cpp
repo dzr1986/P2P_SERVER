@@ -245,6 +245,7 @@ int avGetLinkStats(int av, AVLinkStats* st) {
     st->retrans = ls.retrans;
     st->fec_recovered = ls.fec_recovered;
     st->rx_lost = ls.rx_lost;
+    st->twcc_kbps = ls.twcc_kbps;
     return AV_ER_NoERROR;
 }
 
@@ -264,7 +265,8 @@ int avSuggestedBitrateKbps(int av) {
     std::lock_guard<std::mutex> lk(g_mu);
     if (av < 0 || av >= AV_MAX_CHANNELS_TOTAL || !g_ch[av].used)
         return AV_ER_ChannelNoExist;
-    return g_ch[av].abr.update(st.srtt_ms, st.rttvar_ms, st.cwnd, st.rx_lost);
+    return g_ch[av].abr.update(st.srtt_ms, st.rttvar_ms, st.cwnd, st.rx_lost,
+                               (int)st.twcc_kbps);
 }
 
 } // extern "C"

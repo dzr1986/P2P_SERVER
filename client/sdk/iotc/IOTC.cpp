@@ -335,6 +335,20 @@ int IOTC_Session_GetLinkStats(int sid, IOTCLinkStats* st) {
     st->fec_sent = ls.fec_sent;
     st->fec_recovered = ls.fec_recovered;
     st->rx_lost = ls.rx_lost;
+    st->twcc_kbps = ls.twcc_kbps;
+    return IOTC_ER_NoERROR;
+}
+
+int IOTC_Session_RestartICE(int sid) {
+    if (!g) return IOTC_ER_NotInitialized;
+    std::string peer;
+    {
+        std::lock_guard<std::mutex> lk(g->mu);
+        if (sid < 0 || sid >= IOTC_MAX_SESSIONS || !g->sess[sid].used)
+            return IOTC_ER_SessionNoExist;
+        peer = g->sess[sid].peer;
+    }
+    g->client.restart_ice(peer);
     return IOTC_ER_NoERROR;
 }
 

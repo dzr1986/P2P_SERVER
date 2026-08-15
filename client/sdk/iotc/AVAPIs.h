@@ -63,6 +63,7 @@ typedef struct {
     uint64_t retrans;
     uint64_t fec_recovered;
     uint64_t rx_lost;
+    uint32_t twcc_kbps;
 } AVLinkStats;
 int avGetLinkStats(int av, AVLinkStats* st);
 // 基于 RTT/窗口/丢包给出建议码率（kbps，AIMD 平滑）；失败返回 <0

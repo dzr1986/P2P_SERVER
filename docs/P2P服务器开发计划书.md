@@ -43,7 +43,7 @@ TUTK Kalay 平台的核心价值：设备烧录一个 **UID** 即可被全球任
 |-----------|------|-----------|------|
 | UID（20 字节） | 平台签发的设备唯一 ID，设备以 UID 向 P2P 服务器报到 | `uuid`（≤32 字节自定义串） | 需定义 20B 结构化 UID + 签发/校验体系 |
 | P2P Server | 管理 UID 报到、协助连线、全球分布 | `NatServer`（心跳/CONNECT/跨服同步/REGION 调度/STUN Binding） | 10 万心跳压测待补 |
-| Relay Server | 打洞失败时转发数据 | `P2PProxy`（RELAY_DATA + HMAC + QuotaMB） | TURN-over-443 / 现网带宽压测待补 |
+| Relay Server | 打洞失败时转发数据 | `P2PProxy`（RELAY_DATA + HMAC + QuotaMB + AltPort/443） | 现网带宽压测待补 |
 | IOTC Session (SID) | 设备↔客户端连接载体，上限 128 | `client/sdk/iotc/IOTC.*` SID 句柄表（上限 128） | 已落地 |
 | IOTC Channel（0~31） | 会话内逻辑通道 | `IOTC_Session_Read/Write`（0~31） | 已落地 |
 | AVAPIs (avIndex) | 音视频帧级传输，重传可配，上限 32 通道/连接 | `AVAPIs` + `AvCodec` 分片/重组/too-late-drop | 弱网 1080p 压测待补（P3 验收） |
@@ -157,7 +157,9 @@ Client                         NatServer                       Device
   │ 3. CONNECT_OK 后发起方 gather（controlling）◄══ ICE/P2P ══════► │
   │    host 候选先发 SDP；srflx trickle；回环跳过 STUN              │
   │    跨服：本机无 dst 时 ICE_SDP 经 sync 对端转发（防同步竞态）     │
+  │    换网：restart_ice 重建 agent，旧路径扛媒体直到新 ICE 就绪     │
   │ 4. 超时/对称NAT → Relay 注册(HMAC，已有) → RELAY_DATA 中继      │
+  │    企业网：Proxy 兼听 443（ProxyAltPort），客户端注册全部候选     │
   │ 5. 中继期间打洞持续后台重试，成功即无缝升级回 P2P                │
 ```
 

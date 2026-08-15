@@ -150,8 +150,8 @@ bash test.sh         # 本地端到端测试（两个对端打洞直连）
 
 ```sh
 ./server/natserver/bin/p2p_natserver <NatServerPort> <ProxyServerPort> <WanIP> [P2pServers.cfg]
-./server/proxyserver/bin/p2p_proxy <Port> <MaxProxyNum>
-./client/bin/peer <NatServerIP> <NatServerPort> <UUID> [对端UUID] [ProxyIP] [ProxyPort] [-s 密钥] [-relay]
+./server/proxyserver/bin/p2p_proxy <Port> <MaxProxyNum> [Workers] [QuotaMB] [AltPort]
+./client/bin/peer <NatServerIP> <NatServerPort> <UUID> [对端UUID] [ProxyIP] [ProxyPort] [-s 密钥] [-relay] [-restart]
 ```
 
 `-s` 携带鉴权密钥（服务端开启 EnableAuth 时必须）；`-relay` 强制走中继（用于验证兜底路径）。

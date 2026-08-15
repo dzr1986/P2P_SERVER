@@ -82,6 +82,8 @@ echo "== [0] unit tests =="
 ./tests/bin/sched_test > /tmp/sched_test.log 2>&1 && ok "region scheduler unit tests" || fail "region scheduler unit tests"
 ./tests/bin/stun_test > /tmp/stun_test.log 2>&1 && ok "STUN Binding unit tests" || fail "STUN Binding unit tests"
 ./tests/bin/abr_test > /tmp/abr_test.log 2>&1 && ok "ABR delay-based unit tests" || fail "ABR delay-based unit tests"
+./tests/bin/ice_sdp_test > /tmp/ice_sdp_test.log 2>&1 && ok "ICE SDP ufrag/restart unit tests" || fail "ICE SDP unit tests"
+./tests/bin/twcc_test > /tmp/twcc_test.log 2>&1 && ok "TWCC Kalman unit tests" || fail "TWCC unit tests"
 
 # ---------------------------------------------------------------- 1. 直连
 echo "== [1] direct P2P (no auth) =="
@@ -546,6 +548,42 @@ grep -q "LAN found LANDEV" /tmp/peerLanCli.log && ok "client found device on LAN
 grep -q "LAN found LANCLI" /tmp/peerLanDev.log && ok "device found client on LAN" || fail "LAN search device"
 grep -q "CONNECTED to LANDEV via direct" /tmp/peerLanCli.log && ok "LAN peers still P2P connect" || fail "LAN peers connect missing"
 stop_servers
+
+# ---------------------------------------------------------------- 16. ICE restart（换 ufrag 重建 agent）
+echo "== [16] ICE restart =="
+start_servers ""
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT A > /tmp/peerA.log 2>&1 & PA_PID=$!
+sleep 1
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT B A -restart > /tmp/peerB.log 2>&1 & PB_PID=$!
+sleep 10
+kill -9 $PA_PID $PB_PID 2>/dev/null; PA_PID=""; PB_PID=""
+grep -q "CONNECTED to A via direct" /tmp/peerB.log && ok "B->A direct before restart" || fail "B->A direct missing"
+grep -q "ICE restart requested" /tmp/peerB.log && ok "B requested ICE restart" || fail "ICE restart not requested"
+grep -q "ICE restart offer" /tmp/peerB.log && ok "B sent restart offer" || fail "ICE restart offer missing"
+grep -q "ICE restart answer" /tmp/peerA.log && ok "A applied restart answer" || fail "ICE restart answer missing"
+grep -q "ICE restarted" /tmp/peerB.log && ok "B ICE restarted" || fail "B ICE restarted missing"
+stop_servers
+
+# ---------------------------------------------------------------- 17. TURN-over-443（Proxy 兼听高位端口，对标 UDP/443）
+echo "== [17] TURN-over-443 alt port =="
+PROXY_ALT=18443
+printf 'ProxyAltPort=%d\n' $PROXY_ALT > $CFG
+NAT_PID=""
+stdbuf -oL $NAT_BIN $NAT_PORT $PROXY_PORT 127.0.0.1 $CFG > /tmp/nat.log 2>&1 &
+NAT_PID=$!
+sleep 0.5
+stdbuf -oL $PROXY_BIN $PROXY_PORT 100 2 0 $PROXY_ALT > /tmp/proxy.log 2>&1 &
+PROXY_PID=$!
+sleep 0.5
+grep -q "TURN-over-443 alt listen" /tmp/proxy.log && ok "proxy alt listen" || fail "proxy alt listen missing"
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT A 127.0.0.1 $PROXY_ALT -relay > /tmp/peerA.log 2>&1 & PA_PID=$!
+sleep 1
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT B A 127.0.0.1 $PROXY_ALT -relay > /tmp/peerB.log 2>&1 & PB_PID=$!
+sleep 7
+kill -9 $PA_PID $PB_PID 2>/dev/null; PA_PID=""; PB_PID=""
+grep -q "CONNECTED to A via relay" /tmp/peerB.log && ok "B->A relay via alt port" || fail "alt-port relay missing"
+grep -q "register ok" /tmp/proxy.log && ok "proxy register on alt" || fail "proxy register missing"
+stop_all
 
 echo
 echo "======================================"

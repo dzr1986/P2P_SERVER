@@ -82,6 +82,9 @@ public:
     // token_hex 非空则覆盖 Config.connect_token_hex（EnableConnectToken 服务端必带）
     void connect(const std::string& peer_uuid, const std::string& token_hex = {});
     void disconnect(const std::string& peer_uuid);
+    // ICE restart：换网/路径劣化时重建 agent（juice 不支持原地换 ufrag）
+    void restart_ice(const std::string& peer_uuid);
+    uint64_t ice_restarts() const { return ice_restarts_.load(); }
 
     // 发送（reliable=true 走可靠通道；false 直接不可靠投递）
     int send(const std::string& peer_uuid, uint8_t channel,
@@ -116,9 +119,12 @@ private:
         std::vector<UdpSocket> punch_socks;  // 多 socket 打洞池（并行探测，提升穿透率）
         int direct_sock_idx = -1;            // 直连确认时选用的打洞 socket 索引（-1=未确认）
         juice_agent_t* juice = nullptr;      // #19 libjuice ICE agent（替换自研打洞）
+        juice_agent_t* juice_prev = nullptr; // restart 期间旧 agent，继续扛媒体
         bool ice_gathered = false;           // 已 juice_gather：发起方先 gather=controlling
         bool ice_host_sdp_sent = false;      // 已用 host 候选发出首版 SDP（不等 STUN）
         bool ice_remote_gather_done = false; // 已通知 juice 对端收集结束
+        bool ice_restarting = false;         // 正在换代，tick_ice 仍要重传 SDP
+        uint8_t  ice_gen = 0;                // restart 代数（日志）
         uint64_t ice_remote_applied_ms = 0;  // 首次 set_remote 时间，供延迟标记 gathering done
         uint64_t ice_sdp_rtx_ms = 0;         // 最近一次发出本地 SDP
         uint8_t  ice_sdp_rtx_n = 0;          // 连线中 SDP 重传次数
@@ -212,6 +218,9 @@ private:
     void ensure_ice_agent(Conn& c, bool as_offerer);  // offerer=true 才 gather（controlling）
     void start_ice_gather(Conn& c);
     void apply_remote_ice_sdp(Conn& c, const std::string& remote_sdp);
+    void begin_ice_restart(Conn& c, bool as_offerer);
+    void reset_ice_flags(Conn& c);
+    void reap_juice(juice_agent_t*& agent);
     void send_lan_beacon(uint8_t msg_id, const std::string& uuid, const sockaddr_in* to);
     void on_lan_beacon(uint8_t msg_id, const uint8_t* p, size_t plen,
                        const sockaddr_in& from);
@@ -288,6 +297,7 @@ private:
     std::atomic<uint64_t> tunnel_enc_tx_{0};
     std::atomic<uint64_t> tunnel_enc_rx_{0};
     std::atomic<uint64_t> tunnel_fs_ok_{0};
+    std::atomic<uint64_t> ice_restarts_{0};
 
     struct HsState {
         uint8_t priv[32]{};

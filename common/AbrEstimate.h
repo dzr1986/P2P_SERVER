@@ -62,8 +62,10 @@ struct AbrController {
     uint32_t last_srtt_ms = 0;
 
     int update(uint32_t srtt_ms, uint32_t rttvar_ms,
-               uint32_t cwnd, uint64_t rx_lost) {
-        const int target = abr_suggest_kbps(srtt_ms, rttvar_ms, cwnd, rx_lost);
+               uint32_t cwnd, uint64_t rx_lost, int twcc_kbps = 0) {
+        int target = abr_suggest_kbps(srtt_ms, rttvar_ms, cwnd, rx_lost);
+        if (twcc_kbps > 0)
+            target = (target * 2 + twcc_kbps) / 3;  // delay-based 为主，TWCC 纠偏
         const bool rising = last_srtt_ms > 0 &&
                             srtt_ms > last_srtt_ms + ABR_RTT_TREND_MS;
         last_kbps = abr_aimd_step(last_kbps, target, rising);

@@ -33,7 +33,7 @@ public:
     P2PProxy& operator=(const P2PProxy&) = delete;
 
     int  init(uint16_t port, uint16_t max_proxy, int workers,
-              uint64_t quota_bytes = 0);
+              uint64_t quota_bytes = 0, uint16_t alt_port = 0);
     void run();                     // 阻塞：启动各线程后循环等待
     void request_stop() { running_ = false; }
 
@@ -85,6 +85,7 @@ private:
     }
 
     uint16_t port_ = 0;
+    uint16_t alt_port_ = 0;         // TURN-over-443 兼听（0=关闭；测试可用高位端口）
     uint16_t max_proxy_ = 0;
     int      workers_ = 4;
     std::vector<UdpFd> socks_;      // RAII：析构自动关闭

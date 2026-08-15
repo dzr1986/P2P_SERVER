@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "common/ProtoDef.h"
+#include "common/TwccEstimate.h"
 #include "client/sdk/plat/Plat.h"
 #include "client/sdk/proto/Codec.h"
 
@@ -52,6 +53,8 @@ public:
         uint64_t fec_sent = 0;       // 发出的 FEC 校验帧
         uint64_t fec_recovered = 0;  // FEC 恢复的丢帧
         uint64_t rx_lost = 0;        // 不可靠通道丢包估计（seq 空洞，恢复后回补）
+        uint32_t twcc_kbps = 0;      // TWCC+Kalman 建议码率（0=尚未采样）
+        int32_t  twcc_overuse = 0;   // -1 under / 0 hold / +1 over
     };
 
     // 交付回调：业务数据（channel, payload, len）
@@ -97,6 +100,7 @@ public:
         if (on_tx) on_tx(frame.data(), frame.size());
         // FEC 累积必须在数据帧发出之后：满组 flush 的校验帧不能先于组尾帧到达
         if (!reliable && fec_enabled_) fec_accumulate(channel_id, p, (uint16_t)len, seq);
+        if (!reliable) twcc_tx_.on_send(seq, plat_now_ms());
         return 0;
     }
 
@@ -108,6 +112,7 @@ public:
         case TT_DATA:   handle_data(t);  break;
         case TT_ACK:    handle_ack(t.ack); break;
         case TT_FEC:    handle_fec(t); break;
+        case TT_TWCC:   TwccReceiver::parse(t.payload, t.len, twcc_tx_); break;
         case TT_PING:   reply_pong(); break;
         case TT_CLOSE:  active_ = false; break;
         case TT_PONG:   break;  // 保活确认，无需处理
@@ -126,6 +131,7 @@ public:
         }
         // 部分 FEC 组超时冲刷：低速流不必凑满一组才获得保护
         if (fec_count_ > 0 && now - fec_first_ms_ >= 100) fec_flush();
+        flush_twcc(now);
 
         bool timeout_loss = false;
         for (auto& m : pending_) {
@@ -166,6 +172,8 @@ public:
         s.fec_sent = fec_sent_;
         s.fec_recovered = fec_recovered_;
         s.rx_lost = rx_lost_;
+        s.twcc_kbps = (uint32_t)twcc_tx_.suggested_kbps();
+        s.twcc_overuse = twcc_tx_.overuse;
         return s;
     }
 
@@ -205,8 +213,20 @@ private:
         } else {
             // 不可靠通道：即时投递（流媒体低延迟优先），FEC 缓存 + 丢包估计
             // track 返回 true 表示该 seq 已投递过（如 FEC 先行恢复后原帧迟到），去重
+            twcc_rx_.on_recv(t.seq, plat_now_ms());
             if (!track_unreliable(t)) deliver(t.payload, t.len, t.channel_id);
         }
+    }
+
+    void flush_twcc(uint64_t now) {
+        if (!twcc_rx_.should_flush(now)) return;
+        uint8_t fb[1 + 16 * 6];
+        const size_t n = twcc_rx_.write(fb, sizeof(fb));
+        if (n == 0 || !on_tx) return;
+        std::vector<uint8_t> frame(14 + n);
+        codec_write_tunnel(frame.data(), (int)frame.size(), TT_TWCC, session_id_,
+                           0, 0, 0, 0, fb, (uint16_t)n);
+        on_tx(frame.data(), frame.size());
     }
 
     void deliver(const uint8_t* payload, uint16_t len, uint8_t channel_id) {
@@ -448,6 +468,9 @@ private:
     uint64_t  fec_recovered_ = 0;
     std::unordered_map<uint16_t, UnrelEntry> unrel_cache_;
     std::deque<uint16_t> unrel_order_;
+
+    TwccEstimator twcc_tx_;
+    TwccReceiver  twcc_rx_;
 };
 
 } // namespace p2p

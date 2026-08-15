@@ -94,6 +94,7 @@ typedef struct {
     uint64_t fec_sent;
     uint64_t fec_recovered;
     uint64_t rx_lost;
+    uint32_t twcc_kbps;
 } IOTCLinkStats;
 int  IOTC_Session_GetLinkStats(int sid, IOTCLinkStats* st);
 
@@ -105,6 +106,9 @@ typedef struct {
     uint16_t port;
 } IOTCLanDevice;
 int  IOTC_Search_Device(IOTCLanDevice* out, int cap, int timeout_ms);
+
+// ICE restart：换网后重建打洞（会话保持，媒体经旧 agent 直到新路径就绪）
+int  IOTC_Session_RestartICE(int sid);
 
 } // extern "C"
 

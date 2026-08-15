@@ -27,7 +27,8 @@ static const char* nattype_str(uint8_t t) {
 int main(int argc, char** argv) {
     if (argc < 4) {
         fprintf(stderr, "usage: %s <NatServerIP> <NatServerPort> <UUID> [peerUUID] "
-                        "[ProxyIP] [ProxyPort] [-s secret] [-k authkey_hex] [-t token_hex] [-relay] [-lan|-nolan]\n",
+                        "[ProxyIP] [ProxyPort] [-s secret] [-k authkey_hex] [-t token_hex] "
+                        "[-relay] [-restart] [-lan|-nolan]\n",
                 argv[0]);
         return 1;
     }
@@ -36,6 +37,7 @@ int main(int argc, char** argv) {
     std::string auth_key_hex;          // 每 UID AuthKey（uidgen 签发，设备侧凭据）
     std::string connect_token_hex;     // 连线 Token（tokengen 签发，EnableConnectToken 时必带）
     bool force_relay = false;
+    bool do_restart = false;
     bool lan_discover = true;
     bool lan_flag = false;
     for (int i = 1; i < argc; i++) {
@@ -43,6 +45,7 @@ int main(int argc, char** argv) {
         else if (strcmp(argv[i], "-k") == 0 && i + 1 < argc) auth_key_hex = argv[++i];
         else if (strcmp(argv[i], "-t") == 0 && i + 1 < argc) connect_token_hex = argv[++i];
         else if (strcmp(argv[i], "-relay") == 0) force_relay = true;
+        else if (strcmp(argv[i], "-restart") == 0) do_restart = true;
         else if (strcmp(argv[i], "-nolan") == 0) { lan_discover = false; lan_flag = true; }
         else if (strcmp(argv[i], "-lan") == 0) { lan_discover = true; lan_flag = true; }
         else pos.push_back(argv[i]);
@@ -98,6 +101,7 @@ int main(int argc, char** argv) {
 
     P2PClient client;
     std::atomic<int> connected{0};
+    std::atomic<int> connected_n{0};
     std::atomic<bool> replied{false};
 
     client.on_ready = [&](const char* pub_ip, uint16_t pub_port, uint8_t nt) {
@@ -113,6 +117,7 @@ int main(int argc, char** argv) {
     };
     client.on_connected = [&](const std::string& peer, bool relay) {
         connected = 1;
+        connected_n++;
         printf("[peer] CONNECTED to %s via %s\n", peer.c_str(),
                relay ? "relay" : "direct");
         fflush(stdout);
@@ -149,6 +154,9 @@ int main(int argc, char** argv) {
 
     uint8_t last_nat = NAT_UNKNOWN;
     uint64_t last_etx = 0, last_erx = 0;
+    uint64_t last_restarts = 0;
+    int restart_wait = 0;
+    bool restart_sent = false;
     while (!g_quit.load()) {
         uint8_t nt = client.nat_type();
         if (nt != last_nat) {
@@ -163,6 +171,20 @@ int main(int argc, char** argv) {
             printf("[peer] tunnel-enc tx=%llu rx=%llu fs-hs=%llu\n",
                    (unsigned long long)etx, (unsigned long long)erx,
                    (unsigned long long)client.tunnel_fs_ok());
+            fflush(stdout);
+        }
+        if (do_restart && !peer_uuid.empty() && connected && !restart_sent) {
+            if (++restart_wait >= 4) {   // ~800ms after first CONNECTED
+                printf("[peer] ICE restart requested\n");
+                fflush(stdout);
+                client.restart_ice(peer_uuid);
+                restart_sent = true;
+            }
+        }
+        uint64_t rs = client.ice_restarts();
+        if (rs != last_restarts) {
+            last_restarts = rs;
+            printf("[peer] ICE restarted count=%llu\n", (unsigned long long)rs);
             fflush(stdout);
         }
         p2p::plat_sleep_ms(200);

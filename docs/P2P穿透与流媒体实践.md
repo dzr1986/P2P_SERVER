@@ -106,11 +106,23 @@ juice `user_ptr` 指向 `Conn`。`unordered_map<string, Conn>` 扩容会移动�
 - 企业网常拦非 443 UDP：后续可把 Proxy 挂到 UDP/443 或 TCP/TLS（对标 TURN-over-TLS）
 - 计量限速已有 `QuotaMB`，避免中继被打满
 
-### 2.4 中继回切 P2P
+### 2.4 中继回切 P2P 与 ICE restart
 
 WebRTC 的 ICE restart / 持续探测：网络从蜂窝切 Wi-Fi 后应重新打洞。
 本仓库：非 `force_relay` 时，中继建链后后台继续打洞，`direct_ok` 后
 `send_tunnel_via` 改走 juice，不再占中继带宽。
+
+libjuice **不支持原地换 ufrag**。`P2PClient::restart_ice` / `IOTC_Session_RestartICE`
+重建 agent：旧 agent 挂在 `juice_prev` 继续扛媒体，新 agent gather 后交换 SDP。
+对端看到 `a=ice-ufrag` 变化即 `begin_ice_restart`（controlled）。新路径 CONNECTED
+后回收旧 agent，再打一次 `on_connected`。`peer -restart` / `test.sh` [16] 覆盖。
+
+### 2.5 TURN-over-443
+
+企业网常只放行 UDP/443。`p2p_proxy <port> <max> [workers] [QuotaMB] [AltPort]`
+兼听第二端口（生产填 443；本机测试用高位如 18443，无需 root）。
+NatServer `ProxyAltPort` 把兼听端口作为额外 CONNECT 候选；客户端对所有
+候选做 `PROXY_REGISTER`。`test.sh` [17] 只用 alt 端口走 `-relay`。
 
 ---
 
@@ -123,7 +135,7 @@ WebRTC 的 ICE restart / 持续探测：网络从蜂窝切 Wi-Fi 后应重新打
 | 分片 | RTP / FU-A | `AvCodec` 11B 切片头 |
 | 过期丢帧 | SRT too-late-drop | `AvReassembler` + `av_should_drop_p`（拥塞丢 P、保 I/音频） |
 | 可靠控制 | DataChannel / RTCP | 通道 0 IOCtrl、RDT 字节流 |
-| 拥塞 | GCC / TWCC / BBR | Session：自适应 RTO、快重传、cwnd；`AbrController` AIMD |
+| 拥塞 | GCC / TWCC / BBR | Session：RTO/快重传/cwnd；`TT_TWCC` + Kalman；`AbrController` AIMD 混合 |
 | 加密 | DTLS-SRTP / QUIC | PSK 或 X25519 FS + AES-CTR |
 
 一对一预览优先 **不可靠视频 + 可靠 I 帧关键补**；录像回放走 RDT/可靠通道。
@@ -151,10 +163,10 @@ WebRTC 的 ICE restart / 持续探测：网络从蜂窝切 Wi-Fi 后应重新打
 
 ## 5. 仍建议补的能力（按收益）
 
-1. **ICE restart**：`juice` 当前不支持换 ufrag；网络切换可重建 agent
-2. **TURN-over-443**：穿透企业防火墙
-3. **完整 GCC / TWCC**：`AbrEstimate.h` 已有 delay-based 分档 + RTT 趋势 AIMD；下一步 Kalman + TWCC
-4. **真实 `tc netem` 1080p**：卡顿率 / P99 延迟验收（P3）
+1. **ICE restart**：已落地（重建 agent + `juice_prev` 扛媒体；见 §2.4）
+2. **TURN-over-443**：已落地（Proxy 兼听 + `ProxyAltPort` 宣告；见 §2.5）
+3. **Kalman + TWCC**：已落地（`TwccEstimate.h` + `TT_TWCC`；`avSuggestedBitrateKbps` 混合）
+4. **真实 `tc netem` 1080p**：卡顿率 / P99 延迟验收（P3，CI 无 netem 权限时仍用用户态切片丢失）
 5. **Token nonce 防重放**：`TokenNonceCache` 已记已用 nonce，过期前重放返回 `CONNECT_BAD_TOKEN`
 
 参考文献：RFC 8445 / 8489 / 8656；pion/ice 角色冲突处理；

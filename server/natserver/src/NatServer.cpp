@@ -612,6 +612,14 @@ void NatServer::pick_proxy(ProxyCandidate out[3], uint8_t& count, char prefer_re
         out[count].port = htons(proxy_port_);
         count++;
     }
+    // TURN-over-443：同一 IP 再宣告兼听端口，企业网只放 UDP/443 时客户端可回退
+    if (cfg && cfg->proxy_alt_port && count > 0 && count < 3) {
+        memset(out + count, 0, sizeof(ProxyCandidate));
+        memcpy(out[count].ip, out[0].ip, MAX_IP_LEN);
+        out[count].ip[MAX_IP_LEN - 1] = 0;
+        out[count].port = htons(cfg->proxy_alt_port);
+        count++;
+    }
 }
 
 // 负载末尾附加 HMAC-SHA256(SyncAuthSecret, payload) 后发送（未配置密钥则原样发送）

@@ -31,8 +31,9 @@ constexpr size_t  kProxyAuthKeyLen = sizeof(kProxyAuthKey) - 1;
 } // namespace
 
 int P2PProxy::init(uint16_t port, uint16_t max_proxy, int workers,
-                   uint64_t quota_bytes) {
+                   uint64_t quota_bytes, uint16_t alt_port) {
     port_ = port;
+    alt_port_ = (alt_port && alt_port != port) ? alt_port : 0;
     max_proxy_ = max_proxy;
     workers_ = (workers >= 1 && workers <= 64) ? workers : 4;
     quota_bytes_ = quota_bytes;
@@ -44,9 +45,17 @@ int P2PProxy::init(uint16_t port, uint16_t max_proxy, int workers,
         perror("[Proxy] bind");
         return -1;
     }
+    if (alt_port_) {
+        UdpFd alt;
+        if (!alt.open()) { perror("[Proxy] alt socket"); return -1; }
+        if (!alt.set_reuse(false) || !alt.bind_any(alt_port_)) {
+            perror("[Proxy] bind alt");
+            return -1;
+        }
+    }
 
-    LOGI("Proxy", "start proxy server with Port[%d] maxProxy[%d] workers[%d] quota=%llu",
-         port_, max_proxy_, workers_, (unsigned long long)quota_bytes_);
+    LOGI("Proxy", "start proxy server with Port[%d] altPort[%d] maxProxy[%d] workers[%d] quota=%llu",
+         port_, alt_port_, max_proxy_, workers_, (unsigned long long)quota_bytes_);
     return 0;
 }
 
@@ -377,14 +386,22 @@ void P2PProxy::run() {
     std::vector<std::thread> recv_threads;
     socks_.clear();
     socks_.reserve((size_t)workers_);
-    for (int i = 0; i < workers_; i++) {
-        UdpFd s;
-        if (!s.open()) { perror("[Proxy] socket"); continue; }
-        if (!s.set_reuse(true) || !s.bind_any(port_)) {
-            perror("[Proxy] bind");
-            continue;   // RAII：失败自动关闭
+    auto bind_workers = [&](uint16_t p, int n) {
+        for (int i = 0; i < n; i++) {
+            UdpFd s;
+            if (!s.open()) { perror("[Proxy] socket"); continue; }
+            if (!s.set_reuse(true) || !s.bind_any(p)) {
+                perror("[Proxy] bind");
+                continue;   // RAII：失败自动关闭
+            }
+            socks_.push_back(std::move(s));
         }
-        socks_.push_back(std::move(s));
+    };
+    bind_workers(port_, workers_);
+    if (alt_port_) {
+        const int alt_n = workers_ > 2 ? 2 : workers_;
+        bind_workers(alt_port_, alt_n);
+        LOGI("Proxy", "TURN-over-443 alt listen %d (%d sockets)", alt_port_, alt_n);
     }
     for (auto& s : socks_)
         recv_threads.emplace_back(&P2PProxy::recv_loop, this, std::cref(s));
@@ -399,11 +416,15 @@ void P2PProxy::run() {
     sockaddr_in self{};
     self.sin_family = AF_INET;
     self.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    self.sin_port = htons(port_);
-    for (size_t i = 0; i < recv_threads.size(); i++) {
-        socks_[i].send_to("", 0, self);
+    auto wake = [&](uint16_t p) {
+        self.sin_port = htons(p);
+        for (size_t i = 0; i < recv_threads.size(); i++)
+            socks_[i].send_to("", 0, self);
+    };
+    wake(port_);
+    if (alt_port_) wake(alt_port_);
+    for (size_t i = 0; i < recv_threads.size(); i++)
         recv_threads[i].join();
-    }
     socks_.clear();   // RAII 统一关闭
     LOGI("Proxy", "stopped, relay_pkts=%llu relay_bytes=%llu",
          (unsigned long long)relay_pkts_.load(),
@@ -415,7 +436,7 @@ void P2PProxy::run() {
 // 独立 main：生成单例并启动
 int main(int argc, char** argv) {
     if (argc < 3) {
-        printf("Usage: %s <Port> <MaxProxyNum> [Workers] [QuotaMB]\n", argv[0]);
+        printf("Usage: %s <Port> <MaxProxyNum> [Workers] [QuotaMB] [AltPort]\n", argv[0]);
         return 1;
     }
     int workers = argc >= 4 ? atoi(argv[3]) : 4;
@@ -424,8 +445,11 @@ int main(int argc, char** argv) {
         const long mb = atol(argv[4]);
         if (mb > 0) quota = (uint64_t)mb * 1024ULL * 1024ULL;
     }
+    uint16_t alt = 0;
+    if (argc >= 6) alt = (uint16_t)atoi(argv[5]);
+    else if (const char* e = getenv("P2P_PROXY_ALT_PORT")) alt = (uint16_t)atoi(e);
     static p2p::P2PProxy proxy;
-    if (proxy.init((uint16_t)atoi(argv[1]), (uint16_t)atoi(argv[2]), workers, quota) != 0)
+    if (proxy.init((uint16_t)atoi(argv[1]), (uint16_t)atoi(argv[2]), workers, quota, alt) != 0)
         return 1;
     proxy.run();
     return 0;
