@@ -19,6 +19,7 @@
 #include <cstring>
 #include <sstream>
 #include <sys/epoll.h>
+#include <sys/select.h>
 #include <unistd.h>
 
 using namespace p2p;
@@ -84,6 +85,14 @@ int NatServer::init(const std::string& cfg_path, uint16_t nat_port,
         recv_socks_.push_back(std::move(s));
     }
 
+    if (stun_tcp_.open() && stun_tcp_.set_reuse() && stun_tcp_.bind_any(nat_port_) &&
+        stun_tcp_.listen(16)) {
+        LOGI("NatServer", "TCP STUN listen %d (tcp punch mapping)", nat_port_);
+    } else {
+        stun_tcp_.close();
+        LOGW("NatServer", "TCP STUN listen %d failed (tcp punch falls back)", nat_port_);
+    }
+
     LOGI("NatServer", "start server with NatServerPort[%d] ProxyServerPort[%d] "
          "NatServerWanIP[%s] AltPort[%d] ProbePort[%d] workers[%d] recv_threads[%zu] sync[%d]",
          nat_port_, proxy_port_, wan_ip_.c_str(), alt_port, natcheck_.probe_port(),
@@ -133,6 +142,7 @@ struct NatServer::RunThreads {
     std::thread timer;
     std::thread nat_alt;
     std::thread status;
+    std::thread stun_tcp;
 };
 
 namespace {
@@ -164,6 +174,8 @@ void NatServer::start_threads(RunThreads& t) {
                      [this] { return status_metrics(); });
         t.status = std::thread(&StatusServer::run, &status_);
     }
+    if (stun_tcp_.valid())
+        t.stun_tcp = std::thread(&NatServer::stun_tcp_thread, this);
     LOGI("NatServer", "start receiving message from client! %zu recv threads + %d workers",
          recv_socks_.size() + 1, workers);
 }
@@ -183,6 +195,40 @@ void NatServer::stop_threads(RunThreads& t) {
         status_.request_stop();
         wake_tcp_accept(status_port_);
         t.status.join();
+    }
+    if (t.stun_tcp.joinable()) {
+        wake_tcp_accept(nat_port_);
+        t.stun_tcp.join();
+    }
+    stun_tcp_.close();
+}
+
+void NatServer::stun_tcp_thread() {
+    if (!stun_tcp_.valid()) return;
+    stun_tcp_.set_nonblock();
+    while (running_) {
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(stun_tcp_.fd(), &rfds);
+        timeval tv{};
+        tv.tv_usec = 200000;
+        const int r = select(stun_tcp_.fd() + 1, &rfds, nullptr, nullptr, &tv);
+        if (r <= 0) continue;
+        TcpFd c = stun_tcp_.accept_one();
+        if (!c.valid()) continue;
+        c.set_timeout_ms(800);
+        uint8_t req[STUN_HDR_LEN];
+        const ssize_t n = c.recv_some(req, sizeof(req));
+        if (n < (ssize_t)STUN_HDR_LEN || !stun_is_binding_request(req, (size_t)n))
+            continue;
+        sockaddr_in peer{};
+        socklen_t sl = sizeof(peer);
+        if (getpeername(c.fd(), reinterpret_cast<sockaddr*>(&peer), &sl) != 0)
+            continue;
+        uint8_t rsp[STUN_BINDING_SUCCESS_LEN];
+        if (stun_write_binding_success(rsp, sizeof(rsp), req, (size_t)n, peer) == 0)
+            continue;
+        c.send_all(rsp, STUN_BINDING_SUCCESS_LEN);
     }
 }
 

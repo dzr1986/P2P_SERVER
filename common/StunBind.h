@@ -18,6 +18,23 @@ constexpr uint16_t STUN_ATTR_XOR_MAPPED = 0x0020;
 constexpr size_t   STUN_HDR_LEN = 20;
 constexpr size_t   STUN_BINDING_SUCCESS_LEN = 32;  // header + XOR-MAPPED-ADDRESS(IPv4)
 
+// 20 字节 Binding Request（无属性）。tid 可空（填递增占位）。
+inline size_t stun_write_binding_request(uint8_t* out, size_t cap,
+                                         const uint8_t tid[12] = nullptr) {
+    if (!out || cap < STUN_HDR_LEN) return 0;
+    memset(out, 0, STUN_HDR_LEN);
+    out[1] = (uint8_t)(STUN_BINDING_REQUEST & 0xFF);
+    out[4] = 0x21;
+    out[5] = 0x12;
+    out[6] = 0xA4;
+    out[7] = 0x42;
+    if (tid) memcpy(out + 8, tid, 12);
+    else {
+        for (int i = 0; i < 12; i++) out[8 + i] = (uint8_t)(0xC0 + i);
+    }
+    return STUN_HDR_LEN;
+}
+
 inline bool stun_is_binding_request(const uint8_t* data, size_t len) {
     if (!data || len < STUN_HDR_LEN) return false;
     const uint16_t type = (uint16_t)((data[0] << 8) | data[1]);

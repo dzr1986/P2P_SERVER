@@ -88,6 +88,8 @@ echo "== [0] unit tests =="
 ./tests/bin/portmap_test > /tmp/portmap_test.log 2>&1 && ok "portmap NAT-PMP/UPnP unit tests" || fail "portmap unit tests"
 ./tests/bin/nat_detect_test > /tmp/nat_detect_test.log 2>&1 && ok "RFC 4787 NAT detect / matrix unit tests" || fail "nat detect unit tests"
 ./tests/bin/tcp_punch_test > /tmp/tcp_punch_test.log 2>&1 && ok "TCP punch simultaneous-open unit tests" || fail "tcp punch unit tests"
+./tests/bin/tcp_stun_test > /tmp/tcp_stun_test.log 2>&1 && ok "TCP STUN mapping unit tests" || fail "tcp stun unit tests"
+./tests/bin/nat_sim_test > /tmp/nat_sim_test.log 2>&1 && ok "userspace NAT matrix sim unit tests" || fail "nat sim unit tests"
 
 # ---------------------------------------------------------------- 1. 直连
 echo "== [1] direct P2P (no auth) =="
@@ -667,6 +669,9 @@ sleep 1
 stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT B A -tcp-punch > /tmp/peerB21.log 2>&1 & PB_PID=$!
 sleep 8
 kill -9 $PA_PID $PB_PID 2>/dev/null; PA_PID=""; PB_PID=""
+grep -q "TCP STUN listen" /tmp/nat.log && ok "NatServer TCP STUN listen" || fail "NatServer TCP STUN listen missing"
+grep -q "tcp stun mapped" /tmp/peerA21.log && ok "A tcp stun mapped" || fail "A tcp stun mapped missing"
+grep -q "tcp stun mapped" /tmp/peerB21.log && ok "B tcp stun mapped" || fail "B tcp stun mapped missing"
 grep -q "tcp punch announced" /tmp/peerA21.log && ok "A tcp punch announced" || fail "A tcp punch announce missing"
 grep -q "tcp punch announced" /tmp/peerB21.log && ok "B tcp punch announced" || fail "B tcp punch announce missing"
 if grep -q "tcp punch ready" /tmp/peerA21.log || grep -q "tcp punch ready" /tmp/peerB21.log; then

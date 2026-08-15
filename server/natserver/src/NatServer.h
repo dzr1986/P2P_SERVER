@@ -105,6 +105,7 @@ private:
     void recv_thread(int idx);
     void proc_pool_thread(int id);
     void timer_thread();
+    void stun_tcp_thread();   // EasyTier 式 TCP STUN：同口兼听，回 XOR-MAPPED
 
     // run() 线程编排：启动/停止全部工作线程（定义见 NatServer.cpp）
     struct RunThreads;
@@ -189,6 +190,7 @@ private:
 
     // 多收包线程：idx 0 用主 socket，其余用 SO_REUSEPORT 克隆 socket（RAII）
     std::vector<UdpFd>      recv_socks_;
+    TcpFd                   stun_tcp_;   // 与 UDP nat_port 同口，供 TCP 打洞取映射
 
     // 代理健康表（SP_ASK_EXTINFO_RSP 刷新）
     mutable std::mutex proxy_mu_;

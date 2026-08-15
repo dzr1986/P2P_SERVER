@@ -38,11 +38,12 @@ for a in EIM EDM; do
 done
 echo
 echo "notes:"
-echo "  - EIM×EIM / 锥型：标准 ICE（本仓库 juice）"
+echo "  - EIM×EIM / 锥型：标准 ICE（本仓库 juice）；用户态对照 tests/bin/nat_sim_test"
 echo "  - EIM×EDM 且识别 NAT4E step：端口预测，不先扫"
 echo "  - EDM×EDM：必须中继；--birthday 才允许生日扫描（默认关）"
 echo "  - filter=none|addr|port 由 ICE 连通性检查覆盖，不单独改策略"
 echo "  - 对照 DCUtR：分类型统计，对称对不计入锥型 ≥85% 分母"
+echo "  - 本环境/CI 无 iptables 与 netns：用 NatSim 盒模拟 STUN 打洞，不假装现网矩阵已通"
 
 if [ "$demo" = 1 ]; then
     echo

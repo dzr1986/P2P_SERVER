@@ -4,6 +4,7 @@
 #include "common/NatMatrix.h"
 #include "common/Packet.h"
 #include "common/TcpPunch.h"
+#include "common/StunBind.h"
 
 #include <cerrno>
 #include <cstdio>
@@ -1658,6 +1659,75 @@ bool P2PClient::tcp_punch_send(Conn& c, const uint8_t* frame, size_t len) {
     return c.tcp_ready.send_all(buf, n) == (ssize_t)n;
 }
 
+void P2PClient::tick_tcp_stun(Conn& c, uint64_t now) {
+    if (c.tcp_stun_phase >= 3 || c.tcp_local_port == 0) return;
+    if (c.tcp_stun_phase > 0 && c.tcp_stun_deadline_ms && now >= c.tcp_stun_deadline_ms) {
+        c.tcp_stun.close();
+        c.tcp_stun_phase = 4;
+        fprintf(stderr, "[P2PClient] tcp stun timeout, fallback %s:%u\n",
+                c.tcp_mapped_ip, (unsigned)c.tcp_mapped_port);
+        return;
+    }
+    auto send_req = [&]() {
+        uint8_t req[STUN_HDR_LEN];
+        stun_write_binding_request(req, sizeof(req));
+        if (c.tcp_stun.send_all(req, STUN_HDR_LEN) != (ssize_t)STUN_HDR_LEN) {
+            c.tcp_stun.close();
+            c.tcp_stun_phase = 4;
+            return;
+        }
+        c.tcp_stun_phase = 2;
+    };
+    if (c.tcp_stun_phase == 0) {
+        const int r = tcp_punch_connect_nb(c.tcp_stun, c.tcp_local_port,
+                                           nat_server_.ip.c_str(), nat_server_.port);
+        c.tcp_stun_deadline_ms = now + 800;
+        if (r < 0) {
+            c.tcp_stun_phase = 4;
+            fprintf(stderr, "[P2PClient] tcp stun connect fail, fallback\n");
+            return;
+        }
+        if (r == 1) send_req();
+        else c.tcp_stun_phase = 1;
+        return;
+    }
+    if (c.tcp_stun_phase == 1 && c.tcp_stun.valid()) {
+        const int d = tcp_punch_connect_done(c.tcp_stun.fd());
+        if (d == 1) send_req();
+        else if (d < 0) {
+            c.tcp_stun.close();
+            c.tcp_stun_phase = 4;
+        }
+        return;
+    }
+    if (c.tcp_stun_phase == 2 && c.tcp_stun.valid()) {
+        uint8_t rsp[STUN_BINDING_SUCCESS_LEN];
+        const ssize_t n = c.tcp_stun.recv_some(rsp, sizeof(rsp));
+        if (n < 0) {
+            if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+                c.tcp_stun.close();
+                c.tcp_stun_phase = 4;
+            }
+            return;
+        }
+        if (n < (ssize_t)STUN_BINDING_SUCCESS_LEN) return;
+        uint32_t addr = 0;
+        uint16_t port_be = 0;
+        if (!stun_read_xor_mapped(rsp, (size_t)n, &addr, &port_be) || ntohs(port_be) == 0) {
+            c.tcp_stun.close();
+            c.tcp_stun_phase = 4;
+            return;
+        }
+        memset(c.tcp_mapped_ip, 0, sizeof(c.tcp_mapped_ip));
+        inet_ntop(AF_INET, &addr, c.tcp_mapped_ip, sizeof(c.tcp_mapped_ip));
+        c.tcp_mapped_port = ntohs(port_be);
+        c.tcp_stun.close();
+        c.tcp_stun_phase = 3;
+        fprintf(stderr, "[P2PClient] tcp stun mapped %s:%u peer=%s\n",
+                c.tcp_mapped_ip, (unsigned)c.tcp_mapped_port, c.peer_uuid.c_str());
+    }
+}
+
 void P2PClient::tick_tcp_punch(Conn& c, uint64_t now) {
     if (!cfg_.tcp_punch || cfg_.force_relay) return;
     if (c.tcp_ok) return;
@@ -1673,6 +1743,10 @@ void P2PClient::tick_tcp_punch(Conn& c, uint64_t now) {
         memcpy(c.tcp_mapped_ip, mip, strnlen(mip, MAX_IP_LEN - 1));
         fprintf(stderr, "[P2PClient] tcp punch listen %u peer=%s\n",
                 (unsigned)c.tcp_local_port, c.peer_uuid.c_str());
+    }
+    if (c.tcp_stun_phase < 3) {
+        tick_tcp_stun(c, now);
+        if (c.tcp_stun_phase < 3) return;  // 3=成功 4=失败回退后再宣告
     }
 
     if (c.tcp_announce_n < 8 && now >= c.tcp_next_announce_ms && c.tcp_local_port) {
@@ -2218,6 +2292,7 @@ void P2PClient::close_conn(Conn& c) {
     c.tcp_listen.close();
     c.tcp_connecting.close();
     c.tcp_ready.close();
+    c.tcp_stun.close();
     c.tcp_rbuf.clear();
     sessions_.erase(peer);
     conns_.erase(peer);

@@ -362,17 +362,21 @@ libp2p DCUtR ~70%、TUTK 号称 ~92%。本仓库有中心信令，**应显著高
   5. **TCP 打洞（可选）**【开关已落地】：学 EasyTier simultaneous open。
      `tcp_punch` / `-tcp-punch` / `P2P_TCP_PUNCH=1` / `IOTC_SetTcpPunch`。
      经 NatServer 交换 `MSG_TCP_PUNCH` 映射口，两端从同一本地口非阻塞 connect + listen accept。
-     EDM/未知映射不发起；`force_relay` 仍不打洞。数据面 `MSG_TCP_DATA`。企业网仍以 TLS 中继兜底。
+     EDM/未知映射不发起；`force_relay` 仍不打洞。数据面 `MSG_TCP_DATA`。
+     **TCP STUN 已落地**：NatServer 在 UDP 同口兼听 TCP，回 RFC 8489 XOR-MAPPED；
+     客户端从打洞本地口非阻塞探测，失败回退 UDP 公网 IP + 本地口。企业网仍以 TLS 中继兜底。
   6. **IPv6 优先**【分统计已落地】：`path_direct_v4/v6` + `path_relay`；有公网 v6 走 host；
      NAT66 计入 v6，不假设「有 v6 就能通」。
   7. **NAT 矩阵**【表+单测已落地】：`punch_strategy()` × `tests/nat_detect_test`；
-     `tools/nat_matrix.sh` 打印组合。docker + iptables 现网分类型对照仍待补（`--iptables-demo`）。
+     `tools/nat_matrix.sh` 打印组合；`common/NatSim.h` 用户态盒对照锥×锥 / EDM 失败
+     （CI 无 iptables/netns）。docker + iptables 现网分类型对照仍待补（`--iptables-demo`）。
   8. **懒打洞（可选，对齐 P7）**【开关已落地】：`lazy_p2p` / `-lazy` / `P2P_LAZY_P2P=1`。
      中继已通且无业务发送时不后台打洞；`send()` 置 `want_direct` 后再升直连。
 - 依赖：P0 ICE/Proxy 已就绪；不改 `force_relay`「不打洞」语义（测试 [2]/[11] 依赖）。
 - 交付物：PCP/UPnP 客户端探测与续约、二维 NAT + NAT4E 字段、可选生日/TCP 打洞开关、
   v4/v6 直连率指标、矩阵脚本。TCP/TLS DERP 面、二维探测字段、策略表已落地（见上）。
-  生日/懒打洞开关、开孔续约、v4/v6 分统计、TCP 打洞开关已落地。现网 iptables 矩阵仍待补。
+  生日/懒打洞开关、开孔续约、v4/v6 分统计、TCP 打洞 + TCP STUN、用户态 NAT 矩阵已落地。
+  现网 iptables/netns 矩阵仍待补。
 - 验收：锥型组合直连 ≥85%；企业「只放 443/TCP」场景能在 <8s 出图（经 TLS 中继）；
   生日扫描默认关，打开时有端口上限与熔断。
 - **未含（本阶段不做）**：libp2p DHT、Iroh/QUIC 重写底座、系统级 VPN。

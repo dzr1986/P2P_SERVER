@@ -20,6 +20,11 @@ int main() {
     req[4] = 0x21; req[5] = 0x12; req[6] = 0xA4; req[7] = 0x42;
     for (int i = 8; i < 20; i++) req[i] = (uint8_t)(0xA0 + i);
 
+    uint8_t built[20];
+    CHECK(stun_write_binding_request(built, sizeof(built), req + 8) == 20,
+          "write binding request 20B");
+    CHECK(stun_is_binding_request(built, sizeof(built)), "written request detected");
+
     CHECK(stun_is_binding_request(req, sizeof(req)), "binding request detected");
     req[1] = 0x03;
     CHECK(!stun_is_binding_request(req, sizeof(req)), "non-binding rejected");

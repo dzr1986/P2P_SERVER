@@ -184,6 +184,7 @@ private:
         TcpFd tcp_listen;
         TcpFd tcp_connecting;
         TcpFd tcp_ready;
+        TcpFd tcp_stun;                  // 从同一本地口向 NatServer 做 TCP STUN
         uint16_t tcp_local_port = 0;
         uint16_t tcp_mapped_port = 0;
         char tcp_mapped_ip[MAX_IP_LEN] = {};
@@ -196,6 +197,8 @@ private:
         uint64_t tcp_next_connect_ms = 0;
         uint8_t tcp_announce_n = 0;
         uint8_t tcp_connect_n = 0;
+        uint8_t tcp_stun_phase = 0;      // 0=未开始 1=连接中 2=已发 3=成功 4=失败回退
+        uint64_t tcp_stun_deadline_ms = 0;
         std::vector<uint8_t> tcp_rbuf;
         uint8_t peer_nattype = NAT_UNKNOWN;
         std::string connect_token_hex;  // 本连接出示的连线 Token（可空）
@@ -232,6 +235,7 @@ private:
     void tick_portmap(uint64_t now);         // 家宽 UPnP/NAT-PMP 开孔 + 续约
     void tick_extra_ice_ports(Conn& c, uint64_t now); // NAT4E 预测 / 生日候选
     void tick_tcp_punch(Conn& c, uint64_t now);       // EasyTier TCP simultaneous open
+    void tick_tcp_stun(Conn& c, uint64_t now);        // TCP STUN 取真实映射口
     void send_tcp_punch(const Conn& c);
     void on_tcp_punch(const uint8_t* p, size_t plen);
     void apply_tcp_punch_msg(Conn& c, const TcpPunchMsg& m);
