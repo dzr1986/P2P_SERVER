@@ -74,6 +74,9 @@ public:
     int send(const std::string& peer_uuid, uint8_t channel,
              const void* data, size_t len, bool reliable = true);
 
+    // 链路统计（RTT/丢包/重传/FEC），供上层自适应码率；对端会话不存在返回 false
+    bool link_stats(const std::string& peer_uuid, Session::LinkStats& out);
+
     uint8_t  nat_type() const { return nat_type_; }
     uint16_t local_port() const { return sock_.local_port(); }
     const char* public_ip() const { return pub_ip_; }

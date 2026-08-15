@@ -134,6 +134,14 @@ int P2PClient::send(const std::string& peer_uuid, uint8_t channel,
     return session_for(peer_uuid)->send(channel, data, len, reliable);
 }
 
+bool P2PClient::link_stats(const std::string& peer_uuid, Session::LinkStats& out) {
+    std::lock_guard<std::recursive_mutex> lk(mu_);
+    auto it = sessions_.find(peer_uuid);
+    if (it == sessions_.end()) return false;
+    out = it->second->stats();
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // 工作线程
 // ---------------------------------------------------------------------------

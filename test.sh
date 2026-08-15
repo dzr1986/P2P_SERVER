@@ -54,6 +54,11 @@ echo "== build =="
 make -s all || { echo "BUILD FAILED"; exit 1; }
 echo "build ok"
 
+# ---------------------------------------------------------------- 0. 单元测试
+echo "== [0] unit tests =="
+./tests/bin/crypto_test > /tmp/crypto_test.log 2>&1 && ok "crypto unit tests" || fail "crypto unit tests"
+./tests/bin/session_test > /tmp/session_test.log 2>&1 && ok "session unit tests" || fail "session unit tests"
+
 # ---------------------------------------------------------------- 1. 直连
 echo "== [1] direct P2P (no auth) =="
 start_servers ""

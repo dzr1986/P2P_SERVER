@@ -325,6 +325,8 @@ enum TunnelType : uint8_t {
     TT_PING  = 2,   // 隧道保活
     TT_PONG  = 3,   // 保活应答
     TT_CLOSE = 4,   // 会话关闭
+    TT_FEC   = 5,   // 不可靠通道前向纠错帧（seq=组基序号，ack=组内帧数，
+                    //   负载 = XOR of [len(2B)|channel(1B)|payload 补零]，可恢复单帧丢失）
 };
 
 constexpr uint8_t TF_RELIABLE = 0x01;  // flags：可靠通道

@@ -12,6 +12,7 @@ BIN_NAT   := server/natserver/bin/p2p_natserver
 BIN_PROXY := server/proxyserver/bin/p2p_proxy
 BIN_PEER  := client/bin/peer
 BIN_CRYPTOTEST := tests/bin/crypto_test
+BIN_SESSIONTEST := tests/bin/session_test
 
 COMMON_SRCS := common/Crypto.cpp
 
@@ -29,7 +30,7 @@ PROXY_SRCS := server/proxyserver/src/P2PProxy.cpp
 PEER_SRCS  := client/demo/peer.cpp \
               client/sdk/api/P2PClient.cpp
 
-all: $(LIBJUICE) $(BIN_NAT) $(BIN_PROXY) $(BIN_PEER) $(BIN_CRYPTOTEST)
+all: $(LIBJUICE) $(BIN_NAT) $(BIN_PROXY) $(BIN_PEER) $(BIN_CRYPTOTEST) $(BIN_SESSIONTEST)
 
 $(LIBJUICE):
 	cmake -B third_party/libjuice/build -S third_party/libjuice -DCMAKE_BUILD_TYPE=Release
@@ -51,6 +52,10 @@ $(BIN_PEER): $(PEER_SRCS) $(COMMON_SRCS) common/ProtoDef.h $(LIBJUICE)
 $(BIN_CRYPTOTEST): tests/crypto_test.cpp $(COMMON_SRCS) common/ProtoDef.h $(LIBJUICE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tests/crypto_test.cpp $(COMMON_SRCS) $(LDFLAGS)
+
+$(BIN_SESSIONTEST): tests/session_test.cpp client/sdk/session/Session.h $(COMMON_SRCS) common/ProtoDef.h $(LIBJUICE)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -o $@ tests/session_test.cpp $(COMMON_SRCS) $(LDFLAGS)
 
 clean:
 	rm -rf server/natserver/bin server/proxyserver/bin client/bin tests/bin
