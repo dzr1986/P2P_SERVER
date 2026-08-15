@@ -21,11 +21,22 @@ FAIL_MSG=""
 fail() { FAIL=$((FAIL+1)); FAIL_MSG="$FAIL_MSG\n  $1"; }
 ok()   { PASS=$((PASS+1)); echo "  ok: $1"; }
 
+# 本环境没有 killall；pkill -f 用 [x] 避免匹配到本行。
+# SO_REUSEPORT 残留会把 UDP 分给旧 NatServer，表现为随机鉴权失败/直连超时。
+kill_strays() {
+    pkill -9 -f 'server/natserver/bin/[p]2p_natserver' 2>/dev/null || true
+    pkill -9 -f 'server/proxyserver/bin/[p]2p_proxy' 2>/dev/null || true
+    pkill -9 -f 'server/wakeserver/bin/[p]2p_wakeserver' 2>/dev/null || true
+    pkill -9 -f 'client/bin/[p]eer' 2>/dev/null || true
+    pkill -9 -f 'client/bin/[i]otc_demo' 2>/dev/null || true
+}
+
 # 统一清理
 cleanup() {
     for p in $NAT_PID $NAT2_PID $PROXY_PID $PA_PID $PB_PID $IOTC_DEV_PID $WAKE_PID; do
         [ -n "$p" ] && kill -9 $p 2>/dev/null
     done
+    kill_strays
 }
 trap cleanup EXIT
 
@@ -58,7 +69,7 @@ make -s all || { echo "BUILD FAILED"; exit 1; }
 echo "build ok"
 # 测试默认关闭 LAN 组播，避免占用 17890 / 串扰 ICE；[15] 再打开
 export P2P_DISABLE_LAN=1
-killall -9 peer iotc_demo p2p_natserver p2p_proxy p2p_wakeserver 2>/dev/null || true
+kill_strays
 sleep 0.3
 
 # ---------------------------------------------------------------- 0. 单元测试
