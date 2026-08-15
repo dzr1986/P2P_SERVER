@@ -23,7 +23,27 @@ inline bool is_private_ip(const char* ip) {
     return false;
 }
 
+inline bool is_loopback_host(const std::string& ip) {
+    return ip == "127.0.0.1" || ip == "localhost" || ip == "::1";
+}
+
 } // namespace
+
+P2PClient::Conn* P2PClient::conn_of(const std::string& uuid) {
+    auto it = conns_.find(uuid);
+    return it == conns_.end() ? nullptr : it->second.get();
+}
+
+P2PClient::Conn& P2PClient::ensure_conn(const std::string& uuid) {
+    auto it = conns_.find(uuid);
+    if (it == conns_.end()) {
+        auto c = std::make_unique<Conn>();
+        c->peer_uuid = uuid;
+        c->self = this;
+        it = conns_.emplace(uuid, std::move(c)).first;
+    }
+    return *it->second;
+}
 
 // ---------------------------------------------------------------------------
 // 生命周期
@@ -113,14 +133,17 @@ void P2PClient::stop() {
 void P2PClient::connect(const std::string& peer_uuid, const std::string& token_hex) {
     if (!running_.load() || peer_uuid.empty() || peer_uuid == cfg_.uuid) return;
     std::lock_guard<std::recursive_mutex> lk(mu_);
-    auto& c = conns_[peer_uuid];
-    c.peer_uuid = peer_uuid;
+    auto& c = ensure_conn(peer_uuid);
     if (c.state != ConnState::Idle) return;
     c.state = ConnState::Connecting;
     c.punch.have_direct = false;
     c.punch.direct_ok = false;
     c.punch.ice_gathered = false;
     c.punch.ice_host_sdp_sent = false;
+    c.punch.ice_remote_gather_done = false;
+    c.punch.ice_remote_applied_ms = 0;
+    c.punch.local_sdp.clear();
+    c.punch.remote_sdp.clear();
     c.relay.relay_ok = false;
     c.punch.punch_deadline = plat_now_ms() + cfg_.connect_timeout_ms;
     c.punch.next_punch = 0;
@@ -138,22 +161,22 @@ void P2PClient::connect(const std::string& peer_uuid, const std::string& token_h
 
 void P2PClient::disconnect(const std::string& peer_uuid) {
     std::lock_guard<std::recursive_mutex> lk(mu_);
-    auto it = conns_.find(peer_uuid);
-    if (it == conns_.end()) return;
+    Conn* c = conn_of(peer_uuid);
+    if (!c) return;
     if (auto* s = session_for(peer_uuid)) {
         std::vector<uint8_t> frame(14);
         codec_write_tunnel(frame.data(), (int)frame.size(), TT_CLOSE, s->id(),
                            0, 0, 0, 0, nullptr, 0);
-        send_tunnel_via(it->second, frame.data(), frame.size());
+        send_tunnel_via(*c, frame.data(), frame.size());
     }
-    close_conn(it->second);
+    close_conn(*c);
 }
 
 int P2PClient::send(const std::string& peer_uuid, uint8_t channel,
                     const void* data, size_t len, bool reliable) {
     std::lock_guard<std::recursive_mutex> lk(mu_);
-    auto it = conns_.find(peer_uuid);
-    if (it == conns_.end() || !it->second.connected()) return -1;
+    Conn* c = conn_of(peer_uuid);
+    if (!c || !c->connected()) return -1;
     return session_for(peer_uuid)->send(channel, data, len, reliable);
 }
 
@@ -213,7 +236,7 @@ void P2PClient::worker_loop() {
         }
         std::vector<std::pair<std::string, int>> punch_fds; // peer_uuid -> socket fd
         for (auto& kv : conns_) {
-            for (auto& ps : kv.second.punch.punch_socks) {
+            for (auto& ps : kv.second->punch.punch_socks) {
                 int fd = ps.fd();
                 if (fd < 0) continue;
                 FD_SET(fd, &rfds);
@@ -240,7 +263,7 @@ void P2PClient::worker_loop() {
                 if (FD_ISSET(pf.second, &rfds)) {
                     auto it = conns_.find(pf.first);
                     if (it == conns_.end()) continue;
-                    Conn& c = it->second;
+                    Conn& c = *it->second;
                     for (size_t si = 0; si < c.punch.punch_socks.size(); si++) {
                         auto& ps = c.punch.punch_socks[si];
                         if (ps.fd() != pf.second) continue;
@@ -272,6 +295,7 @@ void P2PClient::tick(uint64_t now) {
     tick_sessions(now);
     tick_handshake(now);
     tick_lan(now);
+    tick_ice(now);
 }
 
 // 心跳发送与重试间隔
@@ -322,14 +346,21 @@ void P2PClient::tick_relay(uint64_t now) {
 
 // 连接状态机（打洞/超时/降级中继；Connected+中继时后台继续打洞以便回切 P2P）
 void P2PClient::tick_connections(uint64_t now) {
-    for (auto& kv : conns_) {
-        Conn& c = kv.second;
-        if (c.state == ConnState::Connecting) {
-            tick_conn_punch(c, now);
-            tick_conn_relay(c, now);
-            tick_conn_fsm(c, now);
-        } else if (c.state == ConnState::Connected && c.via_relay && !cfg_.force_relay) {
-            tick_conn_punch(c, now);
+    // 先拷贝 key：tick_* 可能 close_conn 擦掉 unique_ptr，不能边遍历边删
+    std::vector<std::string> peers;
+    peers.reserve(conns_.size());
+    for (const auto& kv : conns_) peers.push_back(kv.first);
+    for (const auto& peer : peers) {
+        Conn* c = conn_of(peer);
+        if (!c) continue;
+        if (c->state == ConnState::Connecting) {
+            tick_conn_punch(*c, now);
+            if (!(c = conn_of(peer))) continue;
+            tick_conn_relay(*c, now);
+            if (!(c = conn_of(peer))) continue;
+            tick_conn_fsm(*c, now);
+        } else if (c->state == ConnState::Connected && c->via_relay && !cfg_.force_relay) {
+            tick_conn_punch(*c, now);
         }
     }
 }
@@ -480,7 +511,7 @@ void P2PClient::finish_handshake(const std::string& peer) {
 
 void P2PClient::tick_handshake(uint64_t now) {
     for (auto& kv : conns_) {
-        if (!kv.second.connected()) continue;
+        if (!kv.second->connected()) continue;
         auto it = hs_.find(kv.first);
         if (it == hs_.end() || !it->second.local_ready) {
             start_handshake(kv.first);
@@ -561,11 +592,12 @@ void P2PClient::handle_packet(const uint8_t* buf, size_t len,
         // 直连隧道帧
         auto it = addr_to_peer_.find(addr_key(from));
         if (it != addr_to_peer_.end()) {
-            auto& c = conns_[it->second];
+            Conn* c = conn_of(it->second);
+            if (!c) return;
             on_tunnel_frame(buf, len, it->second);
-            if (!c.punch.direct_ok) {
-                c.punch.direct_ok = true;
-                set_connected(c, false);
+            if (!c->punch.direct_ok) {
+                c->punch.direct_ok = true;
+                set_connected(*c, false);
             }
         }
         return;
@@ -737,7 +769,7 @@ void P2PClient::on_auth_login_rsp(const uint8_t* p, size_t plen) {
         next_heartbeat_ms_ = plat_now_ms() + 100;   // 鉴权成功立即心跳确认注册
         // 重发等待鉴权期间的连接请求
         for (auto& kv : conns_) {
-            Conn& c = kv.second;
+            Conn& c = *kv.second;
             if (c.connecting() && !c.punch.have_direct && !c.relay.relay_ok) {
                 send_connect_req(c);
                 // #18 CONNECT 重发指数退避（下次若仍无响应由 tick 驱动）
@@ -784,7 +816,7 @@ void P2PClient::on_proxy_register_rsp(const uint8_t* p, size_t plen) {
     uint8_t result = p[0];
     if (result == 0) {
         relay_registered_ = true;
-        for (auto& kv : conns_) kv.second.backoff_attempt = 0;
+        for (auto& kv : conns_) kv.second->backoff_attempt = 0;
     } else if (on_error) {
         char tmp[64];
         snprintf(tmp, sizeof(tmp), "relay register failed result=%d", result);
@@ -799,8 +831,7 @@ void P2PClient::on_proxy_relay_data(const uint8_t* p, size_t plen) {
     if (strncmp(dst, cfg_.uuid.c_str(), MAX_UUID_LEN) != 0) return;
     std::string peer_uuid(src, strnlen(src, MAX_UUID_LEN));
     if (peer_uuid.empty()) return;
-    auto& c = conns_[peer_uuid];
-    if (c.peer_uuid.empty()) c.peer_uuid = peer_uuid;
+    auto& c = ensure_conn(peer_uuid);
     on_tunnel_frame(p + sizeof(RelayFrame), plen - sizeof(RelayFrame), peer_uuid);
     if (!c.relay.relay_ok) {
         c.relay.relay_ok = true;
@@ -829,8 +860,8 @@ void P2PClient::on_connect_ack(const uint8_t* p, size_t plen) {
         if (has_cred_ && !auth_inflight_ && !auth_denied_) do_auth_challenge();
         return;
     }
-    auto& c = conns_[peer];
-    if (c.state == ConnState::Idle) { c.peer_uuid = peer; c.state = ConnState::Connecting; }
+    auto& c = ensure_conn(peer);
+    if (c.state == ConnState::Idle) c.state = ConnState::Connecting;
     if (ack.result != CONNECT_OK) {
         if (ack.result == CONNECT_BAD_TOKEN) {
             if (on_error) on_error("connect " + peer + ": bad or expired connect token");
@@ -885,8 +916,7 @@ void P2PClient::on_connect_invite(const uint8_t* p, size_t plen) {
     std::string peer(inv.src_uuid, strnlen(inv.src_uuid, MAX_UUID_LEN));
     if (peer.empty()) return;
 
-    auto& c = conns_[peer];
-    c.peer_uuid = peer;
+    Conn& c = ensure_conn(peer);
     if (c.state == ConnState::Idle) c.state = ConnState::Connecting;
     c.punch.direct_ok = false;
     c.self = this;
@@ -986,8 +1016,9 @@ void P2PClient::ensure_ice_agent(Conn& c, bool as_offerer) {
         jcfg.cb_gathering_done = &P2PClient::on_juice_gathering_done;
         jcfg.cb_recv = &P2PClient::on_juice_recv;
         jcfg.user_ptr = &c;
-        // NatServer 兼 STUN：juice 收集 server-reflexive，跨 NAT 不再只有 host 候选
-        if (!nat_server_.ip.empty()) {
+        // 公网 NatServer 兼 STUN，收集 srflx。回环本机测试跳过：
+        // juice STUN 重传合计约 23.5s，host 候选已足够同机直连。
+        if (!nat_server_.ip.empty() && !is_loopback_host(nat_server_.ip)) {
             jcfg.stun_server_host = nat_server_.ip.c_str();
             jcfg.stun_server_port = nat_server_.port;
         }
@@ -1006,28 +1037,44 @@ void P2PClient::apply_remote_ice_sdp(Conn& c, const std::string& remote_sdp) {
     if (!c.punch.juice || remote_sdp.empty()) return;
     if (c.punch.remote_sdp.empty()) {
         c.punch.remote_sdp = remote_sdp;
+        c.punch.ice_remote_applied_ms = plat_now_ms();
         // 被邀方：先 set_remote（mode 仍 UNKNOWN → controlled），再 gather
+        // 首包多为 host-only，此时不可 mark gathering done，否则后续 srflx trickle 会被 juice 拒绝
         juice_set_remote_description(c.punch.juice, remote_sdp.c_str());
         if (!c.punch.ice_gathered) start_ice_gather(c);
-        juice_set_remote_gathering_done(c.punch.juice);
-        fprintf(stderr, "[P2PClient] ICE_SDP applied for %s, remote gathering done\n",
+        fprintf(stderr, "[P2PClient] ICE_SDP applied for %s (trickle open)\n",
                 c.peer_uuid.c_str());
         return;
     }
-    if (remote_sdp == c.punch.remote_sdp) return;
-    // 后续 SDP（STUN 完成后的 srflx）：按行 trickle 候选
-    std::string line;
-    for (size_t i = 0, n = remote_sdp.size(); i <= n; i++) {
-        if (i < n && remote_sdp[i] != '\n') {
-            line += remote_sdp[i];
-            continue;
+    if (remote_sdp == c.punch.remote_sdp) {
+        // gather 完成但没有新候选（回环/STUN 失败）：可以收口
+        if (!c.punch.ice_remote_gather_done) {
+            juice_set_remote_gathering_done(c.punch.juice);
+            c.punch.ice_remote_gather_done = true;
+            fprintf(stderr, "[P2PClient] ICE_SDP remote gathering done for %s (unchanged)\n",
+                    c.peer_uuid.c_str());
         }
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (line.size() >= 11 && line.compare(0, 11, "a=candidate") == 0)
-            juice_add_remote_candidate(c.punch.juice, line.c_str());
-        line.clear();
+        return;
+    }
+    // 后续 SDP（STUN 完成后的 srflx）：按行 trickle 候选
+    if (!c.punch.ice_remote_gather_done) {
+        std::string line;
+        for (size_t i = 0, n = remote_sdp.size(); i <= n; i++) {
+            if (i < n && remote_sdp[i] != '\n') {
+                line += remote_sdp[i];
+                continue;
+            }
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.size() >= 11 && line.compare(0, 11, "a=candidate") == 0)
+                juice_add_remote_candidate(c.punch.juice, line.c_str());
+            line.clear();
+        }
+        juice_set_remote_gathering_done(c.punch.juice);
+        c.punch.ice_remote_gather_done = true;
+        fprintf(stderr, "[P2PClient] ICE_SDP trickle+done for %s\n", c.peer_uuid.c_str());
     }
     c.punch.remote_sdp = remote_sdp;
+    c.punch.ice_remote_applied_ms = plat_now_ms();
 }
 
 void P2PClient::send_ice_sdp(const std::string& peer, const std::string& local_sdp) {
@@ -1045,8 +1092,8 @@ void P2PClient::send_ice_sdp(const std::string& peer, const std::string& local_s
     memcpy(m->sdp, local_sdp.data(), plen);
     send_proto(MSG_ICE_SDP, buf.data(), msglen);
     auto it = conns_.find(peer);
-    if (it != conns_.end() && it->second.punch.have_lan) {
-        send_proto(MSG_ICE_SDP, buf.data(), msglen, it->second.punch.direct_lan);
+    if (it != conns_.end() && it->second->punch.have_lan) {
+        send_proto(MSG_ICE_SDP, buf.data(), msglen, it->second->punch.direct_lan);
     }
     fprintf(stderr, "[P2PClient] ICE_SDP sent to %s len=%zu\n", peer.c_str(), plen);
 }
@@ -1065,13 +1112,10 @@ void P2PClient::on_ice_sdp(const uint8_t* p, size_t plen) {
     }
 
     Conn* target = nullptr;
-    if (!src.empty()) {
-        auto it = conns_.find(src);
-        if (it != conns_.end()) target = &it->second;
-    }
+    if (!src.empty()) target = conn_of(src);
     if (!target) {
         for (auto& kv : conns_) {
-            Conn& c = kv.second;
+            Conn& c = *kv.second;
             if (c.connecting() && c.punch.juice && c.punch.remote_sdp.empty()) {
                 target = &c;
                 break;
@@ -1131,6 +1175,21 @@ void P2PClient::tick_lan(uint64_t now) {
             if (now - it->second.seen_ms > 15000) it = lan_cache_.erase(it);
             else ++it;
         }
+    }
+}
+
+void P2PClient::tick_ice(uint64_t now) {
+    // 首包 host SDP 后延迟标记 gathering done：回环无 STUN，400ms 足够；
+    // 公网仍等后续完整 SDP（见 apply_remote_ice_sdp），此处用 25s 兜底以免永远不收口。
+    const uint64_t wait_ms = is_loopback_host(nat_server_.ip) ? 400 : 25000;
+    for (auto& kv : conns_) {
+        Conn& c = *kv.second;
+        if (!c.connecting() || !c.punch.juice) continue;
+        if (c.punch.remote_sdp.empty() || c.punch.ice_remote_gather_done) continue;
+        if (c.punch.ice_remote_applied_ms == 0) continue;
+        if (now - c.punch.ice_remote_applied_ms < wait_ms) continue;
+        juice_set_remote_gathering_done(c.punch.juice);
+        c.punch.ice_remote_gather_done = true;
     }
 }
 
@@ -1195,7 +1254,7 @@ void P2PClient::remember_lan_peer(const std::string& uuid, const sockaddr_in& fr
                 (unsigned)ntohs(media_port_nbo));
     }
     auto it = conns_.find(uuid);
-    if (it != conns_.end() && it->second.state != ConnState::Idle)
+    if (it != conns_.end() && it->second->state != ConnState::Idle)
         apply_lan_peer(uuid, from, media_port_nbo);
 }
 
@@ -1203,7 +1262,7 @@ void P2PClient::apply_lan_peer(const std::string& uuid, const sockaddr_in& from,
                                uint16_t media_port_nbo) {
     auto it = conns_.find(uuid);
     if (it == conns_.end()) return;
-    Conn& c = it->second;
+    Conn& c = *it->second;
     c.punch.direct_lan = from;
     c.punch.direct_lan.sin_port = media_port_nbo;
     c.punch.have_lan = true;
@@ -1406,7 +1465,7 @@ Session* P2PClient::session_for(const std::string& peer) {
     };
     s->on_tx = [this, peer](const uint8_t* f, size_t n) {
         auto it2 = conns_.find(peer);
-        if (it2 != conns_.end()) send_tunnel_via(it2->second, f, n);
+        if (it2 != conns_.end()) send_tunnel_via(*it2->second, f, n);
     };
     Session* raw = s.get();
     sessions_.emplace(peer, std::move(s));
@@ -1424,8 +1483,9 @@ void P2PClient::on_tunnel_frame(const uint8_t* frame, size_t len,
 }
 
 void P2PClient::close_conn(Conn& c) {
+    const std::string peer = c.peer_uuid;
     for (auto it = addr_to_peer_.begin(); it != addr_to_peer_.end();) {
-        if (it->second == c.peer_uuid) it = addr_to_peer_.erase(it);
+        if (it->second == peer) it = addr_to_peer_.erase(it);
         else ++it;
     }
     // #17 关闭打洞 socket 池
@@ -1439,17 +1499,17 @@ void P2PClient::close_conn(Conn& c) {
         c.self = nullptr;  // 使在途 ICE 回调能检测失效
     }
     {
-        auto hit = hs_.find(c.peer_uuid);
+        auto hit = hs_.find(peer);
         if (hit != hs_.end()) {
             memset(hit->second.priv, 0, sizeof(hit->second.priv));
             hs_.erase(hit);
         }
-        fs_keys_.erase(c.peer_uuid);
+        fs_keys_.erase(peer);
     }
-    pending_remote_sdp_.erase(c.peer_uuid);
-    sessions_.erase(c.peer_uuid);
-    conns_.erase(c.peer_uuid);
-    if (on_disconnected) on_disconnected(c.peer_uuid);
+    pending_remote_sdp_.erase(peer);
+    sessions_.erase(peer);
+    conns_.erase(peer);
+    if (on_disconnected) on_disconnected(peer);
 }
 
 } // namespace p2p

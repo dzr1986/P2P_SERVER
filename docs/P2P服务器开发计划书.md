@@ -155,6 +155,7 @@ Client                         NatServer                       Device
   │ 2. CONNECT_REQ(uid,token) ──►│ 验 token/在线表                 │
   │ ◄── CONNECT_ACK(公网/私网/NAT类型/Relay候选) │── INVITE ──────► │
   │ 3. CONNECT_OK 后发起方 gather（controlling）◄══ ICE/P2P ══════► │
+  │    host 候选先发 SDP；srflx trickle；回环跳过 STUN              │
   │ 4. 超时/对称NAT → Relay 注册(HMAC，已有) → RELAY_DATA 中继      │
   │ 5. 中继期间打洞持续后台重试，成功即无缝升级回 P2P                │
 ```

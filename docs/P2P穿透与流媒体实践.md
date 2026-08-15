@@ -63,7 +63,27 @@ libjuice 向 `stun_server_host:port` 发 Binding Request，用
 与自研 `XN` 头（`0x584E`）不冲突。
 
 实现：`common/StunBind.h`，`NatServer::recv_thread` 快速路径。
-客户端：`juice_config.stun_server_host = NatServer IP`。
+客户端：公网时 `juice_config.stun_server_host = NatServer IP`。
+**本机回环**（NatServer 为 `127.0.0.1` / `localhost`）不配 STUN：juice 默认
+`MAX_STUN_SERVER_RETRANSMISSION_COUNT=5`，合计约 23.5s，会拖死 6s 直连窗口；
+同机 host 候选已足够，gather 应立刻完成。
+
+### 2.2.1 Trickle 与 gathering done
+
+首包 SDP 通常只有 **host** 候选。若此时立刻
+`juice_set_remote_gathering_done`，后续 srflx trickle 会被 juice 拒绝
+（日志 `Remote candidate added after remote gathering done`）。本仓库：
+
+- 首次 `set_remote` **不** mark done，记下 `ice_remote_applied_ms`
+- 后续完整 SDP 按行 `juice_add_remote_candidate`，再 mark done
+- 回环 400ms / 公网 25s 兜底（`tick_ice`），防止只收到一包时永远不收口
+
+### 2.2.2 `Conn` 必须堆分配
+
+juice `user_ptr` 指向 `Conn`。`unordered_map<string, Conn>` 扩容会移动对象，
+回调变成野指针（随机崩溃、心跳 `pub_ip_` 乱码）。现为
+`unordered_map<string, unique_ptr<Conn>>`，`tick_connections` 先拷贝 key
+再驱动，避免 `close_conn` 边遍历边删。
 
 ### 2.3 TURN / 中继
 

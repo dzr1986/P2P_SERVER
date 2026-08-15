@@ -118,6 +118,8 @@ private:
         juice_agent_t* juice = nullptr;      // #19 libjuice ICE agent（替换自研打洞）
         bool ice_gathered = false;           // 已 juice_gather：发起方先 gather=controlling
         bool ice_host_sdp_sent = false;      // 已用 host 候选发出首版 SDP（不等 STUN）
+        bool ice_remote_gather_done = false; // 已通知 juice 对端收集结束
+        uint64_t ice_remote_applied_ms = 0;  // 首次 set_remote 时间，供延迟标记 gathering done
         std::string local_sdp;               // #19 本端 ICE SDP（gather 后填充）
         std::string remote_sdp;              // #19 对端 ICE SDP（信令交换）
     };
@@ -181,6 +183,7 @@ private:
     void tick_conn_fsm(Conn& c, uint64_t now);     // 连接主状态机（中继建链判定）
     void tick_sessions(uint64_t now);        // 会话周期驱动
     void tick_lan(uint64_t now);             // 局域网组播宣告 / 缓存过期
+    void tick_ice(uint64_t now);             // 延迟标记 remote gathering done
     void handle_packet(const uint8_t* buf, size_t len, const sockaddr_in& from);
     void handle_proto(uint8_t msg_id, const uint8_t* p, size_t plen,
                       const sockaddr_in& from);
@@ -214,6 +217,8 @@ private:
                         uint16_t media_port_nbo);
     void remember_lan_peer(const std::string& uuid, const sockaddr_in& from,
                            uint16_t media_port_nbo);
+    Conn* conn_of(const std::string& uuid);
+    Conn& ensure_conn(const std::string& uuid);
     void do_punch(Conn& c);
     // #19 libjuice ICE 回调（静态转发至 Conn 上下文）
     static void on_juice_state(juice_agent_t* agent, juice_state_t state, void* user_ptr);
@@ -314,7 +319,8 @@ private:
 
     // 会话与连接
     std::recursive_mutex mu_;
-    std::unordered_map<std::string, Conn> conns_;
+    // unique_ptr：juice user_ptr 指向 Conn，map 扩容不得移动对象
+    std::unordered_map<std::string, std::unique_ptr<Conn>> conns_;
     std::unordered_map<std::string, std::unique_ptr<Session>> sessions_;
     std::map<uint64_t, std::string> addr_to_peer_;   // ip<<16|port -> peer uuid
     uint16_t next_session_id_ = 1;
