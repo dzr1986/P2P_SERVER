@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "common/Crypto.h"
+#include "common/Handshake.h"
 #include "common/ProtoDef.h"
 #include "common/Uid.h"
 #include "client/sdk/plat/Plat.h"
@@ -87,6 +88,7 @@ public:
     bool running() const { return running_.load(); }
     uint64_t tunnel_enc_tx() const { return tunnel_enc_tx_.load(); }
     uint64_t tunnel_enc_rx() const { return tunnel_enc_rx_.load(); }
+    uint64_t tunnel_fs_ok() const { return tunnel_fs_ok_.load(); }
 
 private:
     // 打洞子状态机（负责直连路径探测与超时）
@@ -202,7 +204,14 @@ private:
     // 连接建立唯一转移点（幂等）：置 Connected 并触发 on_connected
     void set_connected(Conn& c, bool relay);
 
-    // ---- 隧道负载加密（鉴权开启时对端间共享密钥派生） ----
+    // P5：X25519 握手（可靠通道 0xFE）
+    void start_handshake(const std::string& peer);
+    void on_hs_msg(const std::string& peer, const uint8_t* data, size_t len);
+    void finish_handshake(const std::string& peer);
+    void tick_handshake(uint64_t now);
+    bool psk_tunnel_key(const std::string& peer, uint8_t out[32]);
+
+    // ---- 隧道负载加密（PSK 或 ECDH 会话密钥） ----
     bool get_tunnel_key(const std::string& peer, uint8_t out[32]);
     bool encrypt_tunnel_frame(const std::string& peer, uint8_t* out,
                               const uint8_t* in, size_t inlen, size_t* outlen);
@@ -241,10 +250,31 @@ private:
     BackOff auth_backoff_;          // #18 鉴权失败指数退避
 
     // 隧道负载加密
-    bool tunnel_enc_ = false;   // secret 非空即开启（需对端同密钥）
+    bool tunnel_enc_ = false;   // PSK 或握手完成后开启
     std::unordered_map<std::string, std::array<uint8_t, 32>> tunnel_keys_;
     std::atomic<uint64_t> tunnel_enc_tx_{0};
     std::atomic<uint64_t> tunnel_enc_rx_{0};
+    std::atomic<uint64_t> tunnel_fs_ok_{0};
+
+    struct HsState {
+        uint8_t priv[32]{};
+        uint8_t pub[32]{};
+        uint8_t nonce[16]{};
+        uint8_t peer_pub[32]{};
+        uint8_t peer_nonce[16]{};
+        bool local_ready = false;
+        bool remote_ready = false;
+        bool done = false;
+        uint64_t last_rekey_ms = 0;
+    };
+    struct FsKeyPair {
+        std::array<uint8_t, 32> cur{};
+        std::array<uint8_t, 32> prev{};
+        bool has_cur = false;
+        bool has_prev = false;
+    };
+    std::unordered_map<std::string, HsState> hs_;
+    std::unordered_map<std::string, FsKeyPair> fs_keys_;
 
     // NAT 检测
     NatDetect nat_detect_;

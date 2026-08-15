@@ -359,8 +359,8 @@ int run_client(const char* uid, const char* dev_uid, const char* secret, const c
 int main(int argc, char** argv) {
     if (argc < 5) {
         fprintf(stderr,
-                "usage: %s device <NatIP> <NatPort> <UID> [-s secret] [-k key]\n"
-                "       %s client <NatIP> <NatPort> <UID> <DevUID> [-s secret] [-k key]\n",
+                "usage: %s device <NatIP> <NatPort> <UID> [-s secret] [-k key] [-relay ip port]\n"
+                "       %s client <NatIP> <NatPort> <UID> <DevUID> [-s secret] [-k key] [-relay ip port]\n",
                 argv[0], argv[0]);
         return 1;
     }
@@ -371,6 +371,9 @@ int main(int argc, char** argv) {
     const char* dev_uid = nullptr;
     const char* secret = nullptr;
     const char* key = nullptr;
+    const char* proxy_ip = nullptr;
+    uint16_t proxy_port = 0;
+    bool force_relay = false;
     int opt_start = 5;
     if (mode == "client") {
         if (argc < 6) {
@@ -380,15 +383,24 @@ int main(int argc, char** argv) {
         dev_uid = argv[5];
         opt_start = 6;
     }
-    for (int i = opt_start; i + 1 < argc; i++) {
-        if (strcmp(argv[i], "-s") == 0) secret = argv[++i];
-        else if (strcmp(argv[i], "-k") == 0) key = argv[++i];
+    for (int i = opt_start; i < argc; i++) {
+        if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) secret = argv[++i];
+        else if (strcmp(argv[i], "-k") == 0 && i + 1 < argc) key = argv[++i];
+        else if (strcmp(argv[i], "-relay") == 0 && i + 2 < argc) {
+            force_relay = true;
+            proxy_ip = argv[++i];
+            proxy_port = (uint16_t)atoi(argv[++i]);
+        }
     }
 
     const int ir = IOTC_Initialize(nat_ip, nat_port);
     if (ir != IOTC_ER_NoERROR) {
         fprintf(stderr, "init err=%d\n", ir);
         return 1;
+    }
+    if (proxy_ip && proxy_port) {
+        IOTC_SetProxy(proxy_ip, proxy_port);
+        if (force_relay) IOTC_ForceRelay(1);
     }
 
     int rc = 1;

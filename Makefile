@@ -18,7 +18,7 @@ BIN_UIDGEN  := tools/bin/uidgen
 BIN_AVTEST  := tests/bin/av_frame_test
 BIN_IOTCDEMO := client/bin/iotc_demo
 
-COMMON_SRCS := common/Crypto.cpp common/Uid.cpp
+COMMON_SRCS := common/Crypto.cpp common/Uid.cpp common/X25519.cpp
 IOTC_SRCS := client/sdk/iotc/IOTC.cpp \
              client/sdk/iotc/AVAPIs.cpp \
              client/sdk/iotc/RDTAPIs.cpp \

@@ -147,8 +147,9 @@ int main(int argc, char** argv) {
         if (etx != last_etx || erx != last_erx) {
             last_etx = etx;
             last_erx = erx;
-            printf("[peer] tunnel-enc tx=%llu rx=%llu\n",
-                   (unsigned long long)etx, (unsigned long long)erx);
+            printf("[peer] tunnel-enc tx=%llu rx=%llu fs-hs=%llu\n",
+                   (unsigned long long)etx, (unsigned long long)erx,
+                   (unsigned long long)client.tunnel_fs_ok());
             fflush(stdout);
         }
         p2p::plat_sleep_ms(200);

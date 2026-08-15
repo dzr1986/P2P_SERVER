@@ -24,6 +24,7 @@ enum {
     AV_ER_BufferTooSmall = -34,
     AV_ER_SendFail       = -35,
     AV_ER_FrameTooLarge  = -36,
+    AV_ER_Dropped        = -37,   // 拥塞主动丢 P 帧（直播宁丢不卡）
 };
 
 // 帧元信息（与 AvCodec.h AvFrameInfo 二进制一致）
@@ -66,6 +67,9 @@ typedef struct {
 int avGetLinkStats(int av, AVLinkStats* st);
 // 基于 RTT/窗口/丢包给出建议码率（kbps）；失败返回 <0
 int avSuggestedBitrateKbps(int av);
+
+// 丢帧统计：dropped_p=拥塞丢弃的 P 帧数，sent=成功发出的帧数
+int avGetDropStats(int av, uint64_t* dropped_p, uint64_t* sent);
 
 } // extern "C"
 

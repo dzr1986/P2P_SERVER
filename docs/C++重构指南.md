@@ -99,6 +99,8 @@
 | `common/Net.h` | 新增 `TcpFd`（move-only，析构 close） |
 | `client/demo/iotc_demo.cpp` | 四通道 + 隧道验收程序 |
 | `tests/av_frame_test.cpp` | AvCodec / TunnelCodec 单测 |
+| `common/X25519.*` + `Handshake.h` | P5 前向保密：RFC 7748 ECDH + 握手编解码 |
+| `P2PProxy` | 每 UID 中继配额（超限丢包） |
 
 ## 4. 验证清单（每批重构必跑）
 

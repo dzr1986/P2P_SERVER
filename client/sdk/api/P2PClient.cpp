@@ -66,6 +66,9 @@ bool P2PClient::start(const Config& cfg) {
     auth_inflight_ = false;
     tunnel_enc_ = !secret_.empty();  // 共享密钥即开启对端间隧道负载加密
     tunnel_keys_.clear();
+    hs_.clear();
+    fs_keys_.clear();
+    tunnel_fs_ok_.store(0);
     relay_registered_ = false;
     heartbeat_fail_ = 0;
     alt_port_ = 0;
@@ -226,6 +229,7 @@ void P2PClient::tick(uint64_t now) {
     tick_relay(now);
     tick_connections(now);
     tick_sessions(now);
+    tick_handshake(now);
 }
 
 // 心跳发送与重试间隔
@@ -342,7 +346,85 @@ void P2PClient::set_connected(Conn& c, bool relay) {
     if (c.state == ConnState::Connected) return;
     c.state = ConnState::Connected;
     c.via_relay = relay;
+    start_handshake(c.peer_uuid);
     if (on_connected) on_connected(c.peer_uuid, relay);
+}
+
+void P2PClient::start_handshake(const std::string& peer) {
+    auto& h = hs_[peer];
+    if (!h.local_ready) {
+        if (x25519_keypair(h.pub, h.priv) != 0) return;
+        if (p2p_random_bytes(h.nonce, sizeof(h.nonce)) != 0) return;
+        h.local_ready = true;
+        h.last_rekey_ms = plat_now_ms();
+    }
+    uint8_t msg[HS_LEN];
+    const uint8_t* psk = secret_.empty() ? nullptr : (const uint8_t*)secret_.data();
+    if (hs_write(msg, sizeof(msg), h.pub, h.nonce, psk, secret_.size()) == 0) return;
+    if (auto* s = session_for(peer)) s->send(HS_CHANNEL, msg, HS_LEN, true);
+    if (h.remote_ready) finish_handshake(peer);
+}
+
+void P2PClient::on_hs_msg(const std::string& peer, const uint8_t* data, size_t len) {
+    uint8_t pub[32], nonce[16];
+    const uint8_t* psk = secret_.empty() ? nullptr : (const uint8_t*)secret_.data();
+    if (!hs_read(data, len, pub, nonce, psk, secret_.size()) &&
+        !hs_read(data, len, pub, nonce, nullptr, 0)) {
+        return;
+    }
+    auto& h = hs_[peer];
+    if (h.remote_ready && memcmp(h.peer_pub, pub, 32) == 0 &&
+        memcmp(h.peer_nonce, nonce, 16) == 0) {
+        return;   // 重复 HELLO
+    }
+    if (h.done && memcmp(h.peer_pub, pub, 32) != 0) {
+        h.done = false;
+        h.local_ready = false;   // 对端轮换：本端同步换新临时密钥
+    }
+    memcpy(h.peer_pub, pub, 32);
+    memcpy(h.peer_nonce, nonce, 16);
+    h.remote_ready = true;
+    if (!h.local_ready) start_handshake(peer);
+    else finish_handshake(peer);
+}
+
+void P2PClient::finish_handshake(const std::string& peer) {
+    auto& h = hs_[peer];
+    if (!h.local_ready || !h.remote_ready) return;
+    uint8_t shared[32];
+    if (x25519(shared, h.priv, h.peer_pub) != 0) return;
+    uint8_t key[32];
+    hs_derive_session_key(shared, h.pub, h.nonce, h.peer_pub, h.peer_nonce,
+                          cfg_.uuid.c_str(), peer.c_str(), key);
+    memset(h.priv, 0, sizeof(h.priv));
+    memset(shared, 0, sizeof(shared));
+    auto& fs = fs_keys_[peer];
+    if (fs.has_cur) {
+        fs.prev = fs.cur;
+        fs.has_prev = true;
+    }
+    memcpy(fs.cur.data(), key, 32);
+    fs.has_cur = true;
+    tunnel_enc_ = true;
+    if (!h.done) tunnel_fs_ok_.fetch_add(1);
+    h.done = true;
+    h.last_rekey_ms = plat_now_ms();
+}
+
+void P2PClient::tick_handshake(uint64_t now) {
+    for (auto& kv : conns_) {
+        if (!kv.second.connected()) continue;
+        auto it = hs_.find(kv.first);
+        if (it == hs_.end() || !it->second.local_ready) {
+            start_handshake(kv.first);
+            continue;
+        }
+        if (it->second.done && now - it->second.last_rekey_ms >= 180000) {
+            it->second.local_ready = false;
+            it->second.done = false;
+            start_handshake(kv.first);
+        }
+    }
 }
 
 // 会话周期驱动
@@ -918,7 +1000,7 @@ void P2PClient::send_tunnel_via(Conn& c, const uint8_t* frame, size_t len) {
     uint8_t encbuf[MAX_PKT];
     const uint8_t* tx = frame;
     size_t txlen = len;
-    if (tunnel_enc_ && encrypt_tunnel_frame(c.peer_uuid, encbuf, frame, len, &txlen))
+    if (encrypt_tunnel_frame(c.peer_uuid, encbuf, frame, len, &txlen))
         tx = encbuf;
 
     // ICE 已连通时优先走 juice_send（候选对由 libjuice 选定）
@@ -962,14 +1044,13 @@ void P2PClient::send_tunnel_via(Conn& c, const uint8_t* frame, size_t len) {
 // ---------------------------------------------------------------------------
 // 隧道负载加密
 // ---------------------------------------------------------------------------
-bool P2PClient::get_tunnel_key(const std::string& peer, uint8_t out[32]) {
+bool P2PClient::psk_tunnel_key(const std::string& peer, uint8_t out[32]) {
     if (secret_.empty() || peer.empty() || peer == cfg_.uuid) return false;
     auto it = tunnel_keys_.find(peer);
     if (it != tunnel_keys_.end()) {
         memcpy(out, it->second.data(), 32);
         return true;
     }
-    // 双方按字典序取 uuid，保证两端派生出相同密钥
     std::string a = cfg_.uuid < peer ? cfg_.uuid : peer;
     std::string b = cfg_.uuid < peer ? peer : cfg_.uuid;
     std::string msg = std::string(TUNNEL_KEY_PREFIX) + a + ":" + b;
@@ -981,6 +1062,15 @@ bool P2PClient::get_tunnel_key(const std::string& peer, uint8_t out[32]) {
     tunnel_keys_[peer] = arr;
     memcpy(out, key, 32);
     return true;
+}
+
+bool P2PClient::get_tunnel_key(const std::string& peer, uint8_t out[32]) {
+    auto it = fs_keys_.find(peer);
+    if (it != fs_keys_.end() && it->second.has_cur) {
+        memcpy(out, it->second.cur.data(), 32);
+        return true;
+    }
+    return psk_tunnel_key(peer, out);
 }
 
 bool P2PClient::encrypt_tunnel_frame(const std::string& peer, uint8_t* out,
@@ -1018,19 +1108,36 @@ bool P2PClient::decrypt_tunnel_frame(const std::string& peer, uint8_t* out,
     if (inlen < 14 || !(in[7] & TF_ENC)) return false;
     uint16_t plen = (uint16_t)((in[12] << 8) | in[13]);
     if (plen < 12 + 16 || 14 + plen - 12 - 16 > MAX_PKT) return false;
-    uint8_t key[32];
-    if (!get_tunnel_key(peer, key)) return false;
+
+    uint8_t keys[3][32];
+    int nkeys = 0;
+    auto it = fs_keys_.find(peer);
+    if (it != fs_keys_.end()) {
+        if (it->second.has_cur) {
+            memcpy(keys[nkeys++], it->second.cur.data(), 32);
+        }
+        if (it->second.has_prev) {
+            memcpy(keys[nkeys++], it->second.prev.data(), 32);
+        }
+    }
+    if (nkeys < 3 && psk_tunnel_key(peer, keys[nkeys])) nkeys++;
+    if (nkeys == 0) return false;
 
     memcpy(out, in, 14);
     const uint8_t* nonce = in + 14;
     size_t cipher_len = plen - 12 - 16;
     const uint8_t* tag = in + 14 + 12 + cipher_len;
 
-    // AEAD 解密：AES-256-CTR + HMAC-SHA256
     size_t plain_len = 0;
-    if (p2p_aead_decrypt(key, nonce, in + 14 + 12, cipher_len, out + 14, cipher_len, &plain_len, tag) != 0) {
-        return false;
+    bool ok = false;
+    for (int i = 0; i < nkeys; i++) {
+        if (p2p_aead_decrypt(keys[i], nonce, in + 14 + 12, cipher_len,
+                             out + 14, cipher_len, &plain_len, tag) == 0) {
+            ok = true;
+            break;
+        }
     }
+    if (!ok) return false;
 
     out[7] &= (uint8_t)~TF_ENC;
     uint16_t nl = (uint16_t)(plain_len);
@@ -1049,6 +1156,10 @@ Session* P2PClient::session_for(const std::string& peer) {
     if (it != sessions_.end()) return it->second.get();
     auto s = std::make_unique<Session>(next_session_id_++);
     s->on_data = [this, peer](uint8_t ch, const uint8_t* d, size_t n) {
+        if (ch == HS_CHANNEL) {
+            on_hs_msg(peer, d, n);
+            return;
+        }
         if (on_message) on_message(peer, ch, d, n);
     };
     s->on_tx = [this, peer](const uint8_t* f, size_t n) {
@@ -1065,7 +1176,7 @@ void P2PClient::on_tunnel_frame(const uint8_t* frame, size_t len,
     uint8_t decbuf[MAX_PKT];
     const uint8_t* f = frame;
     size_t fl = len;
-    if (tunnel_enc_ && decrypt_tunnel_frame(peer_uuid, decbuf, frame, len, &fl))
+    if (decrypt_tunnel_frame(peer_uuid, decbuf, frame, len, &fl))
         f = decbuf;
     if (auto* s = session_for(peer_uuid)) s->on_frame(f, fl);
 }
@@ -1084,6 +1195,14 @@ void P2PClient::close_conn(Conn& c) {
         std::lock_guard<std::recursive_mutex> lk(mu_);
         if (c.punch.juice) { juice_destroy(c.punch.juice); c.punch.juice = nullptr; }
         c.self = nullptr;  // 使在途 ICE 回调能检测失效
+    }
+    {
+        auto hit = hs_.find(c.peer_uuid);
+        if (hit != hs_.end()) {
+            memset(hit->second.priv, 0, sizeof(hit->second.priv));
+            hs_.erase(hit);
+        }
+        fs_keys_.erase(c.peer_uuid);
     }
     sessions_.erase(c.peer_uuid);
     conns_.erase(c.peer_uuid);

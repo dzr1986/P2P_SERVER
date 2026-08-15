@@ -38,6 +38,9 @@ struct IotcCtx {
     bool ready = false;
     std::string server_ip;
     uint16_t server_port = 0;
+    std::string proxy_ip;
+    uint16_t proxy_port = 0;
+    bool force_relay = false;
     P2PClient client;
     SessionSlot sess[IOTC_MAX_SESSIONS];
     std::unordered_map<std::string, int> peer2sid;
@@ -134,6 +137,21 @@ void IOTC_DeInitialize(void) {
     g.reset();
 }
 
+int IOTC_SetProxy(const char* proxy_ip, uint16_t proxy_port) {
+    if (!g) return IOTC_ER_NotInitialized;
+    if (!proxy_ip || proxy_port == 0) return IOTC_ER_InvalidArg;
+    std::lock_guard<std::mutex> lk(g->mu);
+    g->proxy_ip = proxy_ip;
+    g->proxy_port = proxy_port;
+    return IOTC_ER_NoERROR;
+}
+
+void IOTC_ForceRelay(int enable) {
+    if (!g) return;
+    std::lock_guard<std::mutex> lk(g->mu);
+    g->force_relay = (enable != 0);
+}
+
 int IOTC_Login(const char* uid, const char* secret, const char* auth_key_hex,
                int timeout_ms) {
     if (!g) return IOTC_ER_NotInitialized;
@@ -147,6 +165,9 @@ int IOTC_Login(const char* uid, const char* secret, const char* auth_key_hex,
     if (secret) cfg.secret = secret;
     if (auth_key_hex) cfg.auth_key_hex = auth_key_hex;
     cfg.nat_servers.push_back({g->server_ip, g->server_port});
+    if (!g->proxy_ip.empty() && g->proxy_port != 0)
+        cfg.proxy_servers.push_back({g->proxy_ip, g->proxy_port});
+    cfg.force_relay = g->force_relay;
     if (!g->client.start(cfg)) return IOTC_ER_InvalidArg;
 
     std::unique_lock<std::mutex> lk(g->mu);

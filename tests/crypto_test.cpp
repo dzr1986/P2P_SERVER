@@ -1,5 +1,7 @@
 // crypto_test.cpp：加密原语单测（NIST SP 800-38A AES-256-CBC 向量 + 往返/错误密钥 + PBKDF2 冒烟）
 #include "common/Crypto.h"
+#include "common/Handshake.h"
+#include "common/X25519.h"
 
 #include <cstdio>
 #include <cstring>
@@ -154,6 +156,62 @@ int main() {
         return 1;
     }
 
-    printf("crypto tests PASS (NIST AES-256-CBC, roundtrip, wrong-key, PKCS7, PBKDF2, AEAD, RNG)\n");
+    // RFC 7748 X25519 测试向量
+    uint8_t alice_sk[32], bob_sk[32], alice_pk[32], bob_pk[32], s1[32], s2[32];
+    parse_hex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a", alice_sk);
+    parse_hex("5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb", bob_sk);
+    uint8_t want_alice_pk[32], want_bob_pk[32], want_shared[32];
+    parse_hex("8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a", want_alice_pk);
+    parse_hex("de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f", want_bob_pk);
+    parse_hex("4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742", want_shared);
+    uint8_t nine[32] = {9};
+    if (x25519(alice_pk, alice_sk, nine) != 0 || memcmp(alice_pk, want_alice_pk, 32) != 0) {
+        printf("FAIL X25519 Alice public\n");
+        return 1;
+    }
+    if (x25519(bob_pk, bob_sk, nine) != 0 || memcmp(bob_pk, want_bob_pk, 32) != 0) {
+        printf("FAIL X25519 Bob public\n");
+        return 1;
+    }
+    if (x25519(s1, alice_sk, bob_pk) != 0 || x25519(s2, bob_sk, alice_pk) != 0 ||
+        memcmp(s1, s2, 32) != 0 || memcmp(s1, want_shared, 32) != 0) {
+        printf("FAIL X25519 shared secret\n");
+        return 1;
+    }
+
+    // 握手：两端派生相同会话密钥，且不可由 PSK 离线得到
+    uint8_t na[16], nb[16];
+    memset(na, 0x11, 16);
+    memset(nb, 0x22, 16);
+    uint8_t fs1[32], fs2[32], psk_key[32];
+    hs_derive_session_key(s1, alice_pk, na, bob_pk, nb, "UIDA", "UIDB", fs1);
+    hs_derive_session_key(s1, bob_pk, nb, alice_pk, na, "UIDB", "UIDA", fs2);
+    if (memcmp(fs1, fs2, 32) != 0) {
+        printf("FAIL handshake derive not symmetric\n");
+        return 1;
+    }
+    hmac_sha256((const uint8_t*)"s3cr3t", 6, (const uint8_t*)"P2P-TUNNEL-KEY:UIDA:UIDB",
+                24, psk_key);
+    if (memcmp(fs1, psk_key, 32) == 0) {
+        printf("FAIL FS key must not equal PSK-derived key\n");
+        return 1;
+    }
+    uint8_t hsmsg[HS_LEN];
+    if (hs_write(hsmsg, sizeof(hsmsg), alice_pk, na, (const uint8_t*)"s3cr3t", 6) != HS_LEN) {
+        printf("FAIL hs_write\n");
+        return 1;
+    }
+    uint8_t rpub[32], rnonce[16];
+    if (!hs_read(hsmsg, HS_LEN, rpub, rnonce, (const uint8_t*)"s3cr3t", 6) ||
+        memcmp(rpub, alice_pk, 32) != 0) {
+        printf("FAIL hs_read\n");
+        return 1;
+    }
+    if (hs_read(hsmsg, HS_LEN, rpub, rnonce, (const uint8_t*)"wrongkey", 8)) {
+        printf("FAIL hs_read should reject bad PSK mac\n");
+        return 1;
+    }
+
+    printf("crypto tests PASS (NIST AES-256-CBC, roundtrip, wrong-key, PKCS7, PBKDF2, AEAD, RNG, X25519, FS-HS)\n");
     return 0;
 }

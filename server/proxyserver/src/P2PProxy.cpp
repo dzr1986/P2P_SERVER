@@ -12,6 +12,7 @@
 #include "Util.h"
 
 #include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <unistd.h>
 
@@ -29,10 +30,12 @@ constexpr size_t  kProxyAuthKeyLen = sizeof(kProxyAuthKey) - 1;
 
 } // namespace
 
-int P2PProxy::init(uint16_t port, uint16_t max_proxy, int workers) {
+int P2PProxy::init(uint16_t port, uint16_t max_proxy, int workers,
+                   uint64_t quota_bytes) {
     port_ = port;
     max_proxy_ = max_proxy;
     workers_ = (workers >= 1 && workers <= 64) ? workers : 4;
+    quota_bytes_ = quota_bytes;
 
     // 预检端口可用（SO_REUSEPORT 多 socket 场景由 run 创建）
     UdpFd probe;
@@ -42,8 +45,8 @@ int P2PProxy::init(uint16_t port, uint16_t max_proxy, int workers) {
         return -1;
     }
 
-    LOGI("Proxy", "start proxy server with Port[%d] maxProxy[%d] workers[%d]",
-         port_, max_proxy_, workers_);
+    LOGI("Proxy", "start proxy server with Port[%d] maxProxy[%d] workers[%d] quota=%llu",
+         port_, max_proxy_, workers_, (unsigned long long)quota_bytes_);
     return 0;
 }
 
@@ -269,6 +272,18 @@ void P2PProxy::on_relay_data(uint8_t* p, size_t plen, const sockaddr_in& from) {
         dst = dit->second.addr;
         dst_key = addr_to_u64(dst);
     }
+    if (quota_bytes_ > 0) {
+        std::lock_guard<std::mutex> qlk(quota_mu_);
+        uint64_t& used = quota_used_[frame->src_uuid];
+        if (used >= quota_bytes_) {
+            relay_drop_quota_.fetch_add(1);
+            LOGW("Proxy", "relay quota exceeded uuid[%s] used=%llu cap=%llu",
+                 frame->src_uuid, (unsigned long long)used,
+                 (unsigned long long)quota_bytes_);
+            return;
+        }
+        used += plen;
+    }
     const uint64_t src_key = addr_to_u64(from);
     touch_path(src_key, dst_key, dst, frame->dst_uuid);
     touch_path(dst_key, src_key, from, frame->src_uuid);
@@ -348,8 +363,9 @@ void P2PProxy::timer_loop() {
             for (auto k : dead_uuid) addr2uuid_.erase(k);
             uuid_n = uuid2addr_.size();
         }
-        LOGD("Proxy", "tables: uuid=%zu srcpaths=%zu relay_pkts=%llu",
-             uuid_n, path_count, (unsigned long long)relay_pkts_.load());
+        LOGD("Proxy", "tables: uuid=%zu srcpaths=%zu relay_pkts=%llu quota_drop=%llu",
+             uuid_n, path_count, (unsigned long long)relay_pkts_.load(),
+             (unsigned long long)relay_drop_quota_.load());
     }
 }
 
@@ -399,12 +415,17 @@ void P2PProxy::run() {
 // 独立 main：生成单例并启动
 int main(int argc, char** argv) {
     if (argc < 3) {
-        printf("Usage: %s <Port> <MaxProxyNum> [Workers]\n", argv[0]);
+        printf("Usage: %s <Port> <MaxProxyNum> [Workers] [QuotaMB]\n", argv[0]);
         return 1;
     }
     int workers = argc >= 4 ? atoi(argv[3]) : 4;
+    uint64_t quota = 0;
+    if (argc >= 5) {
+        const long mb = atol(argv[4]);
+        if (mb > 0) quota = (uint64_t)mb * 1024ULL * 1024ULL;
+    }
     static p2p::P2PProxy proxy;
-    if (proxy.init((uint16_t)atoi(argv[1]), (uint16_t)atoi(argv[2]), workers) != 0)
+    if (proxy.init((uint16_t)atoi(argv[1]), (uint16_t)atoi(argv[2]), workers, quota) != 0)
         return 1;
     proxy.run();
     return 0;

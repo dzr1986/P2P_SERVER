@@ -98,6 +98,53 @@ int main() {
           "tiny cap rejected");
     CHECK(av_slice_count(0) == 0, "zero-length frame is 0 slices");
 
+    // ---- P3 拥塞丢 P 帧策略 ----
+    CHECK(av_should_drop_p(0, false, true), "live P-frame dropped when congested");
+    CHECK(!av_should_drop_p(1, false, true), "I-frame protected");
+    CHECK(!av_should_drop_p(2, false, true), "audio prioritized");
+    CHECK(!av_should_drop_p(0, true, true), "replay/resend never drops");
+    CHECK(!av_should_drop_p(0, false, false), "no drop when not congested");
+
+    // ---- P3 弱网：1080p 量级 GOP，P 切片 10% 丢失，I 帧全送达 ----
+    {
+        const size_t i_len = 40 * 1024;    // ~34 切片，接近 1080p I 帧
+        const size_t p_len = 8 * 1024;     // ~7 切片
+        std::vector<uint8_t> iframe(i_len, 0x5A), pframe(p_len, 0xA5);
+        AvReassembler wrx;
+        int i_ok = 0, p_ok = 0, p_sent = 0;
+        auto send_frame = [&](uint16_t id, uint8_t ftype, const std::vector<uint8_t>& body,
+                              bool lose_p_slices) {
+            AvFrameInfo mf{};
+            mf.frame_type = ftype;
+            mf.timestamp_ms = id * 33;
+            const uint8_t sc = (uint8_t)av_slice_count(body.size());
+            std::vector<uint8_t> outf;
+            AvFrameInfo of{};
+            bool done = false;
+            for (uint8_t si = 0; si < sc; si++) {
+                if (lose_p_slices && ftype == 0 && (si % 10 == 0)) continue;  // 10% 丢切片
+                const size_t off = (size_t)si * AV_SLICE_PAYLOAD;
+                const size_t chunk = (body.size() - off) < AV_SLICE_PAYLOAD
+                                         ? (body.size() - off) : AV_SLICE_PAYLOAD;
+                uint8_t sl[MAX_TUNNEL_PAYLOAD];
+                const size_t wn = av_write_slice(sl, sizeof(sl), id, si, sc, mf,
+                                                 body.data() + off, chunk);
+                if (wn) done = wrx.feed(sl, wn, outf, of) || done;
+            }
+            if (done && of.frame_type == 1) i_ok++;
+            if (done && of.frame_type == 0) p_ok++;
+        };
+        send_frame(1, 1, iframe, false);
+        for (uint16_t i = 2; i <= 15; i++) {
+            p_sent++;
+            send_frame(i, 0, pframe, true);
+        }
+        send_frame(16, 1, iframe, false);   // 新 I 触发 too-late-drop
+        CHECK(i_ok == 2, "both I-frames recovered under P-slice loss");
+        CHECK(p_ok < p_sent, "some P-frames lost to 10% slice drop");
+        CHECK(wrx.dropped_frames() >= 1 || p_ok < p_sent, "weak-net drop or incomplete P");
+    }
+
     // ---- TunnelCodec 往返 ----
     uint8_t tun[128];
     const char* tpay = "open-rtsp";

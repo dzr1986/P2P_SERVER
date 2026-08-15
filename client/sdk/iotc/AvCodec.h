@@ -35,6 +35,14 @@ inline size_t av_slice_count(size_t frame_len) {
     return (frame_len + AV_SLICE_PAYLOAD - 1) / AV_SLICE_PAYLOAD;
 }
 
+// 拥塞丢帧策略（P3）：直播不可靠模式下丢 P 帧，保护 I 帧与音频
+//   frame_type: 0=P 1=I 2=音频；resend=可靠回放不丢
+inline bool av_should_drop_p(uint8_t frame_type, bool resend, bool congested) {
+    if (resend || !congested) return false;
+    if (frame_type == 1 || frame_type == 2) return false;
+    return frame_type == 0;
+}
+
 // 构造一个切片，返回写入字节数；容量不足返回 0
 inline size_t av_write_slice(uint8_t* out, size_t cap, uint16_t frame_id,
                              uint8_t idx, uint8_t cnt, const AvFrameInfo& fi,

@@ -139,6 +139,8 @@ grep -q "recv from F" /tmp/peerG.log && ok "G decrypted F data" || fail "G did n
 grep -q "tunnel-enc tx=[1-9]" /tmp/peerF.log && ok "F frames encrypted on wire" || fail "F no encrypted tx"
 grep -q "tunnel-enc tx=[1-9]" /tmp/peerG.log && ok "G frames encrypted on wire" || fail "G no encrypted tx"
 grep -q "rx=[1-9]" /tmp/peerG.log && ok "G decrypted inbound frames" || fail "G no decrypted rx"
+grep -q "fs-hs=[1-9]" /tmp/peerF.log && ok "F X25519 FS handshake" || fail "F FS handshake missing"
+grep -q "fs-hs=[1-9]" /tmp/peerG.log && ok "G X25519 FS handshake" || fail "G FS handshake missing"
 stop_servers
 
 # ---------------------------------------------------------------- 6. 多 NatServer 注册表同步
@@ -301,6 +303,21 @@ grep -q "audio echo ok frames=5" /tmp/iotc_cli.log && ok "audio frame echo" || f
 grep -q "rdt echo ok" /tmp/iotc_cli.log && ok "RDT byte-stream echo" || fail "RDT echo missing"
 grep -q "tunnel echo ok" /tmp/iotc_cli.log && ok "P2PTunnel TCP echo" || fail "P2PTunnel echo missing"
 grep -q "device session sid=" /tmp/iotc_dev.log && ok "device listen accepted" || fail "device listen missing"
+stop_servers
+
+# ---------------------------------------------------------------- 11. IOTC 强制中继四通道
+echo "== [11] IOTC 4-channel via relay =="
+start_servers ""
+stdbuf -oL $IOTC_BIN device 127.0.0.1 $NAT_PORT IOTCDEV -relay 127.0.0.1 $PROXY_PORT > /tmp/iotc_dev.log 2>&1 &
+IOTC_DEV_PID=$!
+sleep 1
+stdbuf -oL $IOTC_BIN client 127.0.0.1 $NAT_PORT IOTCCLI IOTCDEV -relay 127.0.0.1 $PROXY_PORT > /tmp/iotc_cli.log 2>&1
+IOTC_RC=$?
+kill -9 $IOTC_DEV_PID 2>/dev/null; IOTC_DEV_PID=""
+[ $IOTC_RC -eq 0 ] && grep -q "4-channel echo PASS" /tmp/iotc_cli.log && ok "iotc relay client exit 0" || fail "iotc relay client failed (rc=$IOTC_RC)"
+grep -q "relay=1" /tmp/iotc_cli.log && ok "client via relay" || fail "client not via relay"
+grep -q "rdt echo ok" /tmp/iotc_cli.log && ok "RDT echo over relay" || fail "RDT relay echo missing"
+grep -q "tunnel echo ok" /tmp/iotc_cli.log && ok "P2PTunnel over relay" || fail "tunnel relay echo missing"
 stop_servers
 
 echo

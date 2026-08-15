@@ -246,7 +246,9 @@ Client                         NatServer                       Device
 - 验收：`tc netem` 10% 丢包 + 100ms 延迟下，1080p 模拟流（8Mbps 帧序列）
   卡顿率 < 2%，端到端 P99 延迟 < 800ms；I 帧恢复正确。
 - **已落地**：分片/重组、resend、too-late-drop、IOCtrl、码率建议。
-- **未含**：`tc netem` 1080p 弱网压测、发送队列音频优先、拥塞时自动丢 P 帧。
+- **本轮补齐**：`av_should_drop_p`（保护 I 帧/音频，直播拥塞丢 P）；`AV_ER_Dropped` + `avGetDropStats`；
+  `av_frame_test` 1080p 量级 GOP + 10% P 切片丢失（I 帧仍重组成功）。
+- **未含**：真实 `tc netem` 8Mbps 长稳压测（CI 环境无 netem 权限时用用户态切片丢失代替）。
 
 ### P4 RDT 可靠流与 P2PTunnel【核心已落地，演示压测待补】
 - 范围：字节流化 + 背压；本地 TCP 端口映射隧道（RTSP 透传验证）。
@@ -259,14 +261,23 @@ Client                         NatServer                       Device
   - `TunnelCodec.h` + `P2PTunnelAPIs`：OPEN/DATA/CLOSE 帧，Serve 回连本地 TCP，
     Map 本机 listen 映射；`common/Net.h::TcpFd` RAII
   - `iotc_demo` 含 TCP echo 经隧道往返；`av_frame_test` 覆盖 TunnelCodec
-- **未含**：ffmpeg/RTSP 演示、≥1GB 文件压测、中继模式专项用例
+- **本轮补齐**：`IOTC_SetProxy` / `IOTC_ForceRelay`；`iotc_demo -relay`；`test.sh` [11] 中继四通道。
+- **未含**：ffmpeg/RTSP 演示、≥1GB 文件压测。
 
-### P5 安全升级
+### P5 安全升级【核心已落地】
 - 范围：X25519 ECDH 会话密钥协商（前向保密），握手消息走现有可靠通道；
   中继流量按 UID 计量与配额限速。
 - 依赖：P1（UID/AuthKey 就位）。
 - 交付物：握手协议文档 + 实现 + 互操作测试；Relay 计量统计接口。
 - 验收：抓包验证会话密钥不可由 AuthKey 离线推导；密钥轮换不断流。
+- **落地情况**：
+  - `common/X25519.*`：RFC 7748 Montgomery ladder（NIST/RFC 向量单测）
+  - `common/Handshake.h`：HELLO 报文 + HMAC 可选鉴权 + 会话密钥派生（PSK 不进入 FS 密钥）
+  - `P2PClient`：连接建立后通道 `0xFE` 可靠握手；双密钥解密（cur/prev/PSK）支持轮换不断流；
+    180s 自动换新临时密钥；`tunnel_fs_ok()` 供验收
+  - `P2PProxy`：每 UID 累计转发字节 + `QuotaMB` 超限丢包（`p2p_proxy port max [workers] [QuotaMB]`）
+  - 验证：`crypto_test` X25519/FS 派生；`test.sh` [5] `fs-hs=` 端到端
+- **未含**：连线 Token 挂 CONNECT 门（P1 遗留）
 
 ### P6 服务端集群与调度
 - 范围：多区域部署模型（区域内同步已有，跨区按 UID REGION 调度）；

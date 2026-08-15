@@ -32,7 +32,8 @@ public:
     P2PProxy(const P2PProxy&) = delete;
     P2PProxy& operator=(const P2PProxy&) = delete;
 
-    int  init(uint16_t port, uint16_t max_proxy, int workers);
+    int  init(uint16_t port, uint16_t max_proxy, int workers,
+              uint64_t quota_bytes = 0);
     void run();                     // 阻塞：启动各线程后循环等待
     void request_stop() { running_ = false; }
 
@@ -96,6 +97,10 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<uint64_t> relay_pkts_{0};
     std::atomic<uint64_t> relay_bytes_{0};
+    std::atomic<uint64_t> relay_drop_quota_{0};
+    uint64_t quota_bytes_ = 0;          // 0=不限；每 UID 累计转发上限
+    std::mutex quota_mu_;
+    std::unordered_map<std::string, uint64_t> quota_used_;
 };
 
 } // namespace p2p

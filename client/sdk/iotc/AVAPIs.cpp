@@ -25,6 +25,9 @@ struct AvChannel {
     bool resend = false;
     uint16_t tx_frame_id = 0;
     AvReassembler rx;
+    bool last_fail = false;
+    uint64_t dropped_p = 0;
+    uint64_t sent_frames = 0;
 };
 
 std::mutex g_mu;
@@ -70,6 +73,7 @@ int avSendFrameData(int av, const void* frame, int len, const AVFrameInfo* fi) {
     uint8_t channel;
     bool resend;
     uint16_t fid;
+    bool last_fail = false;
     {
         std::lock_guard<std::mutex> lk(g_mu);
         if (av < 0 || av >= AV_MAX_CHANNELS_TOTAL || !g_ch[av].used)
@@ -77,7 +81,21 @@ int avSendFrameData(int av, const void* frame, int len, const AVFrameInfo* fi) {
         sid = g_ch[av].sid;
         channel = g_ch[av].channel;
         resend = g_ch[av].resend;
+        last_fail = g_ch[av].last_fail;
         fid = g_ch[av].tx_frame_id++;
+    }
+
+    bool congested = last_fail;
+    IOTCLinkStats ls{};
+    if (IOTC_Session_GetLinkStats(sid, &ls) == IOTC_ER_NoERROR) {
+        if (ls.cwnd > 0 && ls.inflight >= ls.cwnd) congested = true;
+        if (ls.srtt_ms > 400) congested = true;
+        if (ls.rx_lost > 8) congested = true;
+    }
+    if (av_should_drop_p(fi->frame_type, resend, congested)) {
+        std::lock_guard<std::mutex> lk(g_mu);
+        if (g_ch[av].used) g_ch[av].dropped_p++;
+        return AV_ER_Dropped;
     }
 
     AvFrameInfo afi;
@@ -94,9 +112,24 @@ int avSendFrameData(int av, const void* frame, int len, const AVFrameInfo* fi) {
                                 ? (size_t)len - off : AV_SLICE_PAYLOAD;
         const size_t n = av_write_slice(slice, sizeof(slice), fid, (uint8_t)i,
                                         (uint8_t)cnt, afi, p + off, plen);
-        if (n == 0) return AV_ER_SendFail;
+        if (n == 0) {
+            std::lock_guard<std::mutex> lk(g_mu);
+            if (g_ch[av].used) g_ch[av].last_fail = true;
+            return AV_ER_SendFail;
+        }
         const int r = IOTC_Session_Write(sid, channel, slice, (int)n, resend ? 1 : 0);
-        if (r != IOTC_ER_NoERROR) return AV_ER_SendFail;
+        if (r != IOTC_ER_NoERROR) {
+            std::lock_guard<std::mutex> lk(g_mu);
+            if (g_ch[av].used) g_ch[av].last_fail = true;
+            return AV_ER_SendFail;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        if (g_ch[av].used) {
+            g_ch[av].last_fail = false;
+            g_ch[av].sent_frames++;
+        }
     }
     return AV_ER_NoERROR;
 }
@@ -210,6 +243,16 @@ int avGetLinkStats(int av, AVLinkStats* st) {
     st->retrans = ls.retrans;
     st->fec_recovered = ls.fec_recovered;
     st->rx_lost = ls.rx_lost;
+    return AV_ER_NoERROR;
+}
+
+int avGetDropStats(int av, uint64_t* dropped_p, uint64_t* sent) {
+    if (!dropped_p || !sent) return AV_ER_InvalidArg;
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (av < 0 || av >= AV_MAX_CHANNELS_TOTAL || !g_ch[av].used)
+        return AV_ER_ChannelNoExist;
+    *dropped_p = g_ch[av].dropped_p;
+    *sent = g_ch[av].sent_frames;
     return AV_ER_NoERROR;
 }
 
