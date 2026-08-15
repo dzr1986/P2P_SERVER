@@ -321,16 +321,15 @@ void p2p_stream_xor(const uint8_t* secret, size_t secret_len,
     }
 }
 
-void pbkdf2_hmac_sha256(const uint8_t* pw, size_t pw_len,
+bool pbkdf2_hmac_sha256(const uint8_t* pw, size_t pw_len,
                         const uint8_t* salt, size_t salt_len,
                         uint32_t iterations,
                         uint8_t* out, size_t out_len) {
     if (iterations == 0) iterations = 1;
-    // HMAC-SHA256 block size 为 64 字节，salt + 4 字节 block counter 不能超过 block size
-    // 调用方应确保 salt_len <= 60，否则视为参数错误
+    // HMAC-SHA256 block size 为 64 字节，salt + 4 字节 block counter 不能超过 block size。
+    // 参数错误时直接返回失败，绝不静默产出全零/弱密钥（调用方必须检查返回值）。
     if (salt_len > 60) {
-        memset(out, 0, out_len);
-        return;
+        return false;
     }
     uint8_t buf[64];
     memcpy(buf, salt, salt_len);
@@ -354,6 +353,7 @@ void pbkdf2_hmac_sha256(const uint8_t* pw, size_t pw_len,
         off += n;
         block++;
     }
+    return true;
 }
 
 int aes256_cbc_encrypt(const uint8_t key[32], const uint8_t iv[16],

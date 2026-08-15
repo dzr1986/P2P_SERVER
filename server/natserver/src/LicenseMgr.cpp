@@ -84,8 +84,11 @@ bool LicenseMgr::load(const std::string& path) {
             size_t clen = raw.size() - off;
 
             uint8_t key[32];
-            pbkdf2_hmac_sha256((const uint8_t*)pass_.data(), pass_.size(),
-                               salt, SALT_LEN, iter ? iter : PBKDF2_ITER, key, 32);
+            if (!pbkdf2_hmac_sha256((const uint8_t*)pass_.data(), pass_.size(),
+                                    salt, SALT_LEN, iter ? iter : PBKDF2_ITER, key, 32)) {
+                LOGE("LicenseMgr", "pbkdf2 derive key failed (bad salt length) for %s", path.c_str());
+                return false;
+            }
             std::string plain;
             plain.resize(clen + 1);
             size_t plen = 0;
@@ -132,8 +135,12 @@ bool LicenseMgr::save() const {
     p2p_random_bytes(salt, SALT_LEN);
     p2p_random_bytes(iv, IV_LEN);
     uint8_t key[32];
-    pbkdf2_hmac_sha256((const uint8_t*)pass_.data(), pass_.size(),
-                       salt, SALT_LEN, PBKDF2_ITER, key, 32);
+    if (!pbkdf2_hmac_sha256((const uint8_t*)pass_.data(), pass_.size(),
+                            salt, SALT_LEN, PBKDF2_ITER, key, 32)) {
+        fclose(fp);
+        LOGE("LicenseMgr", "pbkdf2 derive key failed (bad salt length)");
+        return false;
+    }
 
     std::vector<uint8_t> cipher(plain.size() + 16);
     size_t clen = 0;

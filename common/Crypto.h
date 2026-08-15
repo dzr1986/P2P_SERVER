@@ -25,8 +25,11 @@ void hmac_sha256(const uint8_t* key, size_t key_len,
 // ---------------------------------------------------------------------------
 // PBKDF2-HMAC-SHA256：口令派生（License 文件加密密钥等）
 //   out_len 任意；推导强度由 iterations 控制（>=1000 起）
+//   salt_len 必须 <= 60（HMAC-SHA256 block size 64B 减去 4B block counter）
+//   返回 false 且不写 out 表示 salt 过长（参数错误），调用方必须显式处理，
+//   不应静默使用未初始化/全零密钥
 // ---------------------------------------------------------------------------
-void pbkdf2_hmac_sha256(const uint8_t* pw, size_t pw_len,
+bool pbkdf2_hmac_sha256(const uint8_t* pw, size_t pw_len,
                         const uint8_t* salt, size_t salt_len,
                         uint32_t iterations,
                         uint8_t* out, size_t out_len);
@@ -43,7 +46,9 @@ int aes256_cbc_decrypt(const uint8_t key[32], const uint8_t iv[16],
                        uint8_t* out, size_t out_cap, size_t* out_len);
 
 // ---------------------------------------------------------------------------
-// 密码学安全随机（/dev/urandom 优先，失败退回 xorshift 播种的混合随机）
+// 密码学安全随机（仅使用 /dev/urandom；无降级方案）
+//   若 /dev/urandom 不可用或读取不足 len 字节，填充全零并返回，调用方应
+//   视为熵源不可用，拒绝继续（不做 xorshift 等弱 PRNG 降级）
 // ---------------------------------------------------------------------------
 void p2p_random_bytes(uint8_t* out, size_t len);
 

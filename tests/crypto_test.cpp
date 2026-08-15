@@ -74,10 +74,23 @@ int main() {
     // PBKDF2 确定性 + 长度任意
     uint8_t k1[32], k2[48];
     const uint8_t salt[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
-    pbkdf2_hmac_sha256((const uint8_t*)"s3cr3t", 6, salt, 16, 1000, k1, 32);
-    pbkdf2_hmac_sha256((const uint8_t*)"s3cr3t", 6, salt, 16, 1000, k2, 48);
+    if (!pbkdf2_hmac_sha256((const uint8_t*)"s3cr3t", 6, salt, 16, 1000, k1, 32) ||
+        !pbkdf2_hmac_sha256((const uint8_t*)"s3cr3t", 6, salt, 16, 1000, k2, 48)) {
+        printf("FAIL PBKDF2 unexpected failure\n");
+        return 1;
+    }
     if (memcmp(k1, k2, 32) != 0) {
         printf("FAIL PBKDF2 nondeterministic / length mismatch\n");
+        return 1;
+    }
+
+    // PBKDF2 salt 过长必须显式返回失败，而不是静默产出全零密钥
+    uint8_t oversized_salt[61];
+    memset(oversized_salt, 7, sizeof(oversized_salt));
+    uint8_t k3[32];
+    if (pbkdf2_hmac_sha256((const uint8_t*)"s3cr3t", 6, oversized_salt,
+                           sizeof(oversized_salt), 1000, k3, sizeof(k3))) {
+        printf("FAIL PBKDF2 oversized salt should return false\n");
         return 1;
     }
 
