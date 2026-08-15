@@ -4,6 +4,7 @@
 #include "NatServer.h"
 #include "Crypto.h"
 #include "Log.h"
+#include "Packet.h"
 #include "Util.h"
 
 #include <arpa/inet.h>
@@ -70,12 +71,11 @@ int NatServer::init(const std::string& cfg_path, uint16_t nat_port,
     setup_sync_peers();
 
     // 多收包线程：SO_REUSEPORT 克隆 socket（与主 socket 同端口，内核均衡分发）
-    for (auto fd : recv_socks_) close(fd);
-    recv_socks_.clear();
+    recv_socks_.clear();   // RAII：旧 socket 自动关闭
     for (int i = 1; i < cfg_->recv_threads; i++) {
-        int fd = make_recv_socket(nat_port_);
-        if (fd < 0) return -1;
-        recv_socks_.push_back(fd);
+        UdpFd s = make_recv_socket(nat_port_);
+        if (!s.valid()) return -1;
+        recv_socks_.push_back(std::move(s));
     }
 
     LOGI("NatServer", "start server with NatServerPort[%d] ProxyServerPort[%d] "
@@ -154,8 +154,7 @@ int NatServer::run() {
     for (auto& t : pool) t.join();
     tt.join();
     natth.join();
-    for (auto fd : recv_socks_) close(fd);
-    recv_socks_.clear();
+    recv_socks_.clear();   // RAII 统一关闭
     if (st.joinable()) {
         status_.request_stop();
         int fd = socket(AF_INET, SOCK_STREAM, 0);  // 唤醒 accept
@@ -179,16 +178,15 @@ int NatServer::run() {
 bool NatServer::send_msg(const sockaddr_in& to, uint8_t msg_id,
                          const void* payload, size_t plen) {
     uint8_t buf[MAX_PKT];
-    if (plen > sizeof(buf) - sizeof(MsgHead)) return false;
-    MsgHead h;
+    PacketWriter w(buf, sizeof(buf));
+    MsgHead h{};
     h.magic = htons(NAT_MAGIC);
     h.version = PROTO_VER;
     h.msg_id = msg_id;
     h.length = htonl((uint32_t)plen);
-    memcpy(buf, &h, sizeof(h));
-    if (plen) memcpy(buf + sizeof(h), payload, plen);
+    if (!w.write_struct(h) || !w.write_bytes(payload, plen)) return false;
     int fd = natcheck_.main_fd();
-    return sendto(fd, buf, sizeof(h) + plen, 0, (const sockaddr*)&to, sizeof(to)) > 0;
+    return sendto(fd, w.data(), w.size(), 0, (const sockaddr*)&to, sizeof(to)) > 0;
 }
 
 // 鉴权：签发挑战 nonce（30s 有效，一请求一签）
@@ -306,45 +304,31 @@ void NatServer::handle_heartbeat(const UuidReq& req, const std::string& extinfo,
 
 // epoll 收包线程（idx=0 主 socket；idx>=1 为 SO_REUSEPORT 克隆 socket）：
 // NAT 探测走快速路径，其余入有界队列
-int NatServer::make_recv_socket(uint16_t port) {
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) { perror("[NatServer] socket"); return -1; }
-    int on = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
-#ifdef SO_REUSEPORT
-    setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on));
-#endif
-    sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons(port);
-    if (bind(fd, (const sockaddr*)&addr, sizeof(addr)) != 0) {
+UdpFd NatServer::make_recv_socket(uint16_t port) {
+    UdpFd s;
+    if (!s.open()) { perror("[NatServer] socket"); return s; }
+    if (!s.set_reuse(true) || !s.bind_any(port)) {
         perror("[NatServer] recv socket bind");
-        close(fd);
-        return -1;
+        s.close();
+        return s;
     }
-    LOGI("NatServer", "recv clone socket fd=%d port=%d", fd, port);
-    return fd;
+    LOGI("NatServer", "recv clone socket fd=%d port=%d", s.fd(), port);
+    return s;
 }
 
 void NatServer::recv_thread(int idx) {
-    int fd = (idx == 0) ? natcheck_.main_fd() : recv_socks_[idx - 1];
-    int epfd = epoll_create1(0);
-    if (epfd < 0) { perror("[NatServer] epoll_create1"); running_ = false; return; }
-    epoll_event ev;
-    ev.events = EPOLLIN;
-    ev.data.fd = fd;
-    if (epoll_ctl(epfd, EPOLL_CTL_ADD, fd, &ev) != 0) {
+    const int fd = (idx == 0) ? natcheck_.main_fd() : recv_socks_[idx - 1].fd();
+    EpollFd ep;   // RAII：任何退出路径自动关闭
+    if (!ep.create()) { perror("[NatServer] epoll_create1"); running_ = false; return; }
+    if (!ep.add_read(fd)) {
         perror("[NatServer] epoll_ctl");
         running_ = false;
-        close(epfd);
         return;
     }
 
     epoll_event events[16];
     while (running_) {
-        int n = epoll_wait(epfd, events, 16, 1000);
+        int n = ep.wait(events, 16, 1000);
         if (n < 0 && errno != EINTR) perror("[NatServer] epoll_wait");
         for (int i = 0; i < n; i++) {
             if (!(events[i].events & EPOLLIN)) continue;
@@ -375,7 +359,6 @@ void NatServer::recv_thread(int idx) {
             }
         }
     }
-    close(epfd);
 }
 
 // 报文处理线程池

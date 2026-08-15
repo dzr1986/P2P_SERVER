@@ -321,7 +321,7 @@ void P2PClient::tick_conn_relay(Conn& c, uint64_t now) {
 }
 
 // 连接主状态机：中继路径建立判定
-void P2PClient::tick_conn_fsm(Conn& c, uint64_t now) {
+void P2PClient::tick_conn_fsm(Conn& c, uint64_t /*now*/) {
     if (c.relay.relay_ok && !c.connected) {
         c.connected = true;
         if (on_connected) on_connected(c.peer_uuid, true);
@@ -723,7 +723,7 @@ void P2PClient::on_connect_invite(const uint8_t* p, size_t plen) {
 // ---------------------------------------------------------------------------
 // #19 libjuice ICE 回调
 // ---------------------------------------------------------------------------
-void P2PClient::on_juice_state(juice_agent_t* agent, juice_state_t state, void* user_ptr) {
+void P2PClient::on_juice_state(juice_agent_t* /*agent*/, juice_state_t state, void* user_ptr) {
     auto* c = static_cast<Conn*>(user_ptr);
     if (!c) return;
     if (state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED) {
@@ -739,7 +739,7 @@ void P2PClient::on_juice_state(juice_agent_t* agent, juice_state_t state, void* 
     }
 }
 
-void P2PClient::on_juice_candidate(juice_agent_t* agent, const char* sdp, void* user_ptr) {
+void P2PClient::on_juice_candidate(juice_agent_t* /*agent*/, const char* sdp, void* user_ptr) {
     auto* c = static_cast<Conn*>(user_ptr);
     if (!c || !sdp) return;
     P2PClient* self = c->self;
@@ -851,7 +851,7 @@ void P2PClient::on_ice_sdp(const uint8_t* p, size_t plen) {
 }
 
 
-void P2PClient::on_juice_recv(juice_agent_t* agent, const char* data, size_t size, void* user_ptr) {
+void P2PClient::on_juice_recv(juice_agent_t* /*agent*/, const char* data, size_t size, void* user_ptr) {
     auto* c = static_cast<Conn*>(user_ptr);
     if (!c || !data || size == 0) return;
     P2PClient* self = c->self;

@@ -8,6 +8,7 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <sys/epoll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -69,6 +70,21 @@ public:
         return ::recvfrom(fd_, buf, cap, 0, reinterpret_cast<sockaddr*>(&from), &fl);
     }
 
+    // 本地绑定端口（0 端口绑定后解析实际临时端口用）
+    uint16_t local_port() const {
+        sockaddr_in a{};
+        socklen_t sl = sizeof(a);
+        if (fd_ >= 0 && getsockname(fd_, reinterpret_cast<sockaddr*>(&a), &sl) == 0)
+            return ntohs(a.sin_port);
+        return 0;
+    }
+
+    bool local_addr(sockaddr_in& out) const {
+        socklen_t sl = sizeof(out);
+        return fd_ >= 0 &&
+               getsockname(fd_, reinterpret_cast<sockaddr*>(&out), &sl) == 0;
+    }
+
     int  fd() const { return fd_; }
     bool valid() const { return fd_ >= 0; }
 
@@ -81,6 +97,52 @@ public:
 
 private:
     int fd_ = -1;
+};
+
+// epoll 实例的 RAII 封装（单 fd 监听场景足够；多 fd 直接多次 add）
+class EpollFd {
+public:
+    EpollFd() = default;
+    ~EpollFd() { close(); }
+    EpollFd(const EpollFd&) = delete;
+    EpollFd& operator=(const EpollFd&) = delete;
+    EpollFd(EpollFd&& o) noexcept : ep_(std::exchange(o.ep_, -1)) {}
+    EpollFd& operator=(EpollFd&& o) noexcept {
+        if (this != &o) {
+            close();
+            ep_ = std::exchange(o.ep_, -1);
+        }
+        return *this;
+    }
+
+    bool create() {
+        close();
+        ep_ = ::epoll_create1(0);
+        return ep_ >= 0;
+    }
+
+    bool add_read(int fd) {
+        epoll_event ev{};
+        ev.events = EPOLLIN;
+        ev.data.fd = fd;
+        return ep_ >= 0 && ::epoll_ctl(ep_, EPOLL_CTL_ADD, fd, &ev) == 0;
+    }
+
+    int wait(epoll_event* events, int max_events, int timeout_ms) {
+        return ::epoll_wait(ep_, events, max_events, timeout_ms);
+    }
+
+    bool valid() const { return ep_ >= 0; }
+
+    void close() {
+        if (ep_ >= 0) {
+            ::close(ep_);
+            ep_ = -1;
+        }
+    }
+
+private:
+    int ep_ = -1;
 };
 
 } // namespace p2p

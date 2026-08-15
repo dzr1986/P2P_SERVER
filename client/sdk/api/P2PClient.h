@@ -88,8 +88,8 @@ public:
 private:
     // 打洞子状态机（负责直连路径探测与超时）
     struct PunchState {
-        sockaddr_in direct = {0};      // 打洞目标（公网）
-        sockaddr_in direct_lan = {0};  // 同局域网直连目标（可选）
+        sockaddr_in direct{};          // 打洞目标（公网）
+        sockaddr_in direct_lan{};      // 同局域网直连目标（可选）
         bool have_direct = false;
         bool have_lan = false;
         bool direct_ok = false;

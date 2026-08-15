@@ -1,6 +1,8 @@
 #ifndef P2P_NAT_TYPE_CHECK_H
 #define P2P_NAT_TYPE_CHECK_H
 
+#include "Net.h"
+
 #include <arpa/inet.h>
 #include <atomic>
 #include <cstdint>
@@ -33,16 +35,16 @@ public:
     //   其它消息 -> 返回 false（交给处理线程池）
     bool try_fast_handle(const uint8_t* data, size_t len, const sockaddr_in& from);
 
-    int  main_fd() const { return sock_main_; }
-    int  alt_fd() const { return sock_alt_; }
+    int  main_fd() const { return sock_main_.fd(); }
+    int  alt_fd() const { return sock_alt_.fd(); }
     uint16_t alt_port() const { return alt_port_; }
 
 private:
     // 对 from 双 socket 各回一条 NatDetectRsp
     void dual_reply(const sockaddr_in& from, uint8_t server_index_hint);
 
-    int      sock_main_ = -1;
-    int      sock_alt_ = -1;
+    UdpFd    sock_main_;    // RAII：析构自动关闭
+    UdpFd    sock_alt_;
     uint16_t main_port_ = 0;
     uint16_t alt_port_ = 0;
     std::atomic<bool> running_{false};

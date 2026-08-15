@@ -1,4 +1,5 @@
 #include "CfgFile.h"
+#include "File.h"
 #include "Log.h"
 
 #include <cstdio>
@@ -111,13 +112,13 @@ static bool parse_file(CfgData& out, const std::string& path) {
     fresh.cfg_path = path;
     fresh.loaded = false;
 
-    FILE* fp = fopen(path.c_str(), "r");
+    FileHandle fp = open_file(path, "r");
     if (!fp) {
         LOGW("CfgFile", "open %s failed", path.c_str());
         return false;
     }
     char line[512];
-    while (fgets(line, sizeof(line), fp)) {
+    while (fgets(line, sizeof(line), fp.get())) {
         std::string s = line;
         trim(s);
         if (s.empty() || s[0] == '#') continue;
@@ -130,7 +131,6 @@ static bool parse_file(CfgData& out, const std::string& path) {
         if (key.empty()) continue;
         parse_value(fresh, key, val);
     }
-    fclose(fp);
 
     if (fresh.nat_ips.empty()) fresh.nat_ips.push_back("127.0.0.1");
     if (fresh.proxy_ips.empty()) fresh.proxy_ips.push_back("127.0.0.1");

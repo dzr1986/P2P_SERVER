@@ -5,6 +5,7 @@
 #include "CfgFile.h"
 #include "LicenseMgr.h"
 #include "NatTypeCheck.h"
+#include "Net.h"
 #include "PeerManage.h"
 #include "ProtoDef.h"
 #include "StatusServer.h"
@@ -101,8 +102,8 @@ private:
     void proc_pool_thread(int id);
     void timer_thread();
 
-    // SO_REUSEPORT 克隆收包 socket（与主端口同端口）
-    int  make_recv_socket(uint16_t port);
+    // SO_REUSEPORT 克隆收包 socket（与主端口同端口），失败返回无效句柄
+    UdpFd make_recv_socket(uint16_t port);
 
     // 报文分发（RecvProcess.cpp）：按 msg_id 派发到各消息处理器
     void handle_packet(const uint8_t* data, size_t len, const sockaddr_in& from);
@@ -172,8 +173,8 @@ private:
     std::condition_variable mq_cv_;
     std::deque<IncomingPacket> mq_;
 
-    // 多收包线程：idx 0 用主 socket，其余用 SO_REUSEPORT 克隆 socket
-    std::vector<int>        recv_socks_;
+    // 多收包线程：idx 0 用主 socket，其余用 SO_REUSEPORT 克隆 socket（RAII）
+    std::vector<UdpFd>      recv_socks_;
 
     // 代理健康表（SP_ASK_EXTINFO_RSP 刷新）
     std::mutex proxy_mu_;

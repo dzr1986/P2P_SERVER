@@ -1,4 +1,5 @@
 #include "AntiAbuse.h"
+#include "File.h"
 #include "Log.h"
 #include "Util.h"
 #include "common/Crypto.h"
@@ -77,14 +78,8 @@ void AntiAbuse::reset_dirty() {
 }
 
 bool AntiAbuse::load() {
-    FILE* fp = fopen(path_.c_str(), "rb");
-    if (!fp) return false;
     std::string raw;
-    char chunk[4096];
-    size_t n;
-    while ((n = fread(chunk, 1, sizeof(chunk), fp)) > 0) raw.append(chunk, n);
-    fclose(fp);
-    if (raw.empty()) return false;
+    if (!read_file_all(path_, raw)) return false;
 
     std::lock_guard<std::mutex> lk(mu_);
     std::string plain;
@@ -157,25 +152,22 @@ bool AntiAbuse::save() const {
         }
     }
 
-    FILE* fp = fopen(path.c_str(), "wb");
+    FileHandle fp = open_file(path, "wb");
     if (!fp) { LOGW("AntiAbuse", "open %s for write failed", path.c_str()); return false; }
 
     if (pass_.empty()) {
-        fwrite(plain.data(), 1, plain.size(), fp);
-        fclose(fp);
+        fwrite(plain.data(), 1, plain.size(), fp.get());
         return true;
     }
 
     uint8_t salt[SALT_LEN], iv[IV_LEN];
     if (p2p_random_bytes(salt, SALT_LEN) != 0 || p2p_random_bytes(iv, IV_LEN) != 0) {
-        fclose(fp);
         LOGE("AntiAbuse", "secure random unavailable, refuse to write blacklist");
         return false;
     }
     uint8_t key[32];
     if (pbkdf2_hmac_sha256((const uint8_t*)pass_.data(), pass_.size(),
                            salt, SALT_LEN, PBKDF2_ITER, key, 32) != 0) {
-        fclose(fp);
         LOGE("AntiAbuse", "pbkdf2 failed");
         return false;
     }
@@ -183,7 +175,6 @@ bool AntiAbuse::save() const {
     size_t clen = 0;
     if (aes256_cbc_encrypt(key, iv, (const uint8_t*)plain.data(), plain.size(),
                            cipher.data(), cipher.size(), &clen) != 0) {
-        fclose(fp);
         LOGE("AntiAbuse", "aes256 encrypt blacklist failed");
         return false;
     }
@@ -194,11 +185,10 @@ bool AntiAbuse::save() const {
     head[6] = (uint8_t)(PBKDF2_ITER >> 16);
     head[7] = (uint8_t)(PBKDF2_ITER >> 8);
     head[8] = (uint8_t)PBKDF2_ITER;
-    fwrite(head, 1, sizeof(head), fp);
-    fwrite(salt, 1, SALT_LEN, fp);
-    fwrite(iv, 1, IV_LEN, fp);
-    fwrite(cipher.data(), 1, clen, fp);
-    fclose(fp);
+    fwrite(head, 1, sizeof(head), fp.get());
+    fwrite(salt, 1, SALT_LEN, fp.get());
+    fwrite(iv, 1, IV_LEN, fp.get());
+    fwrite(cipher.data(), 1, clen, fp.get());
     return true;
 }
 

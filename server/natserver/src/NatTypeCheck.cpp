@@ -1,8 +1,10 @@
 #include "NatTypeCheck.h"
 #include "Log.h"
+#include "Packet.h"
 #include "ProtoDef.h"
 #include "Util.h"
 
+#include <cerrno>
 #include <cstring>
 #include <sys/select.h>
 #include <unistd.h>
@@ -10,61 +12,41 @@
 namespace p2p {
 
 NatTypeCheck::NatTypeCheck() {}
-NatTypeCheck::~NatTypeCheck() {
-    if (sock_main_ >= 0) close(sock_main_);
-    if (sock_alt_ >= 0) close(sock_alt_);
-}
+NatTypeCheck::~NatTypeCheck() {}   // socket 由 UdpFd RAII 关闭
 
-static int make_udp_socket(uint16_t port, const char* tag) {
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) { perror(tag); return -1; }
-    int on = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
-#ifdef SO_REUSEPORT
-    setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on));  // 多收包线程共享端口
-#endif
-    sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons(port);
-    if (bind(fd, (const sockaddr*)&addr, sizeof(addr)) != 0) {
+static bool make_udp_socket(UdpFd& out, uint16_t port, const char* tag) {
+    if (!out.open()) { perror(tag); return false; }
+    if (!out.set_reuse(true) || !out.bind_any(port)) {
         perror(tag);
-        close(fd);
-        return -1;
+        out.close();
+        return false;
     }
-    LOGI("NatTypeCheck", "socket[%s] fd=%d port=%d", tag, fd, port);
-    return fd;
+    LOGI("NatTypeCheck", "socket[%s] fd=%d port=%d", tag, out.fd(), port);
+    return true;
 }
 
 int NatTypeCheck::init(uint16_t main_port, uint16_t alt_port) {
     main_port_ = main_port;
     alt_port_ = alt_port;   // 0 -> 临时端口（客户端通过应答获取实际端口）
-    sock_main_ = make_udp_socket(main_port, "[NatTypeCheck] main socket");
-    if (sock_main_ < 0) return -1;
-    sock_alt_ = make_udp_socket(alt_port_, "[NatTypeCheck] alt socket");
-    if (sock_alt_ < 0) return -1;
-    if (alt_port_ == 0) {   // 解析临时端口，供应答告知客户端
-        sockaddr_in self;
-        socklen_t sl = sizeof(self);
-        if (getsockname(sock_alt_, (sockaddr*)&self, &sl) == 0)
-            alt_port_ = ntohs(self.sin_port);
-    }
+    if (!make_udp_socket(sock_main_, main_port, "[NatTypeCheck] main socket"))
+        return -1;
+    if (!make_udp_socket(sock_alt_, alt_port_, "[NatTypeCheck] alt socket"))
+        return -1;
+    if (alt_port_ == 0)   // 解析临时端口，供应答告知客户端
+        alt_port_ = sock_alt_.local_port();
     running_ = true;
     LOGI("NatTypeCheck", "main=%d alt=%d", main_port_, alt_port_);
     return 0;
 }
 
-static void send_rsp(int fd, const sockaddr_in& to, uint8_t server_index,
+static void send_rsp(const UdpFd& sock, const sockaddr_in& to, uint8_t server_index,
                      uint16_t main_port, uint16_t alt_port) {
-    NatDetectRsp rsp;
-    memset(&rsp, 0, sizeof(rsp));
+    NatDetectRsp rsp{};
     rsp.server_index = server_index;
 
     // 该 socket 的服务地址
-    sockaddr_in self;
-    socklen_t sl = sizeof(self);
-    if (getsockname(fd, (sockaddr*)&self, &sl) == 0) {
+    sockaddr_in self{};
+    if (sock.local_addr(self)) {
         inet_ntop(AF_INET, &self.sin_addr, rsp.server_ip, MAX_IP_LEN);
         rsp.server_port = self.sin_port;
     } else {
@@ -78,15 +60,16 @@ static void send_rsp(int fd, const sockaddr_in& to, uint8_t server_index,
     rsp.main_port = htons(main_port);
     rsp.alt_port = htons(alt_port);
 
-    uint8_t buf[MAX_PKT];
-    MsgHead h;
+    uint8_t buf[sizeof(MsgHead) + sizeof(NatDetectRsp)];
+    PacketWriter w(buf, sizeof(buf));
+    MsgHead h{};
     h.magic = htons(NAT_MAGIC);
     h.version = PROTO_VER;
     h.msg_id = MSG_NAT_DETECT_RSP;
     h.length = htonl(sizeof(rsp));
-    memcpy(buf, &h, sizeof(h));
-    memcpy(buf + sizeof(h), &rsp, sizeof(rsp));
-    sendto(fd, buf, sizeof(h) + sizeof(rsp), 0, (const sockaddr*)&to, sizeof(to));
+    w.write_struct(h);
+    w.write_struct(rsp);
+    sock.send_to(w.data(), w.size(), to);
 }
 
 void NatTypeCheck::dual_reply(const sockaddr_in& from, uint8_t server_index_hint) {
@@ -98,9 +81,9 @@ void NatTypeCheck::dual_reply(const sockaddr_in& from, uint8_t server_index_hint
 }
 
 bool NatTypeCheck::try_fast_handle(const uint8_t* data, size_t len, const sockaddr_in& from) {
-    if (len < sizeof(MsgHead)) return false;
-    MsgHead h;
-    memcpy(&h, data, sizeof(h));
+    PacketReader r(data, len);
+    MsgHead h{};
+    if (!r.read_struct(h)) return false;
     if (ntohs(h.magic) != NAT_MAGIC || h.version != PROTO_VER) return false;
     if (h.msg_id != MSG_NAT_DETECT_REQ) return false;
     dual_reply(from, 0);
@@ -112,15 +95,14 @@ void NatTypeCheck::run_alt_thread() {
     uint8_t buf[MAX_PKT];
     while (running_) {
         FD_ZERO(&rf);
-        FD_SET(sock_alt_, &rf);
+        FD_SET(sock_alt_.fd(), &rf);
         timeval tv{1, 0};
-        int n = select(sock_alt_ + 1, &rf, nullptr, nullptr, &tv);
+        int n = select(sock_alt_.fd() + 1, &rf, nullptr, nullptr, &tv);
         if (n < 0 && errno != EINTR) { perror("[NatTypeCheck] select"); break; }
         if (n == 0) continue;
 
-        sockaddr_in from;
-        socklen_t fl = sizeof(from);
-        ssize_t r = recvfrom(sock_alt_, buf, sizeof(buf), 0, (sockaddr*)&from, &fl);
+        sockaddr_in from{};
+        ssize_t r = sock_alt_.recv_from(buf, sizeof(buf), from);
         if (r <= 0) continue;
         if (try_fast_handle(buf, (size_t)r, from)) continue;
 

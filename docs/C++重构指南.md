@@ -51,13 +51,23 @@
 | `server/natserver/RecvProcess.cpp` | 550 行 switch 拆为 17 个 `on_msg_*` 处理器（声明见 `NatServer.h`），全部改用 `PacketReader`/`copy_str_field`，日志统一 `addr_to_str` |
 | `client/peer.cpp`（删除） | 未参与构建的早期裸协议 demo（393 行死代码），文档同步更新 |
 
+## 2.1 第二批已完成
+
+| 模块 | 改动 |
+|------|------|
+| `common/Net.h` | 新增 `EpollFd`（epoll RAII）；`UdpFd` 增加 `local_port()`/`local_addr()` |
+| `common/File.h`（新增） | `FileHandle`（`unique_ptr<FILE, &fclose>`）+ `open_file`/`read_file_all`，消灭「每条错误路径手写 fclose」 |
+| `server/natserver/NatTypeCheck` | 主/备双 socket 迁移 `UdpFd`（析构自动关闭）；报文构造/解析改 `PacketWriter`/`PacketReader` |
+| `server/natserver/NatServer.cpp` | `recv_socks_` 迁移 `vector<UdpFd>`；`recv_thread` 的 epoll 改 `EpollFd`（所有退出路径自动关闭）；`send_msg` 改 `PacketWriter` |
+| `AntiAbuse`/`LicenseMgr`/`CfgFile` | 文件 IO 全部 `FileHandle` RAII 化，load 统一 `read_file_all` |
+| `client/sdk/api/P2PClient` | 清理全部编译警告（聚合初始化 `{}`、未用参数），全仓 `-Wall -Wextra` 零警告 |
+
 ## 3. 待重构路线（后续分批，每批保持测试全绿）
 
 | 优先级 | 模块 | 计划 |
 |--------|------|------|
-| 高 | `server/natserver/NatServer.cpp` | `make_recv_socket`/NatTypeCheck 双 socket 迁移到 `UdpFd`；epoll 封装 RAII（`EpollFd`）；`run()` 线程编排拆分 |
-| 高 | `client/sdk/api/P2PClient.cpp` | `handle_proto` 剩余内联分支全部拆为 `on_*` 方法；`Conn` 状态机字段收拢为显式 `enum class State` |
-| 中 | `server/natserver/PeerManage/AntiAbuse/LicenseMgr` | 文件 IO 用 RAII `FILE*` 包装（`unique_ptr<FILE, decltype(&fclose)>`）；解析改 `PacketReader`/`string_view` |
+| 高 | `client/sdk/api/P2PClient.cpp` | `Conn` 状态机字段（connecting/connected/have_direct/direct_ok/relay_ok 布尔组合）收拢为显式 `enum class State`，转移集中到单函数 |
+| 中 | `server/natserver/NatServer.cpp` | `run()` 线程编排拆分（start/stop helper）；StatusServer 停机唤醒 socket RAII |
 | 中 | `common/ProtoDef.h` | 消息构造统一经 `PacketWriter` 辅助函数（`make_msg<T>(id, body)`），逐步消灭调用方手写 `MsgHead` |
 | 中 | 时间类型 | `time_t`/`uint64_t ms` 混用收敛为 `std::chrono::steady_clock`（先 SDK 后服务端） |
 | 低 | `CfgFile.cpp` | `std::string_view` 解析；配置项表驱动注册 |
