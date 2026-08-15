@@ -90,6 +90,7 @@ echo "== [0] unit tests =="
 ./tests/bin/tcp_punch_test > /tmp/tcp_punch_test.log 2>&1 && ok "TCP punch simultaneous-open unit tests" || fail "tcp punch unit tests"
 ./tests/bin/tcp_stun_test > /tmp/tcp_stun_test.log 2>&1 && ok "TCP STUN mapping unit tests" || fail "tcp stun unit tests"
 ./tests/bin/nat_sim_test > /tmp/nat_sim_test.log 2>&1 && ok "userspace NAT matrix sim unit tests" || fail "nat sim unit tests"
+./tests/bin/path_select_test > /tmp/path_select_test.log 2>&1 && ok "path select admission unit tests" || fail "path select unit tests"
 
 # ---------------------------------------------------------------- 1. 直连
 echo "== [1] direct P2P (no auth) =="

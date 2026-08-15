@@ -372,6 +372,10 @@ libp2p DCUtR ~70%、TUTK 号称 ~92%。本仓库有中心信令，**应显著高
      （CI 无 iptables/netns）。docker + iptables 现网分类型对照仍待补（`--iptables-demo`）。
   8. **懒打洞（可选，对齐 P7）**【开关已落地】：`lazy_p2p` / `-lazy` / `P2P_LAZY_P2P=1`。
      中继已通且无业务发送时不后台打洞；`send()` 置 `want_direct` 后再升直连。
+  9. **EasyTier-core 分层对照**【文档+选路已落地】：按目录学 `foundation → socket →
+     packet → tunnel → connectivity → instance`，见 [`EasyTier核心架构对照.md`](EasyTier核心架构对照.md)。
+     发送路径抽到 `common/PathSelect.h`（`send_tunnel_via` 使用）。不抄 `gateway` /
+     `peers/route` mesh / WASI / 虚拟网卡。
 - 依赖：P0 ICE/Proxy 已就绪；不改 `force_relay`「不打洞」语义（测试 [2]/[11] 依赖）。
 - 交付物：PCP/UPnP 客户端探测与续约、二维 NAT + NAT4E 字段、可选生日/TCP 打洞开关、
   v4/v6 直连率指标、矩阵脚本。TCP/TLS DERP 面、二维探测字段、策略表已落地（见上）。

@@ -3,6 +3,7 @@
 #include "common/ConnectToken.h"
 #include "common/NatMatrix.h"
 #include "common/Packet.h"
+#include "common/PathSelect.h"
 #include "common/TcpPunch.h"
 #include "common/StunBind.h"
 
@@ -2050,10 +2051,10 @@ void P2PClient::relay_register() {
 
 void P2PClient::send_tunnel_via(Conn& c, const uint8_t* frame, size_t len) {
     uint64_t now = plat_now_ms();
-    bool direct_proven = c.punch.direct_ok && c.punch.have_direct;
-    bool relay_ready = c.relay.relay_ok || derp_registered_.load() ||
-                       (relay_registered_ && !proxies_.empty() &&
-                        (cfg_.force_relay || now >= c.punch.punch_deadline));
+    const bool derp_up = derp_registered_.load();
+    const bool udp_proxy = relay_registered_ && !proxies_.empty();
+    const bool relay_ready = c.relay.relay_ok || derp_up ||
+                       (udp_proxy && (cfg_.force_relay || now >= c.punch.punch_deadline));
 
     // 鉴权开启时对隧道负载做流加密（iv[8]+cipher，负载>0 才加密）
     uint8_t encbuf[MAX_PKT];
@@ -2062,48 +2063,59 @@ void P2PClient::send_tunnel_via(Conn& c, const uint8_t* frame, size_t len) {
     if (encrypt_tunnel_frame(c.peer_uuid, encbuf, frame, len, &txlen))
         tx = encbuf;
 
-    // 当前 agent 已 nominated 才 juice_send；restart 换代期间走 juice_prev
-    if (c.punch.juice && c.punch.ice_nominated) {
-        juice_send(c.punch.juice, reinterpret_cast<const char*>(tx), txlen);
-        return;
-    }
-    if (c.punch.juice_prev) {
-        juice_send(c.punch.juice_prev, reinterpret_cast<const char*>(tx), txlen);
-        return;
-    }
-    if (c.punch.juice && c.punch.direct_ok) {
-        juice_send(c.punch.juice, reinterpret_cast<const char*>(tx), txlen);
-        return;
-    }
-    if (c.tcp_ok && tcp_punch_send(c, tx, txlen))
-        return;
+    PathFacts facts{};
+    facts.force_relay = cfg_.force_relay;
+    facts.ice_nominated = c.punch.juice && c.punch.ice_nominated;
+    facts.juice_prev = c.punch.juice_prev != nullptr;
+    facts.juice_direct = c.punch.juice && c.punch.direct_ok;
+    facts.tcp_punch_ok = c.tcp_ok;
+    facts.have_direct_udp = c.punch.have_direct;
+    facts.direct_proven = c.punch.direct_ok && c.punch.have_direct;
+    facts.relay_ready = relay_ready;
+    facts.derp_ready = derp_up;
+    facts.udp_relay_ready = udp_proxy;
 
-    if (direct_proven || (!relay_ready && c.punch.have_direct)) {
-        // 直连已打通 / 打洞窗口内：优先使用确认直连的打洞 socket 发送
-        if (c.punch.direct_sock_idx >= 0 &&
-            (size_t)c.punch.direct_sock_idx < c.punch.punch_socks.size()) {
-            auto& ps = c.punch.punch_socks[c.punch.direct_sock_idx];
-            ps.send_to(tx, txlen, c.punch.direct);
-            if (c.punch.have_lan) ps.send_to(tx, txlen, c.punch.direct_lan);
-        } else {
-            sock_.send_to(tx, txlen, c.punch.direct);
-            if (c.punch.have_lan) sock_.send_to(tx, txlen, c.punch.direct_lan);
-        }
-        return;
-    }
-    if (relay_ready && (derp_registered_.load() ||
-                        (relay_registered_ && !proxies_.empty()))) {
-        uint8_t body[MAX_PKT];
-        if (sizeof(RelayFrame) + txlen > sizeof(body)) return;
-        RelayFrame rf{};
-        strncpy(rf.src_uuid, cfg_.uuid.c_str(), MAX_UUID_LEN);
-        strncpy(rf.dst_uuid, c.peer_uuid.c_str(), MAX_UUID_LEN);
-        memcpy(body, &rf, sizeof(rf));
-        memcpy(body + sizeof(rf), tx, txlen);
-        const size_t blen = sizeof(rf) + txlen;
-        if (derp_registered_.load() && derp_send(MSG_PROXY_RELAY_DATA, body, blen))
+    PathKind paths[8];
+    const int npath = fill_send_paths(facts, paths, 8);
+    for (int i = 0; i < npath; ++i) {
+        switch (paths[i]) {
+        case PathKind::IceNominated:
+            juice_send(c.punch.juice, reinterpret_cast<const char*>(tx), txlen);
             return;
-        if (relay_registered_ && !proxies_.empty()) {
+        case PathKind::JuicePrev:
+            juice_send(c.punch.juice_prev, reinterpret_cast<const char*>(tx), txlen);
+            return;
+        case PathKind::JuiceDirect:
+            juice_send(c.punch.juice, reinterpret_cast<const char*>(tx), txlen);
+            return;
+        case PathKind::TcpPunch:
+            if (tcp_punch_send(c, tx, txlen)) return;
+            break;
+        case PathKind::UdpDirect:
+            if (c.punch.direct_sock_idx >= 0 &&
+                (size_t)c.punch.direct_sock_idx < c.punch.punch_socks.size()) {
+                auto& ps = c.punch.punch_socks[c.punch.direct_sock_idx];
+                ps.send_to(tx, txlen, c.punch.direct);
+                if (c.punch.have_lan) ps.send_to(tx, txlen, c.punch.direct_lan);
+            } else {
+                sock_.send_to(tx, txlen, c.punch.direct);
+                if (c.punch.have_lan) sock_.send_to(tx, txlen, c.punch.direct_lan);
+            }
+            return;
+        case PathKind::DerpTcp:
+        case PathKind::UdpRelay: {
+            uint8_t body[MAX_PKT];
+            if (sizeof(RelayFrame) + txlen > sizeof(body)) return;
+            RelayFrame rf{};
+            strncpy(rf.src_uuid, cfg_.uuid.c_str(), MAX_UUID_LEN);
+            strncpy(rf.dst_uuid, c.peer_uuid.c_str(), MAX_UUID_LEN);
+            memcpy(body, &rf, sizeof(rf));
+            memcpy(body + sizeof(rf), tx, txlen);
+            const size_t blen = sizeof(rf) + txlen;
+            if (paths[i] == PathKind::DerpTcp) {
+                if (derp_send(MSG_PROXY_RELAY_DATA, body, blen)) return;
+                break;
+            }
             uint8_t buf[MAX_PKT];
             size_t need = 8 + blen;
             if (need > sizeof(buf)) return;
@@ -2112,8 +2124,11 @@ void P2PClient::send_tunnel_via(Conn& c, const uint8_t* frame, size_t len) {
             sockaddr_in to;
             if (sockaddr_from(proxies_[0].ip, proxies_[0].port, to))
                 sock_.send_to(buf, need, to);
+            return;
         }
-        return;
+        case PathKind::None:
+            return;
+        }
     }
 }
 

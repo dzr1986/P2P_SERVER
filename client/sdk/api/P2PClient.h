@@ -296,7 +296,7 @@ private:
     static void on_juice_recv(juice_agent_t* agent, const char* data, size_t size, void* user_ptr);
     void relay_register();
     void relay_unregister_all();
-    void send_tunnel_via(Conn& c, const uint8_t* frame, size_t len);
+    void send_tunnel_via(Conn& c, const uint8_t* frame, size_t len);  // PathSelect 准入后投递
     bool derp_try_connect();
     void derp_close();
     bool derp_send(uint8_t msg_id, const void* payload, size_t plen);

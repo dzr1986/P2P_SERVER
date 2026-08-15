@@ -4,7 +4,8 @@
 > 对照本仓库该学什么、不该抄什么。配套：
 > [`P2P服务器开发计划书.md`](P2P服务器开发计划书.md)、
 > [`P2P穿透与流媒体实践.md`](P2P穿透与流媒体实践.md)、
-> [`流媒体优化学习路线.md`](流媒体优化学习路线.md)。
+> [`流媒体优化学习路线.md`](流媒体优化学习路线.md)、
+> [`EasyTier核心架构对照.md`](EasyTier核心架构对照.md)。
 >
 > 检索基线：2026-04～2026-08（NVR P2P 综述、TUTK 官网、webrtcHacks MoQ、
 > Cloudflare MoQ、Iroh FAQ、Tailscale DERP、libp2p DCUtR 论文、
@@ -176,6 +177,8 @@ ICE 并行打洞，`direct_ok` 后 `send_tunnel_via` 切 `juice_send`，再回�
 | 失败中继 | 自动回退 | 已有 Proxy |
 
 只学策略与开关设计，不把本仓库做成 SD-WAN。
+**目录级对照**（`foundation` → `connectivity` → `instance`，以及明确不抄的 `gateway` / `peers/route`）见
+[`EasyTier核心架构对照.md`](EasyTier核心架构对照.md)。发送准入已抽到 `common/PathSelect.h`。
 
 ### 4.6 组网 VPN 族（分层不同，只学编排）
 
