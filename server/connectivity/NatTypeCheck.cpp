@@ -1,8 +1,8 @@
-#include "NatTypeCheck.h"
-#include "Log.h"
-#include "Packet.h"
-#include "ProtoDef.h"
-#include "Util.h"
+#include "server/connectivity/NatTypeCheck.h"
+#include "core/foundation/Log.h"
+#include "core/socket/Packet.h"
+#include "core/packet/ProtoDef.h"
+#include "core/foundation/Util.h"
 
 #include <cerrno>
 #include <cstring>

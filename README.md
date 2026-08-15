@@ -35,17 +35,15 @@ p2p_server_byding/
 │   ├── connectivity/         # STUN 探测 / 打洞 / PathSelect
 │   └── instance/             # P2PClient 门面
 ├── common/                   # 旧路径兼容头（转发到 core/）
-├── server/
-│   ├── natserver/src/        # NatServer 源码
-│   │   ├── NatServer.cpp     #   主程序/线程/epoll/定时任务
-│   │   ├── RecvProcess.cpp   #   报文解析与分发
-│   │   ├── PeerManage.cpp    #   对等节点表 + 鉴权会话表 + 同步条目落地（uuid->addr / uuid->expire）
-│   │   ├── CfgFile.cpp       #   P2pServers.cfg 解析
-│   │   ├── AntiAbuse.cpp     #   防洪水与 IP 拉黑
-│   │   ├── LicenseMgr.cpp    #   白名单校验 / PBKDF2+AES-256 加密持久化
-│   │   ├── NatTypeCheck.cpp  #   双 socket NAT 类型探测
-│   │   └── StatusServer.cpp  #   状态信息线程
-│   └── proxyserver/src/P2PProxy.cpp   # 中继代理
+├── server/                   # p2p_server 按 EasyTier 目录拆（见 server/README.md）
+│   ├── config/               #   P2pServers.cfg
+│   ├── peers/                #   UUID 注册表（不做 mesh 路由）
+│   ├── connectivity/         #   服务端 STUN / NAT 探测
+│   ├── management/           #   防滥用 / 白名单 /metrics
+│   ├── rpc/                  #   RecvProcess 报文分发
+│   ├── instance/             #   NatServer 生命周期
+│   ├── proxyserver/          #   专用中继（DERP，不是 gateway）
+│   └── wakeserver/           #   IoT 唤醒
 └── client/
     ├── sdk/iotc/             # TUTK 形 UID API（包着 core/instance）
     └── demo/peer.cpp         # 测试对端（-s 密钥 / -relay 强制中继）

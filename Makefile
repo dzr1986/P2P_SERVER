@@ -41,14 +41,14 @@ IOTC_SRCS := client/sdk/iotc/IOTC.cpp \
              client/sdk/iotc/P2PTunnelAPIs.cpp \
              core/instance/P2PClient.cpp
 
-NAT_SRCS := server/natserver/src/NatServer.cpp \
-            server/natserver/src/RecvProcess.cpp \
-            server/natserver/src/PeerManage.cpp \
-            server/natserver/src/CfgFile.cpp \
-            server/natserver/src/AntiAbuse.cpp \
-            server/natserver/src/LicenseMgr.cpp \
-            server/natserver/src/NatTypeCheck.cpp \
-            server/natserver/src/StatusServer.cpp
+NAT_SRCS := server/instance/NatServer.cpp \
+            server/rpc/RecvProcess.cpp \
+            server/peers/PeerManage.cpp \
+            server/config/CfgFile.cpp \
+            server/management/AntiAbuse.cpp \
+            server/management/LicenseMgr.cpp \
+            server/connectivity/NatTypeCheck.cpp \
+            server/management/StatusServer.cpp
 
 PROXY_SRCS := server/proxyserver/src/P2PProxy.cpp
 

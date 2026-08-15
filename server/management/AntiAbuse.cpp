@@ -1,8 +1,8 @@
-#include "AntiAbuse.h"
-#include "File.h"
-#include "Log.h"
-#include "Util.h"
-#include "common/Crypto.h"
+#include "server/management/AntiAbuse.h"
+#include "core/foundation/File.h"
+#include "core/foundation/Log.h"
+#include "core/foundation/Util.h"
+#include "core/foundation/Crypto.h"
 
 #include <cstdio>
 #include <cstring>

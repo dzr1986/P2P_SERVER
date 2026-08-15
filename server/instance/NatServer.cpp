@@ -1,15 +1,15 @@
 // NatServer 主程序：启动参数仿原实现
 //   ./p2p_natserver <NatServerPort> <ProxyServerPort> <WanIP> [P2pServers.cfg]
 //   可选环境变量 P2P_STATUS_PORT=NNN 启用 JSON 状态服务
-#include "NatServer.h"
-#include "Crypto.h"
-#include "Log.h"
-#include "Packet.h"
-#include "ConnectToken.h"
-#include "RegionSched.h"
-#include "StunBind.h"
-#include "Uid.h"
-#include "Util.h"
+#include "server/instance/NatServer.h"
+#include "core/foundation/Crypto.h"
+#include "core/foundation/Log.h"
+#include "core/socket/Packet.h"
+#include "core/foundation/ConnectToken.h"
+#include "core/foundation/RegionSched.h"
+#include "core/packet/StunBind.h"
+#include "core/foundation/Uid.h"
+#include "core/foundation/Util.h"
 
 #include <arpa/inet.h>
 #include <cerrno>

@@ -1,7 +1,7 @@
-#include "LicenseMgr.h"
-#include "File.h"
-#include "Log.h"
-#include "common/Crypto.h"
+#include "server/management/LicenseMgr.h"
+#include "core/foundation/File.h"
+#include "core/foundation/Log.h"
+#include "core/foundation/Crypto.h"
 
 #include <cstdio>
 #include <cstring>

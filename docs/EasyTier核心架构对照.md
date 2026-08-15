@@ -103,6 +103,19 @@ server/natserver|proxyserver  中心信令 + 专用中继（他们没有对等�
 
 `common/*.h` 与旧 `client/sdk/{plat,proto,session,transport,api}` 只是兼容转发头。
 
+**p2p_server（NatServer）** 已按同样模块名拆到 `server/`：
+
+| EasyTier | 本仓库 p2p_server |
+|----------|-------------------|
+| `config/` | `server/config/CfgFile.*` |
+| `peers/` | `server/peers/PeerManage.*`（仅注册表） |
+| `connectivity/` | `server/connectivity/NatTypeCheck.*` |
+| `management/` | `server/management/` 防滥用、白名单、Status |
+| `rpc/` | `server/rpc/RecvProcess.cpp` |
+| `instance/` | `server/instance/NatServer.*` |
+| `listener/` | 暂合在 instance 的 epoll 收包 |
+| `gateway/` | **不建**；中继是独立进程 `proxyserver/` |
+
 `send_tunnel_via` 用 `PathSelect` 决定走哪条已就绪路径：
 
 `ICE nominated → juice_prev → juice+direct_ok → TCP 打洞 → UDP 打洞 → DERP TCP → UDP 中继`

@@ -1,13 +1,13 @@
 // RecvProcess.cpp：NatServer 报文解析与分发（仿原实现 RecvProcess.cpp）
 //   handle_packet 校验报文头后按 msg_id 派发到 on_msg_* 处理器，
 //   每个处理器职责单一、可独立测试（C++ 风格重构：拆分巨型 switch）。
-#include "NatServer.h"
-#include "Crypto.h"
-#include "Log.h"
-#include "Packet.h"
-#include "RegionSched.h"
-#include "Uid.h"
-#include "Util.h"
+#include "server/instance/NatServer.h"
+#include "core/foundation/Crypto.h"
+#include "core/foundation/Log.h"
+#include "core/socket/Packet.h"
+#include "core/foundation/RegionSched.h"
+#include "core/foundation/Uid.h"
+#include "core/foundation/Util.h"
 
 #include <arpa/inet.h>
 #include <cstdio>

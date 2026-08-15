@@ -1,5 +1,5 @@
-#include "StatusServer.h"
-#include "Log.h"
+#include "server/management/StatusServer.h"
+#include "core/foundation/Log.h"
 
 #include <arpa/inet.h>
 #include <cerrno>

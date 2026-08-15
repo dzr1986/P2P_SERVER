@@ -1,5 +1,5 @@
-#include "PeerManage.h"
-#include "ProtoDef.h"
+#include "server/peers/PeerManage.h"
+#include "core/packet/ProtoDef.h"
 
 #include <cstring>
 

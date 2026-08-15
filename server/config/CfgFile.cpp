@@ -1,6 +1,6 @@
-#include "CfgFile.h"
-#include "File.h"
-#include "Log.h"
+#include "server/config/CfgFile.h"
+#include "core/foundation/File.h"
+#include "core/foundation/Log.h"
 
 #include <cstdio>
 #include <cstdlib>
