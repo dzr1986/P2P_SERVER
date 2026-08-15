@@ -1288,9 +1288,13 @@ void P2PClient::send_ice_sdp(const std::string& peer, const std::string& local_s
     m->sdp_len = htons(static_cast<uint16_t>(plen));
     memcpy(m->sdp, local_sdp.data(), plen);
     send_proto(MSG_ICE_SDP, buf.data(), msglen);
+    send_proto(MSG_ICE_SDP, buf.data(), msglen);  // 信令 UDP 连发，抗 SO_REUSEPORT 丢包
     auto it = conns_.find(peer);
     if (it != conns_.end() && it->second->punch.have_lan) {
         send_proto(MSG_ICE_SDP, buf.data(), msglen, it->second->punch.direct_lan);
+    }
+    if (it != conns_.end() && it->second->punch.have_direct) {
+        send_proto(MSG_ICE_SDP, buf.data(), msglen, it->second->punch.direct);
     }
     if (it != conns_.end()) {
         it->second->punch.ice_sdp_rtx_ms = plat_now_ms();

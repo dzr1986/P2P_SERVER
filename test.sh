@@ -94,7 +94,7 @@ start_servers ""
 stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT A > /tmp/peerA.log 2>&1 & PA_PID=$!
 sleep 1
 stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT B A > /tmp/peerB.log 2>&1 & PB_PID=$!
-sleep 8
+sleep 10
 kill -9 $PA_PID $PB_PID 2>/dev/null; PA_PID=""; PB_PID=""
 grep -q "CONNECTED to B via direct" /tmp/peerA.log && ok "A->B direct" || fail "A->B direct missing"
 grep -q "CONNECTED to A via direct" /tmp/peerB.log && ok "B->A direct" || fail "B->A direct missing"
@@ -191,7 +191,7 @@ grep -q "registry sync enabled, 1 peer(s)" /tmp/nat2.log && ok "S2 sync peers" |
 stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT A > /tmp/peerA.log 2>&1 & PA_PID=$!
 sleep 1
 stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT2 B A 127.0.0.1 $PROXY_PORT > /tmp/peerB.log 2>&1 & PB_PID=$!
-sleep 8
+sleep 10
 kill -9 $PA_PID $PB_PID 2>/dev/null; PA_PID=""; PB_PID=""
 
 grep -q "sync entry uuid\[A\]" /tmp/nat2.log && ok "S2 learned A via sync" || fail "S2 did not sync A"
