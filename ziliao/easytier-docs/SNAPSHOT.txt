@@ -1,0 +1,11 @@
+source: https://github.com/EasyTier/easytier.github.io
+website: https://www.easytier.cn/
+license: Apache-2.0
+cloned_at: 2026-08-15T14:23:25Z
+commit: 0d8b589eaf6181b1ac958c4489237e203f5f4d02
+commit_date: 2026-08-06T21:00:00+08:00
+markdown_pages: 87
+html_pages: 88
+official_source_size: 11M
+site_mirror_size: 16M
+mirrored_at: 2026-08-15T14:28:06Z

@@ -1,0 +1,153 @@
+# 安装 (命令行程序) {#installation}
+
+本章节组仅介绍安装方式，阅读 [快速组网](/guide/network/quick-networking) 文档以了解参数含义和使用方法。
+
+## 安装方式
+
+1. **手动下载命令行程序**
+
+   访问 [⬇️下载页面](./download) 下载适用于您操作系统和硬件架构的 EasyTier 命令行程序。下载后为 ZIP 压缩包，解压后既可直接使用。
+
+   ::: code-group
+
+   ```bash [Linux / MacOS / FreeBSD]
+   ./easytier-core --version
+   ```
+
+   ```powershell [Windows]
+   .\easytier-core.exe --version
+   ```
+
+   :::
+
+   ***
+
+2. **DockerHub**
+
+   [DockerHub 镜像地址](https://hub.docker.com/r/easytier/easytier)
+
+   ```sh [docker]
+   # docker.io 镜像
+   docker pull easytier/easytier:latest
+   docker run -d --privileged --network host easytier/easytier:latest
+
+   # 国内用户可以使用 DaoCloud 镜像
+   docker pull m.daocloud.io/docker.io/easytier/easytier:latest
+   docker run -d --privileged --network host m.daocloud.io/docker.io/easytier/easytier:latest
+   ```
+
+   请继续阅读 [快速组网](/guide/network/quick-networking) 文档以了解参数含义和使用方法。
+
+   ***
+
+3. **通过Docker Compose安装**
+
+   ::: details docker-compose.yml
+
+   ```yaml [docker-compose.yml]
+    services:
+      # watchtower 用于自动更新 EasyTier 镜像，若不需要可以删除此节
+      watchtower:
+        image: nickfedor/watchtower
+        container_name: watchtower
+        restart: unless-stopped
+        environment:
+          - TZ=Asia/Shanghai
+          - WATCHTOWER_NO_STARTUP_MESSAGE
+        volumes:
+          - /var/run/docker.sock:/var/run/docker.sock
+        command: --interval 3600 --cleanup --label-enable
+
+      easytier:
+        # 国内用户可以使用 daocloud.io 镜像
+        # image: m.daocloud.io/docker.io/easytier/easytier:latest
+        image: easytier/easytier:latest
+        hostname: easytier
+        container_name: easytier
+        labels:
+          com.centurylinklabs.watchtower.enable: 'true'
+        restart: unless-stopped
+        network_mode: host
+        cap_add:
+          - NET_ADMIN
+          - NET_RAW
+        environment:
+          - TZ=Asia/Shanghai
+        devices:
+          - /dev/net/tun:/dev/net/tun
+        volumes:
+          - /etc/machine-id:/etc/machine-id:ro
+        command: >
+          -d --network-name <用户> --network-secret <密码>
+          -p tcp://<其他对等节点 / 公共节点的公网 IP>:11010
+   ```
+
+   :::
+
+   如果希望将配置文件与容器分离，可以在 `docker-compose.yml` 同级目录创建 `conf` 目录，并将 EasyTier 配置文件保存为 `./conf/easytier.toml`：
+
+   ::: details docker-compose.yml（使用配置文件启动）
+
+   ```yaml [docker-compose.yml]
+    services:
+      easytier:
+        # 国内用户可以使用 daocloud.io 镜像
+        # image: m.daocloud.io/docker.io/easytier/easytier:latest
+        image: easytier/easytier:latest
+        hostname: easytier
+        container_name: easytier
+        restart: unless-stopped
+        network_mode: host
+        cap_add:
+          - NET_ADMIN
+          - NET_RAW
+        environment:
+          - TZ=Asia/Shanghai
+        devices:
+          - /dev/net/tun:/dev/net/tun
+        volumes:
+          - /etc/machine-id:/etc/machine-id:ro
+          - ./conf:/config
+        command: >
+          -c /config/easytier.toml
+   ```
+
+   :::
+
+   修改 `./conf/easytier.toml` 后，执行 `docker compose restart easytier` 重新加载配置。
+
+   ***
+
+4. **一键安装脚本（仅 Linux）**
+
+   注意：一键脚本依赖 `unzip`，请提前下载并安装。
+
+   ```bash
+   wget -O /tmp/easytier.sh "https://raw.githubusercontent.com/EasyTier/EasyTier/main/script/install.sh" && sudo bash /tmp/easytier.sh install --gh-proxy https://ghfast.top/
+   ```
+
+   脚本执行成功后，EasyTier 的二进程程序会安装到 `/opt/easytier` 目录下，配置文件位于 `/opt/easytier/config/default.conf`。
+
+   EasyTier 会被注册为系统服务，可以通过以下命令管理：
+
+   ```bash
+   systemctl start easytier@default
+   ```
+
+   ***
+
+5. **通过源码安装**
+
+   ```sh [cargo]
+   cargo install --git https://github.com/EasyTier/EasyTier.git easytier
+   ```
+
+   源码安装需要 Rust 环境，并且安装 LLVM。
+
+6. **(可选)安装 Shell 补全功能**
+
+   ```fish
+   # Fish 补全
+   easytier-core --gen-autocomplete fish > ~/.config/fish/completions/easytier-core.fish
+   easytier-cli gen-autocomplete fish > ~/.config/fish/completions/easytier-core.fish
+   ```
