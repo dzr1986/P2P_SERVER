@@ -104,7 +104,27 @@ private:
     // SO_REUSEPORT 克隆收包 socket（与主端口同端口）
     int  make_recv_socket(uint16_t port);
 
+    // 报文分发（RecvProcess.cpp）：按 msg_id 派发到各消息处理器
     void handle_packet(const uint8_t* data, size_t len, const sockaddr_in& from);
+    void on_msg_heartbeat_plain(const uint8_t* p, size_t plen, const sockaddr_in& from);
+    void on_msg_heartbeat_enc(const uint8_t* p, size_t plen, const sockaddr_in& from);
+    void on_msg_extinfo(uint8_t msg_id, const uint8_t* p, size_t plen,
+                        const sockaddr_in& from);
+    void on_msg_connect_req(const uint8_t* p, size_t plen, const sockaddr_in& from);
+    void on_msg_ice_sdp(uint8_t* p, size_t plen, const sockaddr_in& from);
+    void on_msg_dev_list(const uint8_t* p, size_t plen, const sockaddr_in& from);
+    void on_msg_server_list(const sockaddr_in& from);
+    void on_msg_delete_uid(const uint8_t* p, size_t plen);
+    void on_msg_check_uid(const uint8_t* p, size_t plen, const sockaddr_in& from);
+    void on_msg_auth_challenge(const uint8_t* p, size_t plen, const sockaddr_in& from);
+    void on_msg_auth_login(const uint8_t* p, size_t plen, const sockaddr_in& from);
+    void on_msg_admin_stats(const sockaddr_in& from);
+    void on_msg_admin_blacklist(const uint8_t* p, size_t plen, const sockaddr_in& from);
+    void on_msg_sync_entry(const uint8_t* p, size_t plen, const sockaddr_in& from);
+    void on_msg_sync_del(const uint8_t* p, size_t plen, const sockaddr_in& from);
+    void on_msg_sync_snapshot(const uint8_t* p, size_t plen, const sockaddr_in& from);
+    void on_msg_proxy_avail(const uint8_t* p, size_t plen, const sockaddr_in& from);
+
     void send_heartbeat_rsp(const sockaddr_in& to, const char* uuid,
                             const ExtInfoRsp& rsp, bool enc,
                             const uint8_t enc_iv[8]);
