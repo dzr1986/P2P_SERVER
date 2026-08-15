@@ -3,6 +3,7 @@
 #include "common/ConnectToken.h"
 #include "common/Packet.h"
 
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 
@@ -94,10 +95,14 @@ bool P2PClient::start(const Config& cfg) {
     next_relay_reg_ = proxies_.empty() ? 0 : plat_now_ms();
     derp_registered_.store(false);
     derp_rbuf_.clear();
+    derp_addr_ = {};
     derp_use_tls_ = cfg.proxy_tcp_tls;
     if (cfg.proxy_tcp_port != 0) {
         std::string ip = !cfg.proxy_servers.empty() ? cfg.proxy_servers[0].ip
                          : (!cfg.nat_servers.empty() ? cfg.nat_servers[0].ip : "");
+        printf("[P2PClient] derp connect %s:%u tls=%d\n",
+               ip.c_str(), (unsigned)cfg.proxy_tcp_port, cfg.proxy_tcp_tls ? 1 : 0);
+        fflush(stdout);
         if (!ip.empty()) note_proxy_tcp(ip, cfg.proxy_tcp_port);
     }
     running_.store(true);
@@ -1429,7 +1434,7 @@ void P2PClient::apply_lan_peer(const std::string& uuid, const sockaddr_in& from,
 // ---------------------------------------------------------------------------
 void P2PClient::note_proxy_tcp(const std::string& ip, uint16_t port) {
     if (ip.empty() || port == 0) return;
-    if (derp_addr_.port == 0) {
+    if (derp_addr_.ip.empty() || derp_addr_.port == 0) {
         derp_addr_.ip = ip;
         derp_addr_.port = port;
     }
@@ -1440,18 +1445,24 @@ bool P2PClient::derp_try_connect() {
     if (derp_fd_.valid() || derp_addr_.port == 0 || derp_addr_.ip.empty())
         return derp_fd_.valid();
     TcpFd fd;
-    if (!fd.open()) return false;
+    if (!fd.open()) {
+        printf("[P2PClient] DERP tcp socket open failed\n");
+        fflush(stdout);
+        return false;
+    }
     fd.set_nodelay();
     fd.set_timeout_ms(2000);
     if (!fd.connect_to(derp_addr_.ip.c_str(), derp_addr_.port)) {
-        fprintf(stderr, "[P2PClient] DERP tcp connect %s:%u failed\n",
-                derp_addr_.ip.c_str(), (unsigned)derp_addr_.port);
+        printf("[P2PClient] DERP tcp connect %s:%u failed errno=%d\n",
+               derp_addr_.ip.c_str(), (unsigned)derp_addr_.port, errno);
+        fflush(stdout);
         return false;
     }
     if (cfg_.proxy_tcp_tls) {
         if (!tls_make_client_ctx(derp_tls_ctx_, cfg_.proxy_tls_insecure) ||
             !derp_tls_.connect(derp_tls_ctx_.ctx, fd.fd())) {
-            fprintf(stderr, "[P2PClient] DERP tls handshake failed\n");
+            printf("[P2PClient] DERP tls handshake failed\n");
+            fflush(stdout);
             return false;
         }
         derp_use_tls_ = true;
@@ -1461,8 +1472,9 @@ bool P2PClient::derp_try_connect() {
     fd.set_nonblock();
     derp_fd_ = std::move(fd);
     derp_rbuf_.clear();
-    fprintf(stderr, "[P2PClient] DERP tcp ready %s:%u tls=%d\n",
-            derp_addr_.ip.c_str(), (unsigned)derp_addr_.port, derp_use_tls_ ? 1 : 0);
+    printf("[P2PClient] DERP tcp ready %s:%u tls=%d\n",
+           derp_addr_.ip.c_str(), (unsigned)derp_addr_.port, derp_use_tls_ ? 1 : 0);
+    fflush(stdout);
 
     static const uint8_t kProxyAuthKey[] = "p2p-proxy-auth-2024";
     ProxyRegReq req;
@@ -1514,7 +1526,8 @@ void P2PClient::derp_on_readable() {
             on_proxy_register_rsp(payload.data(), payload.size());
             if (!payload.empty() && payload[0] == 0) {
                 derp_registered_.store(true);
-                fprintf(stderr, "[P2PClient] DERP tcp registered\n");
+                printf("[P2PClient] DERP tcp registered\n");
+                fflush(stdout);
             }
         } else if (msg_id == MSG_PROXY_RELAY_DATA) {
             on_proxy_relay_data(payload.data(), payload.size());

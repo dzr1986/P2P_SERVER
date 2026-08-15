@@ -102,6 +102,14 @@ int main(int argc, char** argv) {
     cfg.proxy_tcp_port = proxy_tcp_port;
     cfg.proxy_tcp_tls = proxy_tcp_tls;
     cfg.proxy_tls_insecure = true;
+    if (cfg.proxy_tcp_port == 0) {
+        if (const char* e = getenv("P2P_PROXY_TCP_PORT"))
+            cfg.proxy_tcp_port = (uint16_t)atoi(e);
+    }
+    printf("[peer] derp tcp_port=%u tls=%d proxies=%zu\n",
+           (unsigned)cfg.proxy_tcp_port, cfg.proxy_tcp_tls ? 1 : 0,
+           cfg.proxy_servers.size());
+    fflush(stdout);
     if (!lan_flag) {
         const char* e = getenv("P2P_DISABLE_LAN");
         if (e && e[0] == '1') lan_discover = false;

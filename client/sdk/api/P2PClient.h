@@ -34,7 +34,7 @@ class P2PClient {
 public:
     struct ServerAddr {
         std::string ip;
-        uint16_t    port;
+        uint16_t    port = 0;
     };
 
     struct Config {
