@@ -6,7 +6,8 @@
 >
 > 配套文档：[`代码优化分析报告.md`](../代码优化分析报告.md)、
 > [`流媒体优化学习路线.md`](流媒体优化学习路线.md)、
-> [`P2P穿透与流媒体实践.md`](P2P穿透与流媒体实践.md)（ICE/STUN/TURN 对照）。
+> [`P2P穿透与流媒体实践.md`](P2P穿透与流媒体实践.md)（ICE/STUN/TURN 对照）、
+> [`P2P模型图谱.md`](P2P模型图谱.md)（行业 P2P 模型与取舍）。
 
 ---
 
@@ -41,9 +42,9 @@ TUTK Kalay 平台的核心价值：设备烧录一个 **UID** 即可被全球任
 
 | TUTK 概念 | 说明 | 本项目现状 | 差距 |
 |-----------|------|-----------|------|
-| UID（20 字节） | 平台签发的设备唯一 ID，设备以 UID 向 P2P 服务器报到 | `uuid`（≤32 字节自定义串） | 需定义 20B 结构化 UID + 签发/校验体系 |
+| UID（20 字节） | 平台签发的设备唯一 ID，设备以 UID 向 P2P 服务器报到 | `common/Uid.*` + `tools/uidgen`（20 字符 Base32） | 签发/校验已落地；批量签发与计费面待补 |
 | P2P Server | 管理 UID 报到、协助连线、全球分布 | `NatServer`（心跳/CONNECT/跨服同步/REGION 调度/STUN Binding） | 10 万心跳压测待补 |
-| Relay Server | 打洞失败时转发数据 | `P2PProxy`（RELAY_DATA + HMAC + QuotaMB + AltPort/443） | 现网带宽压测待补 |
+| Relay Server | 打洞失败时转发数据 | `P2PProxy`（RELAY_DATA + HMAC + QuotaMB + AltPort/443） | 现网带宽压测待补；TCP/443 DERP 面见 P8 |
 | IOTC Session (SID) | 设备↔客户端连接载体，上限 128 | `client/sdk/iotc/IOTC.*` SID 句柄表（上限 128） | 已落地 |
 | IOTC Channel（0~31） | 会话内逻辑通道 | `IOTC_Session_Read/Write`（0~31） | 已落地 |
 | AVAPIs (avIndex) | 音视频帧级传输，重传可配，上限 32 通道/连接 | `AVAPIs` + `AvCodec` 分片/重组/too-late-drop | 弱网 1080p 压测待补（P3 验收） |
@@ -54,8 +55,18 @@ TUTK Kalay 平台的核心价值：设备烧录一个 **UID** 即可被全球任
 | Device Wakeup | 低功耗设备唤醒 | `p2p_wakeserver` + `MSG_WAKE_*` | 三平台 SDK 接入与 <6s 出图待补 |
 | AuthKey / Token 鉴权 | 报到与连线鉴权 | 每 UID AuthKey + `EnableConnectToken` + nonce 防重放 + X25519 FS | — |
 
-**结论**：连接底座（报到/打洞/中继/加密/同步）已具备且经过两轮加固，
-主要差距集中在：UID 体系、SDK 通道 API 层（AV/RDT/Tunnel）、集群调度、低功耗唤醒。
+**结论**：UID / IOTC / AV / RDT / Tunnel / REGION 调度 / wakeserver 协议 /
+ICE restart / TURN-over-443 / TWCC+Kalman **核心已落地**（`test.sh` PASS=108）。
+下一档差距不在「再做一个 TUTK 通道」，而在：
+
+1. **穿透增强**（P8）：PCP/UPnP（学 EasyTier）、NAT4E 预测、可选生日打洞、
+   DERP 式 TCP/443「先通再切」、TCP 打洞、IPv6 分统计、NAT 矩阵。
+2. **观看拓扑**（P9）：1:1 保持 P2P；多看客走旁路 SFU/网关，禁止 mesh。
+3. **浏览器 / 国标接入**（P10/P9）：WHIP/WHEP、28181 网关，不改设备端主协议。
+4. **现网验收**：10 万心跳、弱网 1080p、三平台 SDK、唤醒出图 <6s。
+
+模型取舍与公开穿透率对照见 [`P2P模型图谱.md`](P2P模型图谱.md)。
+中国家宽 >95% 在 CGNAT 后，中继按 **15–30%（国内可按 ~30%）** 做容量，不是「偶尔兜底」。
 
 ---
 
@@ -159,12 +170,17 @@ Client                         NatServer                       Device
   │    跨服：本机无 dst 时 ICE_SDP 经 sync 对端转发（防同步竞态）     │
   │    换网：restart_ice 重建 agent，旧路径扛媒体直到新 ICE 就绪     │
   │ 4. 超时/对称NAT → Relay 注册(HMAC，已有) → RELAY_DATA 中继      │
-  │    企业网：Proxy 兼听 443（ProxyAltPort），客户端注册全部候选     │
+  │    企业网：Proxy 兼听 UDP/443（ProxyAltPort），客户端注册全部候选 │
+  │    P8 目标：TCP/TLS 443 中继面（DERP 风格），先通再切直连         │
   │ 5. 中继期间打洞持续后台重试，成功即无缝升级回 P2P                │
 ```
 
-模式偏好与 TUTK 一致：LAN > P2P > Relay；连接建立后 `link_stats()` +
+模式偏好与 TUTK / 群晖 QuickConnect 一致：LAN > P2P > Relay。
+编排目标从「先打洞、失败再中继」演进为 **先保证通（中继/443），再升级直连**
+（学 Tailscale DERP，不抄系统 VPN）。连接建立后 `link_stats()` +
 `abr_suggest_kbps()` + AIMD 平滑驱动通道层码率自适应。
+
+一对多（多手机同时看一台 IPC）**不要 mesh P2P**，见 P9。
 
 ### 4.4 AV 通道（流媒体面，直接受益于第二轮优化）
 
@@ -208,8 +224,9 @@ Client                         NatServer                       Device
 > 每阶段给出范围、交付物、依赖与验收标准。阶段间尽量并行（SDK 通道层与服务端集群层独立）。
 
 ### P0 基线（已完成）
-连接底座与两轮优化：打洞/中继/鉴权/加密/跨服同步/ICE/自适应 RTO/快速重传/拥塞窗口/FEC/LinkStats。
-端到端测试 44 项全过（`test.sh`）。
+连接底座与多轮优化：打洞/中继/鉴权/加密/跨服同步/ICE/自适应 RTO/快速重传/拥塞窗口/FEC/LinkStats /
+ICE restart / TURN-over-443 / TWCC+Kalman。
+端到端 `test.sh` **PASS=108 FAIL=0**（数字随用例增长，以仓库当前脚本为准）。
 
 ### P1 UID 体系与设备身份【已落地（核心部分）】
 - 范围：20B 结构化 UID 编解码与 CRC 校验；`tools/uidgen` 签发工具；
@@ -226,7 +243,7 @@ Client                         NatServer                       Device
   - 客户端 SDK：`Config.auth_key_hex`（设备侧只烧录 AuthKey，不知晓主密钥）；
     demo `-k` 选项；旧 `-s` 主密钥模式自动派生，兼容并存
   - 验证：`tests/uid_test.cpp` 17 项断言；`test.sh` [9] 端到端（合法 UID -k 鉴权成功、
-    伪造 UID 双门被拒）；全量 **PASS=50 FAIL=0**
+    伪造 UID 双门被拒）；当时全量 PASS=50，现已并入 `test.sh` 108 项
   - 连线 Token：`common/ConnectToken.*` + `tools/tokengen`；
     `EnableConnectToken=1` 时 CONNECT 必须尾随 Token（HMAC(dst AuthKey, src‖dst‖expire‖nonce)）；
     过期/错 src/错 MAC/已用 nonce 返回 `CONNECT_BAD_TOKEN`（`TokenNonceCache` 记已用至 expire）；
@@ -321,12 +338,67 @@ Client                         NatServer                       Device
   - 验证：`test.sh` [13]
 - **未含**：Android/iOS/Windows SDK 移植、嵌入式裁剪版、唤醒到出图 < 6s 现网验收
 
+### P8 穿透增强（下一档主线）
+
+对照 [`P2P模型图谱.md`](P2P模型图谱.md) §3–§4。公开基线：标准 WebRTC ~80%、
+libp2p DCUtR ~70%、TUTK 号称 ~92%。本仓库有中心信令，**应显著高于 70%**；
+锥型组合目标仍是 ≥85%，对称×对称不计入该分母（必须中继）。
+
+- 范围：
+  1. **PCP / NAT-PMP / UPnP IGD**（学 EasyTier）：先 IGD 再 NAT-PMP/PCP，租约续期；
+     家宽主动要口，把 EDM 近似成 EIM（优先，零服务器成本）。失败是常态。
+  2. **RFC 4787 二维 NAT 探测**：日志/监控用 `mapping=EIM|ADM|EDM` + `filter=…`，四型只作对外说法；
+     识别 **NAT4E（端口递增/递减）** 则走预测，不先扫端口。
+  3. **生日打洞（可选，默认关）**：EIM×EDM 时 N≤256、有间隔、失败即停，防 IDS
+     （EasyTier 有 `--disable-sym-hole-punching` 同类开关）。EDM×EDM 直接中继。
+  4. **DERP 风格 TCP/TLS 443 中继面**：UDP/443（已有 AltPort）挡不住只放行 HTTPS 的企业墙
+     （Nebula 的已知弱点）。先经 TCP/443 通，并行打洞，成功无缝切直连。学编排，不做成系统 VPN。
+  5. **TCP 打洞（可选）**：与 UDP ICE 并行；DCUtR 显示同步好时 TCP≈UDP。企业网仍以 TLS 中继兜底。
+  6. **IPv6 优先**：有公网 v6 走 host；NAT66 当 NAT 统计，不假设「有 v6 就能通」。
+  7. **NAT 矩阵**：docker + iptables 模拟全锥/端口受限/对称 × 两端；对照 DCUtR 分类型数字。
+  8. **懒打洞（可选，对齐 P7）**：无预览流量不后台打洞（EasyTier `--lazy-p2p`），省电 IPC 用。
+- 依赖：P0 ICE/Proxy 已就绪；不改 `force_relay`「不打洞」语义（测试 [2]/[11] 依赖）。
+- 交付物：PCP/UPnP 客户端探测与续约、二维 NAT + NAT4E 字段、可选生日/TCP 打洞开关、
+  Proxy TCP/TLS 面雏形、v4/v6 直连率指标、矩阵脚本。
+- 验收：锥型组合直连 ≥85%；企业「只放 443/TCP」场景能在 <8s 出图（经 TLS 中继）；
+  生日扫描默认关，打开时有端口上限与熔断。
+- **未含（本阶段不做）**：libp2p DHT、Iroh/QUIC 重写底座、系统级 VPN。
+
+### P9 观看拓扑与国标网关
+
+一对一预览继续走本仓库 P2P。一台 IPC、多个看客 **禁止设备侧 mesh**（嵌软 CPU/上行会爆）。
+
+- 范围：
+  1. **旁路 SFU/转推网关**（go2rtc / mediasoup / ZLMediaKit 之一）：第一路可仍 P2P 高清，
+     其余看客从网关拉。设备只出一份码流。
+  2. **双通道策略写进 SDK 文档**：控制/预览走可靠或小图；高清走不可靠+FEC（AV 已具备）。
+  3. **GB/T 28181 网关**（可选）：SIP+PS ↔ 本仓库通道 / WebRTC；**设备端不重写国标栈**。
+- 依赖：P2–P4 API 稳定。
+- 验收：3 路同看时设备上行不随看客数线性增长；网关进程独立，不进 `p2p_natserver`。
+- **未含**：MCU 混流、HLS/CDN 回看（非目标）。
+
+### P10 浏览器接入（WHIP / WHEP）
+
+- 范围：网关侧 HTTP POST SDP（WHIP RFC 9725 推、WHEP RFC 9737 拉），
+  浏览器/OBS 预览不强制装 IOTC SDK。
+- 依赖：P9 网关进程（或最小独立 `p2p_webgateway`）。
+- 验收：Chrome 打开 WHEP 能看已连上的 UID 预览；不改 IOTC 主路径、不替换 juice+自研帧。
+- **未含**：把 SIP/WHIP 塞进 NatServer。
+
+### P11 MoQ 预研（不进 1:1 主路径）
+
+Media over QUIC 适合一对多直播/回看、CDN 化中继（Cloudflare / IETF 草案）。
+**不替代 IPC↔App 1:1 预览**。本阶段只出调研笔记与和 P9 网关的边界，不改核心协议。
+
 ### 里程碑关系
 
 ```
-P0(done) ─► P1 ─┬─► P5 ─► P6 ─► 现网灰度
-                ├─► P2 ─► P3 ─┬─► P7 ─► GA
-                │             └─► P4 ─┘
+P0(done) ─► P1(done) ─┬─► P5(done) ─► P6(done*) ─► 现网灰度
+                      ├─► P2(done) ─► P3* ─┬─► P7* ─► GA
+                      │                    └─► P4* ─┘
+                      └─► P8 穿透增强 ─┬─► P9 多看客/28181 网关 ─► P10 WHIP/WHEP
+                                       └─► P11 MoQ 预研（旁路）
+* 核心已落地，缺现网/三平台/弱网长稳压测
 ```
 
 ---
@@ -336,9 +408,9 @@ P0(done) ─► P1 ─┬─► P5 ─► P6 ─► 现网灰度
 | 层级 | 手段 | 现状/计划 |
 |------|------|----------|
 | 单元测试 | crypto_test、session_test（已有）→ 新增 uid/av/rdt 单测 | 每阶段验收前置 |
-| 端到端 | `test.sh`（44 项，已有）持续扩展：Token 鉴权、AV 弱网、隧道 | 每次提交必跑 |
-| 弱网仿真 | `tc netem`：丢包 5/10/20%、延迟 50/200/500ms、抖动、限速 | P3 起纳入 CI |
-| NAT 组合矩阵 | 全锥/端口受限/对称 × 两端组合，docker + iptables 模拟 | P2 起建设 |
+| 端到端 | `test.sh`（当前 108 项）持续扩展：Token 鉴权、AV 弱网、隧道、ICE restart、443 | 每次提交必跑 |
+| 弱网仿真 | `tc netem`：丢包 5/10/20%、延迟 50/200/500ms、抖动、限速 | P3 起纳入 CI（无权限时用户态切片丢失代替） |
+| NAT 组合矩阵 | RFC 4787 二维 × 两端，docker + iptables；对照 DCUtR 分类型直连率 | P8 |
 | 规模压测 | 模拟设备心跳器（10 万级）、Relay 吞吐打流 | P6 |
 | 安全测试 | 伪造报到/重放/串流/中继盗用回归集 | P1、P5 |
 | 现网灰度 | 小批量真实设备（不同运营商/地域），穿透率与连接时延埋点 | P6 后 |
@@ -347,16 +419,22 @@ P0(done) ─► P1 ─┬─► P5 ─► P6 ─► 现网灰度
 
 | 风险 | 影响 | 对策 |
 |------|------|------|
-| 对称 NAT 占比高导致穿透率不达标 | 中继带宽成本上升 | 端口预测/生日攻击打洞（学 EasyTier/Tailscale）；中继常态化 + 计量控成本 |
+| 国内 CGNAT / 对称 NAT 占比高 | 中继带宽成本上升；「≥85% 直连」被误解为含对称对 | 锥型与对称分母分开统计；中继按 ~30% 容量规划；P8 PCP/UPnP 优先于生日扫描；EDM×EDM 直接中继 |
+| 企业防火墙只放行 TCP/443 | 纯 UDP ICE 黑屏 | P8 TCP/TLS 443 中继面（DERP 编排：先通再切）；已有 UDP/443 不够 |
+| 多看客走 mesh P2P | 设备 CPU/上行爆、卡顿 | P9 旁路网关；设备只出一份码流 |
+| 生日打洞触发 IDS/运营商风控 | 设备被封端口或投诉 | 默认关；N 上限、间隔、熔断；不可作为默认路径 |
 | 嵌入式设备资源受限（RAM<1MB） | SDK 集成受阻 | 裁剪版 SDK（去 ICE/减缓冲），`Plat.h` 隔离已就绪 |
 | 自研加密握手实现风险 | 安全事故 | ECDH 用成熟实现（如嵌入 tweetnacl/mbedTLS 单文件），AEAD 复用已测代码，外部评审 |
+| 对标 iLnkP2P/PPPP/TUTK 历史 CVE | 可伪造 UID / 明文媒体 / 硬编码密钥 | 已避开：每 UID AuthKey、Token nonce、X25519 FS、中继 HMAC；红线保持 |
 | UID 兼容迁移 | 存量设备升级困难 | 双栈并行 + 服务端灰度开关（CfgFile 热加载已有） |
 | 单区域服务器故障 | 大面积掉线 | 跨服同步（已有）+ 客户端多服务器列表重连（`P2pServers.cfg` 已有） |
+| 把 MoQ/28181/WHIP 塞进核心 | 协议膨胀、嵌软扛不住 | 全部进独立网关；1:1 IOTC 主路径冻结 |
 
 ## 8. 交付物清单
 
-1. 服务端：NatServer（UID/Token/调度扩展）、P2PProxy（计量配额）、wakeserver、部署手册（Docker/裸机）
+1. 服务端：NatServer（UID/Token/调度扩展）、P2PProxy（计量配额 + UDP/443，P8 补 TCP/TLS 面）、wakeserver、部署手册（Docker/裸机）
 2. SDK：C API 头文件 + 静态库（Linux/Android/iOS/Windows/嵌入式裁剪版）+ 集成文档
-3. 工具：uidgen 签发工具、模拟设备压测器、NAT 矩阵测试环境
-4. 文档：协议规范（XN/PT 帧 + 新增消息）、安全白皮书、API 参考、示例代码
-5. 质量：单测 + e2e + 弱网 + 压测报告，现网灰度穿透率/时延数据
+3. 工具：uidgen 签发工具、模拟设备压测器、NAT 矩阵测试环境（P8）
+4. 文档：协议规范（XN/PT 帧 + 新增消息）、安全白皮书、API 参考、示例代码、[`P2P模型图谱.md`](P2P模型图谱.md)
+5. 质量：单测 + e2e + 弱网 + 压测报告，现网灰度穿透率/时延数据（锥型与对称分母分开）
+6. 旁路（P9–P11）：多看客/28181/WHIP-WHEP 网关、MoQ 预研笔记 —— 不进 NatServer 主进程

@@ -2,6 +2,8 @@
 
 > 对照 RFC 8445 ICE、RFC 8489 STUN、RFC 8656 TURN 与 WebRTC 生产经验，
 > 说明本仓库「信令 + 打洞 + 中继 + 帧通道」如何对齐行业做法，以及还差什么。
+> 更广的模型图谱（NAT 二维分类、DERP 先通再切、DCUtR 穿透率、WHIP/WHEP、MoQ）见
+> [`P2P模型图谱.md`](P2P模型图谱.md)；阶段规划见 [`P2P服务器开发计划书.md`](P2P服务器开发计划书.md) P8–P11。
 
 ---
 
@@ -168,7 +170,10 @@ NatServer `ProxyAltPort` 把兼听端口作为额外 CONNECT 候选；客户端�
 3. **Kalman + TWCC**：已落地（`TwccEstimate.h` + `TT_TWCC`；`avSuggestedBitrateKbps` 混合）
 4. **真实 `tc netem` 1080p**：卡顿率 / P99 延迟验收（P3，CI 无 netem 权限时仍用用户态切片丢失）
 5. **Token nonce 防重放**：`TokenNonceCache` 已记已用 nonce，过期前重放返回 `CONNECT_BAD_TOKEN`
+6. **P8 穿透增强**：PCP/UPnP、RFC 4787 二维 NAT、可选生日打洞、TCP/TLS 443「先通再切」（见模型图谱）
+7. **P9–P11 旁路**：多看客 SFU/28181 网关、WHIP/WHEP、MoQ 预研 —— 不改 1:1 主路径
 
-参考文献：RFC 8445 / 8489 / 8656；pion/ice 角色冲突处理；
+参考文献：RFC 8445 / 8489 / 8656 / 4787；pion/ice 角色冲突处理；
 WebRTC 生产经验（15–30% TURN、区域化中继、443/TLS）；
-TUTK LAN Search / SSDP 同网段发现。
+TUTK LAN Search / SSDP 同网段发现；
+[`P2P模型图谱.md`](P2P模型图谱.md)。
