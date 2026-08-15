@@ -152,6 +152,7 @@ private:
         uint16_t extra_ports_added = 0;      // 已注入 juice 的预测/生日目的口数
         bool extra_ports_tripped = false;    // 熔断：达上限或两轮无进展
         uint64_t extra_ports_next_ms = 0;
+        bool path_note_direct = false;       // 直连计数推迟到 tick，避免 juice 回调里调 juice_*
     };
 
     // 中继子状态机（负责 relay 注册与保活）

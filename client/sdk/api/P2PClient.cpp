@@ -214,6 +214,7 @@ void P2PClient::connect(const std::string& peer_uuid, const std::string& token_h
     c.punch.extra_ports_added = 0;
     c.punch.extra_ports_tripped = false;
     c.punch.extra_ports_next_ms = 0;
+    c.punch.path_note_direct = false;
     c.want_direct = false;
     c.relay.relay_ok = false;
     c.punch.punch_deadline = plat_now_ms() + cfg_.connect_timeout_ms;
@@ -428,6 +429,13 @@ void P2PClient::tick(uint64_t now) {
     tick_handshake(now);
     tick_lan(now);
     tick_ice(now);
+    for (auto& kv : conns_) {
+        Conn& c = *kv.second;
+        if (c.punch.path_note_direct) {
+            c.punch.path_note_direct = false;
+            note_path_stats(c, false);
+        }
+    }
 }
 
 // 心跳发送与重试间隔
@@ -619,7 +627,7 @@ void P2PClient::set_connected(Conn& c, bool relay) {
     if (c.state == ConnState::Connected) {
         if (c.via_relay && !relay) {
             c.via_relay = false;
-            note_path_stats(c, false);
+            c.punch.path_note_direct = true;  // tick 里再计 v4/v6
             if (on_connected) on_connected(c.peer_uuid, false);
         } else if (!relay && c.punch.ice_restarting) {
             c.punch.ice_restarting = false;
@@ -631,8 +639,9 @@ void P2PClient::set_connected(Conn& c, bool relay) {
     }
     c.state = ConnState::Connected;
     c.via_relay = relay;
-    note_path_stats(c, relay);
-    // 握手放到 tick_handshake，避免在 libjuice 状态回调里 juice_send
+    if (relay) path_relay_.fetch_add(1);
+    else c.punch.path_note_direct = true;
+    // 握手放到 tick_handshake；路径 v4/v6 放到 tick，避免 juice 回调里调 juice_*
     if (on_connected) on_connected(c.peer_uuid, relay);
 }
 
