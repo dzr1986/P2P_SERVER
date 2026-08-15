@@ -34,6 +34,7 @@ namespace p2p {
 //   Region=C                        本节点区域（1 字符 Base32，P6 就近调度）
 //   NatRegions=ip:R,ip:R            NAT 入口区域标注（缺省继承 Region）
 //   ProxyRegions=ip:R,ip:R          Proxy 入口区域标注（缺省继承 Region）
+//   WakeServer=ip:port              低功耗唤醒服务（CONNECT 目标离线时触发 POKE）
 // ---------------------------------------------------------------------------
 struct CfgData {
     std::vector<std::string> nat_ips;
@@ -57,6 +58,7 @@ struct CfgData {
 
     std::string blacklist_file;
     std::string blacklist_pass;
+    std::string wake_server;          // "ip:port"，空=不通知 wakeserver
 
     int         proc_workers = 4;
     int         recv_threads = 2;       // UDP 收包线程数（SO_REUSEPORT）

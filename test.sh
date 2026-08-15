@@ -10,6 +10,7 @@ NAT_BIN=./server/natserver/bin/p2p_natserver
 PROXY_BIN=./server/proxyserver/bin/p2p_proxy
 PEER_BIN=./client/bin/peer
 IOTC_BIN=./client/bin/iotc_demo
+WAKE_BIN=./server/wakeserver/bin/p2p_wakeserver
 CFG=/tmp/p2p_auth_test.cfg
 
 PASS=0
@@ -21,7 +22,7 @@ ok()   { PASS=$((PASS+1)); echo "  ok: $1"; }
 
 # 统一清理
 cleanup() {
-    for p in $NAT_PID $NAT2_PID $PROXY_PID $PA_PID $PB_PID $IOTC_DEV_PID; do
+    for p in $NAT_PID $NAT2_PID $PROXY_PID $PA_PID $PB_PID $IOTC_DEV_PID $WAKE_PID; do
         [ -n "$p" ] && kill -9 $p 2>/dev/null
     done
 }
@@ -374,6 +375,84 @@ echo "$LA" | grep -q "PROXIES=10.1.0.1," && ok "proxy list region A prefers 10.1
 echo "$LC" | grep -q "PROXIES=127.0.0.1," && ok "proxy list region C prefers 127.0.0.1" || fail "proxy C sort ($LC)"
 unset P2P_STATUS_PORT
 stop_servers
+
+# ---------------------------------------------------------------- 13. P7 wakeserver 保活/唤醒
+echo "== [13] wakeserver keepalive + poke =="
+WAKE_PORT=18840
+stdbuf -oL $WAKE_BIN $WAKE_PORT wakesec > /tmp/wake.log 2>&1 &
+WAKE_PID=$!
+sleep 0.4
+cat > /tmp/p2p_wake.py <<'PYEOF'
+import socket, struct, sys, hmac, hashlib
+port, op, uid, secret = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+mac = hmac.new(secret.encode(), uid.encode(), hashlib.sha256).digest()
+if op == "badmac":
+    mac = bytes([mac[0] ^ 0xFF]) + mac[1:]
+    op = "keep"
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(2)
+s.bind(("127.0.0.1", 0))
+if op == "keep":
+    payload = uid.encode().ljust(33, b"\x00")[:33] + mac
+    mid = 0x40
+elif op == "trigger":
+    payload = uid.encode().ljust(33, b"\x00")[:33]
+    mid = 0x41
+else:
+    sys.exit(2)
+s.sendto(struct.pack(">HBBI", 0x584E, 0x02, mid, len(payload)) + payload, ("127.0.0.1", port))
+data, _ = s.recvfrom(4096)
+body = data[8:]
+print("MSG=0x%02x RESULT=%d UID=%s" % (data[3], body[0], body[1:34].split(b"\x00")[0].decode()))
+if op == "keep" and body[0] == 0:
+    # 等 POKE（由另一次 trigger 触发）
+    try:
+        poke, _ = s.recvfrom(4096)
+        print("POKE=0x%02x UID=%s" % (poke[3], poke[9:42].split(b"\x00")[0].decode()))
+    except socket.timeout:
+        print("POKE=none")
+PYEOF
+# 先单独测坏 MAC / 未报到 TRIGGER（不占用保活 socket）
+BAD=$(python3 /tmp/p2p_wake.py $WAKE_PORT badmac SLEEPDEV wakesec)
+echo "$BAD" | grep -q "RESULT=2" && ok "wake keep bad mac rejected" || fail "wake bad mac ($BAD)"
+NF=$(python3 /tmp/p2p_wake.py $WAKE_PORT trigger NOSUCH wakesec)
+echo "$NF" | grep -q "RESULT=1" && ok "wake trigger unknown" || fail "wake unknown ($NF)"
+
+# 保活 socket 挂起等 POKE：后台 keep，再 trigger
+python3 - <<PY > /tmp/wake_dev.log 2>&1 &
+import socket, struct, hmac, hashlib, time
+port, uid, secret = $WAKE_PORT, "SLEEPDEV", "wakesec"
+mac = hmac.new(secret.encode(), uid.encode(), hashlib.sha256).digest()
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(4)
+s.bind(("127.0.0.1", 0))
+payload = uid.encode().ljust(33, b"\x00")[:33] + mac
+s.sendto(struct.pack(">HBBI", 0x584E, 0x02, 0x40, len(payload)) + payload, ("127.0.0.1", port))
+ack, _ = s.recvfrom(4096)
+print("KEEP_RESULT=%d" % ack[8])
+poke, _ = s.recvfrom(4096)
+print("POKE=0x%02x" % poke[3])
+PY
+WDEV=$!
+sleep 0.4
+TR=$(python3 /tmp/p2p_wake.py $WAKE_PORT trigger SLEEPDEV wakesec)
+echo "$TR" | grep -q "RESULT=0" && ok "wake trigger ok" || fail "wake trigger ($TR)"
+wait $WDEV 2>/dev/null
+grep -q "KEEP_RESULT=0" /tmp/wake_dev.log && ok "wake keep accepted" || fail "wake keep missing"
+grep -q "POKE=0x43" /tmp/wake_dev.log && ok "device received POKE" || fail "device poke missing ($(cat /tmp/wake_dev.log))"
+grep -q "KEEP uuid\[SLEEPDEV\]" /tmp/wake.log && ok "wakeserver logged keep" || fail "wake log keep missing"
+grep -q "TRIGGER uuid\[SLEEPDEV\] poke" /tmp/wake.log && ok "wakeserver logged poke" || fail "wake log poke missing"
+
+# NatServer CONNECT 离线目标时转发 TRIGGER
+printf 'WakeServer=127.0.0.1:%s\n' $WAKE_PORT > $CFG
+start_servers "$CFG"
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT WAKECLI SLEEPDEV > /tmp/peerWake.log 2>&1 & PA_PID=$!
+sleep 3
+kill -9 $PA_PID 2>/dev/null; PA_PID=""
+grep -q "wake trigger uuid\[SLEEPDEV\]" /tmp/nat.log && ok "nat notify wakeserver" || fail "nat wake notify missing"
+grep -q "TRIGGER uuid\[SLEEPDEV\]" /tmp/wake.log && ok "wakeserver got nat trigger" || fail "wake nat trigger missing"
+stop_servers
+kill -9 $WAKE_PID 2>/dev/null; WAKE_PID=""
 
 echo
 echo "======================================"

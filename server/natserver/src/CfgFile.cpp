@@ -131,6 +131,7 @@ static void parse_value(CfgData& out, const std::string& key, const std::string&
         {"Region",         [](CfgData& c, const std::string& v) { c.region = parse_region_char(v); }},
         {"NatRegions",     [](CfgData& c, const std::string& v) { parse_ip_regions(v, c.nat_regions); }},
         {"ProxyRegions",   [](CfgData& c, const std::string& v) { parse_ip_regions(v, c.proxy_regions); }},
+        {"WakeServer",     [](CfgData& c, const std::string& v) { c.wake_server = v; }},
     };
     auto it = kSetters.find(key);
     if (it != kSetters.end()) it->second(out, val);

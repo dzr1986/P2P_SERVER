@@ -763,6 +763,27 @@ void NatServer::request_sync_snapshot() {
     broadcast_sync_msg(MSG_SYNC_SNAPSHOT_REQ, &req, sizeof(req), nullptr);
 }
 
+void NatServer::notify_wake(const char* uuid) {
+    if (!uuid || !uuid[0] || !cfg_) return;
+    const std::string& spec = cfg_->wake_server;
+    if (spec.empty()) return;
+    std::string ip = spec;
+    uint16_t port = 0;
+    size_t pos = ip.rfind(':');
+    if (pos == std::string::npos) return;
+    port = (uint16_t)atoi(ip.c_str() + pos + 1);
+    ip = ip.substr(0, pos);
+    if (ip.empty() || port == 0) return;
+    sockaddr_in to{};
+    to.sin_family = AF_INET;
+    to.sin_port = htons(port);
+    if (inet_pton(AF_INET, ip.c_str(), &to.sin_addr) != 1) return;
+    WakeTrigger t{};
+    copy_str_field(t.uuid, sizeof(t.uuid), uuid);
+    send_msg(to, MSG_WAKE_TRIGGER, &t, sizeof(t));
+    LOGI("NatServer", "wake trigger uuid[%s] -> %s:%u", uuid, ip.c_str(), (unsigned)port);
+}
+
 std::string NatServer::status_json() const {
     auto cfg = cfg_;
     const char region = cfg ? cfg->region : 0;

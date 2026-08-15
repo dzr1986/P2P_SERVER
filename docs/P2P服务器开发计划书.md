@@ -50,7 +50,7 @@ TUTK Kalay 平台的核心价值：设备烧录一个 **UID** 即可被全球任
 | P2PTunnelAPIs | 把 TCP 协议（RTSP/HTTP/SSH）隧道化 | `P2PTunnel_Serve/Map` + `TunnelCodec` | 已落地（RTSP/ffmpeg 演示待补） |
 | avSendIOCtrl | 控制指令通道 | `avSendIOCtrl/avRecvIOCtrl`（通道 0 可靠） | 已落地 |
 | LAN Search | 局域网免服务器发现 | CONNECT 携带 lan 地址尝试直连 | UDP 广播发现待做 |
-| Device Wakeup | 低功耗设备唤醒 | 无 | 唤醒保活代理待做 |
+| Device Wakeup | 低功耗设备唤醒 | `p2p_wakeserver` + `MSG_WAKE_*` | 三平台 SDK 接入与 <6s 出图待补 |
 | AuthKey / Token 鉴权 | 报到与连线鉴权 | HMAC-SHA256 挑战应答（已有） | Token 模式 + 前向保密待做 |
 
 **结论**：连接底座（报到/打洞/中继/加密/同步）已具备且经过两轮加固，
@@ -91,7 +91,7 @@ TUTK Kalay 平台的核心价值：设备烧录一个 **UID** 即可被全球任
 | NatServer | `server/natserver/` | 已有，需扩展 UID/调度 |
 | Relay | `server/proxyserver/` | 已有，需扩展配额计量 |
 | 设备/客户端 SDK 核 | `client/sdk/`（api/session/transport/proto/plat） | 已有，需扩展通道 API 层 |
-| 唤醒服务 | `server/wakeserver/`（新增） | 待建 |
+| 唤醒服务 | `server/wakeserver/` | 已落地（保活/触发/POKE 雏形） |
 | UID 签发工具 | `tools/uidgen/` | 已落地 |
 | 管理面 API | `server/natserver/src/StatusServer.cpp` 扩展 | 雏形（JSON 状态） |
 
@@ -298,12 +298,18 @@ Client                         NatServer                       Device
   - 验证：`tests/sched_test.cpp`；`test.sh` [12]
 - **未含**：10 万心跳压测、节点故障热迁移演练（跨服同步已有，本轮未扩压测）
 
-### P7 低功耗唤醒 + 多平台 SDK
+### P7 低功耗唤醒 + 多平台 SDK【唤醒协议已落地，多平台 SDK 待补】
 - 范围：wakeserver 与唤醒协议；SDK 移植层落地（`Plat.h` 已抽象）：
   Android(NDK)/iOS/Windows；嵌入式裁剪版（无 ICE 仅自研打洞，降 footprint）；
   示例 App 与集成文档。
 - 依赖：P2~P4 API 冻结。
 - 验收：休眠设备唤醒到出图 < 6s；三平台 demo 跑通同一 UID 互连。
+- **落地情况**：
+  - `server/wakeserver/`：`MSG_WAKE_KEEPALIVE / TRIGGER / RESULT / POKE`
+  - 设备低频 UDP 报到（可选 `WakeSecret` HMAC）；触发后向上次公网地址发 POKE
+  - NatServer `WakeServer=ip:port`：CONNECT 目标不在线时转发 TRIGGER
+  - 验证：`test.sh` [13]
+- **未含**：Android/iOS/Windows SDK 移植、嵌入式裁剪版、唤醒到出图 < 6s 现网验收
 
 ### 里程碑关系
 

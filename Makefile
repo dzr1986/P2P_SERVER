@@ -18,6 +18,7 @@ BIN_UIDGEN  := tools/bin/uidgen
 BIN_AVTEST  := tests/bin/av_frame_test
 BIN_SCHEDTEST := tests/bin/sched_test
 BIN_IOTCDEMO := client/bin/iotc_demo
+BIN_WAKE    := server/wakeserver/bin/p2p_wakeserver
 
 COMMON_SRCS := common/Crypto.cpp common/Uid.cpp common/X25519.cpp
 IOTC_SRCS := client/sdk/iotc/IOTC.cpp \
@@ -40,7 +41,7 @@ PROXY_SRCS := server/proxyserver/src/P2PProxy.cpp
 PEER_SRCS  := client/demo/peer.cpp \
               client/sdk/api/P2PClient.cpp
 
-all: $(LIBJUICE) $(BIN_NAT) $(BIN_PROXY) $(BIN_PEER) $(BIN_CRYPTOTEST) $(BIN_SESSIONTEST) $(BIN_UIDTEST) $(BIN_UIDGEN) $(BIN_AVTEST) $(BIN_SCHEDTEST) $(BIN_IOTCDEMO)
+all: $(LIBJUICE) $(BIN_NAT) $(BIN_PROXY) $(BIN_PEER) $(BIN_CRYPTOTEST) $(BIN_SESSIONTEST) $(BIN_UIDTEST) $(BIN_UIDGEN) $(BIN_AVTEST) $(BIN_SCHEDTEST) $(BIN_IOTCDEMO) $(BIN_WAKE)
 
 $(LIBJUICE):
 	cmake -B third_party/libjuice/build -S third_party/libjuice -DCMAKE_BUILD_TYPE=Release
@@ -86,6 +87,10 @@ $(BIN_SCHEDTEST): tests/sched_test.cpp $(COMMON_SRCS) common/RegionSched.h commo
 $(BIN_IOTCDEMO): client/demo/iotc_demo.cpp $(IOTC_SRCS) $(COMMON_SRCS) common/ProtoDef.h $(LIBJUICE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ client/demo/iotc_demo.cpp $(IOTC_SRCS) $(COMMON_SRCS) $(LDFLAGS)
+
+$(BIN_WAKE): server/wakeserver/WakeServer.cpp server/wakeserver/WakeServer.h $(COMMON_SRCS) common/ProtoDef.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -o $@ server/wakeserver/WakeServer.cpp $(COMMON_SRCS) $(LDFLAGS)
 
 clean:
 	rm -rf server/natserver/bin server/proxyserver/bin client/bin tests/bin tools/bin

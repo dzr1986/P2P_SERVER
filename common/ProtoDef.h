@@ -87,6 +87,11 @@ enum MsgId : uint8_t {
     MSG_PROXY_UNREGISTER_REQ  = 0x22,  // 注销注册
     MSG_PROXY_RELAY_DATA      = 0x23,  // 中继数据:       RelayFrame + TunnelFrame + 负载
     MSG_PROXY_PUNCH_HELPER    = 0x24,  // 代理协助打洞:   返回目标当前公网地址
+    // ---- 低功耗唤醒（wakeserver，P7）----
+    MSG_WAKE_KEEPALIVE        = 0x40,  // 设备保活报到:   WakeKeepalive -> WakeResult
+    MSG_WAKE_TRIGGER          = 0x41,  // 请求唤醒设备:   WakeTrigger   -> WakeResult
+    MSG_WAKE_RESULT           = 0x42,  // 保活/触发应答:  WakeResult
+    MSG_WAKE_POKE             = 0x43,  // 唤醒包（服务器 -> 设备上次公网地址）
 };
 
 // -------------------------------------------------------------------------
@@ -391,6 +396,23 @@ struct TunnelFrame {
     uint16_t len;          // 负载长度（网络序，<= MAX_TUNNEL_PAYLOAD）
 };
 
+// 低功耗唤醒保活（设备 -> wakeserver）
+struct WakeKeepalive {
+    char    uuid[MAX_UUID_LEN + 1];
+    uint8_t hmac[32];         // 可选：HMAC-SHA256(WakeSecret, uuid)；无密钥则全 0
+};
+
+// 请求唤醒指定 UID（客户端 / NatServer -> wakeserver）
+struct WakeTrigger {
+    char uuid[MAX_UUID_LEN + 1];
+};
+
+// 保活/触发应答；POKE 复用 uuid 字段通知设备
+struct WakeResult {
+    uint8_t result;           // 见 WakeStatus
+    char    uuid[MAX_UUID_LEN + 1];
+};
+
 #pragma pack(pop)
 
 // 结果码
@@ -406,6 +428,12 @@ enum AuthResult : uint8_t {
     AUTH_BAD_MAC       = 2,
     AUTH_BLACKLIST     = 3,
     AUTH_WHITELIST_REJ = 4,
+};
+
+enum WakeStatus : uint8_t {
+    WAKE_OK        = 0,   // 保活已记 / 已向设备发 POKE
+    WAKE_NOT_FOUND = 1,   // 无保活记录（设备未报到或已过期）
+    WAKE_BAD_MAC   = 2,   // 保活 HMAC 校验失败
 };
 
 

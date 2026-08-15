@@ -140,6 +140,7 @@ private:
     void send_proxy_avail_query(const std::string& proxy_ip);
     void collect_proxy_avail(const sockaddr_in& from, const ProxyAvailRsp& rsp);
     void mark_proxy_stale();
+    void notify_wake(const char* uuid);
     void pick_proxy(ProxyCandidate out[3], uint8_t& count, char prefer_region = 0);
     std::string status_json() const;
     std::string status_metrics() const;

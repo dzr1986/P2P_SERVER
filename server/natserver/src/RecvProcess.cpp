@@ -202,6 +202,7 @@ void NatServer::on_msg_connect_req(const uint8_t* p, size_t plen,
         ack.result = CONNECT_NOT_FOUND;
         send_msg(from, MSG_CONNECT_ACK, &ack, sizeof(ack));
         LOGI("NatServer", "ack===>dst UUID[%s] not found", req.dst_uuid);
+        notify_wake(req.dst_uuid);
         inc_connect_fail();
         return;
     }
