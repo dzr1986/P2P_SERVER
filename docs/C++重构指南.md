@@ -85,7 +85,20 @@
 | 模块 | 说明 |
 |------|------|
 | `common/ProtoDef.h` | 若协议扩展频繁，可进一步引入类型安全的消息注册表（msg_id → 结构体映射，编译期校验） |
-| 客户端 SDK | 计划书 P2 阶段的 IOTC/AV/RDT 通道 API 层（新增代码直接按本指南规范编写） |
+| 客户端 SDK | 计划书 P5 前向保密握手 / P6 集群调度（新增代码直接按本指南规范编写） |
+
+## 3.1 P2/P4 通道 API 层（新增，按本指南编写）
+
+| 模块 | 改动 |
+|------|------|
+| `client/sdk/iotc/IOTC.*` | C 风格 SID/通道 API；RAII 单例；回调与 API 锁序约定 |
+| `client/sdk/iotc/AvCodec.h` | 头文件可单测的帧分片/重组 + too-late-drop |
+| `client/sdk/iotc/AVAPIs.*` | 帧级收发 + IOCtrl + 码率建议 |
+| `client/sdk/iotc/RDTAPIs.*` | 可靠字节流（分片 + leftover） |
+| `client/sdk/iotc/TunnelCodec.h` + `P2PTunnelAPIs.*` | TCP 端口映射；`TcpFd` RAII |
+| `common/Net.h` | 新增 `TcpFd`（move-only，析构 close） |
+| `client/demo/iotc_demo.cpp` | 四通道 + 隧道验收程序 |
+| `tests/av_frame_test.cpp` | AvCodec / TunnelCodec 单测 |
 
 ## 4. 验证清单（每批重构必跑）
 
@@ -93,5 +106,7 @@
 make -s all            # 零 error（新增代码零 warning）
 ./tests/bin/crypto_test
 ./tests/bin/session_test
-bash test.sh           # 44 项端到端全绿
+./tests/bin/uid_test
+./tests/bin/av_frame_test
+bash test.sh           # 端到端全绿（含 [10] IOTC/AV/RDT/Tunnel）
 ```

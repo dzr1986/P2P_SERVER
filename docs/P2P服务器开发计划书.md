@@ -43,12 +43,12 @@ TUTK Kalay 平台的核心价值：设备烧录一个 **UID** 即可被全球任
 | UID（20 字节） | 平台签发的设备唯一 ID，设备以 UID 向 P2P 服务器报到 | `uuid`（≤32 字节自定义串） | 需定义 20B 结构化 UID + 签发/校验体系 |
 | P2P Server | 管理 UID 报到、协助连线、全球分布 | `NatServer`（心跳注册/CONNECT 协调/跨服同步） | 集群调度/就近接入待建 |
 | Relay Server | 打洞失败时转发数据 | `P2PProxy`（RELAY_DATA 转发 + HMAC 注册鉴权） | 带宽配额/计量待建 |
-| IOTC Session (SID) | 设备↔客户端连接载体，上限 128 | `Conn` + `Session`（每对端一个） | 需显式 SID 句柄 API 与上限管理 |
-| IOTC Channel（0~31） | 会话内逻辑通道 | `channel_id`（1 字节，已有） | 通道生命周期 API 待封装 |
-| AVAPIs (avIndex) | 音视频帧级传输，重传可配，上限 32 通道/连接 | 可靠/不可靠双通道 + FEC + LinkStats（第二轮已做） | 帧级 API（分片/重组/丢帧策略）待做 |
-| RDTAPIs | 可靠字节流 Read/Write | `Session` 可靠通道（消息粒度） | 字节流化 + 背压 API 待做 |
-| P2PTunnelAPIs | 把 TCP 协议（RTSP/HTTP/SSH）隧道化 | 无 | 基于 RDT 的端口映射待做 |
-| avSendIOCtrl | 控制指令通道 | 可靠通道可承载 | IOCtrl 语义封装待做 |
+| IOTC Session (SID) | 设备↔客户端连接载体，上限 128 | `client/sdk/iotc/IOTC.*` SID 句柄表（上限 128） | 已落地 |
+| IOTC Channel（0~31） | 会话内逻辑通道 | `IOTC_Session_Read/Write`（0~31） | 已落地 |
+| AVAPIs (avIndex) | 音视频帧级传输，重传可配，上限 32 通道/连接 | `AVAPIs` + `AvCodec` 分片/重组/too-late-drop | 弱网 1080p 压测待补（P3 验收） |
+| RDTAPIs | 可靠字节流 Read/Write | `RDTAPIs` 分片发送 + leftover 部分读取 | 已落地（大文件压测待补） |
+| P2PTunnelAPIs | 把 TCP 协议（RTSP/HTTP/SSH）隧道化 | `P2PTunnel_Serve/Map` + `TunnelCodec` | 已落地（RTSP/ffmpeg 演示待补） |
+| avSendIOCtrl | 控制指令通道 | `avSendIOCtrl/avRecvIOCtrl`（通道 0 可靠） | 已落地 |
 | LAN Search | 局域网免服务器发现 | CONNECT 携带 lan 地址尝试直连 | UDP 广播发现待做 |
 | Device Wakeup | 低功耗设备唤醒 | 无 | 唤醒保活代理待做 |
 | AuthKey / Token 鉴权 | 报到与连线鉴权 | HMAC-SHA256 挑战应答（已有） | Token 模式 + 前向保密待做 |
@@ -92,7 +92,7 @@ TUTK Kalay 平台的核心价值：设备烧录一个 **UID** 即可被全球任
 | Relay | `server/proxyserver/` | 已有，需扩展配额计量 |
 | 设备/客户端 SDK 核 | `client/sdk/`（api/session/transport/proto/plat） | 已有，需扩展通道 API 层 |
 | 唤醒服务 | `server/wakeserver/`（新增） | 待建 |
-| UID 签发工具 | `tools/uidgen/`（新增） | 待建 |
+| UID 签发工具 | `tools/uidgen/` | 已落地 |
 | 管理面 API | `server/natserver/src/StatusServer.cpp` 扩展 | 雏形（JSON 状态） |
 
 ---
@@ -224,27 +224,42 @@ Client                         NatServer                       Device
     伪造 UID 双门被拒）；全量 **PASS=50 FAIL=0**
   - 未含（后续补）：连线 Token 验签（挂 CONNECT 门）、dev_type 角色语义细化
 
-### P2 会话与通道 API 层（SDK 核心重构）
+### P2 会话与通道 API 层（SDK 核心重构）【已落地】
 - 范围：SID 句柄表（上限 128）与 IOTC 通道（0~31）生命周期管理；
-  C 导出 API（`P2P_Connect_ByUID`/`AV_Start`/...）；线程安全回调→轮询双模式。
+  C 导出 API（`IOTC_Connect_ByUID`/`avStart`/...）；线程安全回调→轮询双模式。
 - 依赖：无（纯 SDK 层，`P2PClient/Session` 之上封装）。
-- 交付物：`client/sdk/iotc/` 新模块 + 头文件 + demo 改造。
+- 交付物：`client/sdk/iotc/` 新模块 + 头文件 + `iotc_demo`。
 - 验收：单会话 4 通道并发（控制+视频+音频+文件）互不干扰；API 覆盖单测。
+- **落地情况**：
+  - `IOTC.h/.cpp`：进程级单例、SID 句柄表、每通道接收队列、阻塞 Read、
+    `IOTC_Session_GetLinkStats`；锁序约定避免与 P2PClient 回调死锁
+  - `AVAPIs` + `AvCodec.h`：帧分片/重组、resend 开关、too-late-drop、IOCtrl、
+    `avGetLinkStats` / `avSuggestedBitrateKbps`
+  - `iotc_demo`：设备/客户端四通道并发回声验收
+  - 验证：`tests/av_frame_test.cpp`；`test.sh` [10] 端到端
 
-### P3 AV 帧级通道
+### P3 AV 帧级通道【核心已随 P2 落地，弱网压测待补】
 - 范围：帧分片/重组、重传开关、延迟预算+too-late-drop、丢帧策略、音频优先、
   IOCtrl 封装；`link_stats` 驱动的码率建议回调。
 - 依赖：P2。
-- 交付物：`AV_SendFrame/AV_RecvFrame/AV_SendIOCtrl` 全链路 + 弱网单测。
+- 交付物：`avSendFrameData/avRecvFrameData/avSendIOCtrl` 全链路 + 弱网单测。
 - 验收：`tc netem` 10% 丢包 + 100ms 延迟下，1080p 模拟流（8Mbps 帧序列）
   卡顿率 < 2%，端到端 P99 延迟 < 800ms；I 帧恢复正确。
+- **已落地**：分片/重组、resend、too-late-drop、IOCtrl、码率建议。
+- **未含**：`tc netem` 1080p 弱网压测、发送队列音频优先、拥塞时自动丢 P 帧。
 
-### P4 RDT 可靠流与 P2PTunnel
+### P4 RDT 可靠流与 P2PTunnel【核心已落地，演示压测待补】
 - 范围：字节流化 + 背压；本地 TCP 端口映射隧道（RTSP 透传验证）。
 - 依赖：P2。
-- 交付物：`RDT_Read/Write`、`Tunnel_Map`；用 ffmpeg 经隧道拉取对端 RTSP 演示。
+- 交付物：`RDT_Read/Write`、`P2PTunnel_Serve/Map`；用 ffmpeg 经隧道拉取对端 RTSP 演示。
 - 验收：隧道内 RTSP 播放稳定；大文件（≥1GB）经 RDT 传输校验一致；
   中继模式下同样可用。
+- **落地情况**：
+  - `RDTAPIs`：可靠通道分片 Write + leftover 部分 Read（窗口满走 IOTC 背压重试）
+  - `TunnelCodec.h` + `P2PTunnelAPIs`：OPEN/DATA/CLOSE 帧，Serve 回连本地 TCP，
+    Map 本机 listen 映射；`common/Net.h::TcpFd` RAII
+  - `iotc_demo` 含 TCP echo 经隧道往返；`av_frame_test` 覆盖 TunnelCodec
+- **未含**：ffmpeg/RTSP 演示、≥1GB 文件压测、中继模式专项用例
 
 ### P5 安全升级
 - 范围：X25519 ECDH 会话密钥协商（前向保密），握手消息走现有可靠通道；

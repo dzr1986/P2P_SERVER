@@ -9,6 +9,7 @@ PROXY_PORT=18833
 NAT_BIN=./server/natserver/bin/p2p_natserver
 PROXY_BIN=./server/proxyserver/bin/p2p_proxy
 PEER_BIN=./client/bin/peer
+IOTC_BIN=./client/bin/iotc_demo
 CFG=/tmp/p2p_auth_test.cfg
 
 PASS=0
@@ -20,7 +21,7 @@ ok()   { PASS=$((PASS+1)); echo "  ok: $1"; }
 
 # 统一清理
 cleanup() {
-    for p in $NAT_PID $NAT2_PID $PROXY_PID $PA_PID $PB_PID; do
+    for p in $NAT_PID $NAT2_PID $PROXY_PID $PA_PID $PB_PID $IOTC_DEV_PID; do
         [ -n "$p" ] && kill -9 $p 2>/dev/null
     done
 }
@@ -59,6 +60,7 @@ echo "== [0] unit tests =="
 ./tests/bin/crypto_test > /tmp/crypto_test.log 2>&1 && ok "crypto unit tests" || fail "crypto unit tests"
 ./tests/bin/session_test > /tmp/session_test.log 2>&1 && ok "session unit tests" || fail "session unit tests"
 ./tests/bin/uid_test > /tmp/uid_test.log 2>&1 && ok "uid unit tests" || fail "uid unit tests"
+./tests/bin/av_frame_test > /tmp/av_frame_test.log 2>&1 && ok "av/tunnel codec unit tests" || fail "av/tunnel codec unit tests"
 
 # ---------------------------------------------------------------- 1. 直连
 echo "== [1] direct P2P (no auth) =="
@@ -281,6 +283,24 @@ grep -q "AUTH_LOGIN uuid\[$DEV_UID\] OK" /tmp/nat.log && ok "valid UID auth via 
 grep -q "ready pub=" /tmp/peerU.log && ok "valid UID registered" || fail "valid UID not registered"
 grep -qE "uuid not in whitelist|rejected" /tmp/peerV.log && ok "invalid UID rejected" || fail "invalid UID not rejected"
 if grep -q "AUTH_LOGIN uuid\[BADUID\] OK" /tmp/nat.log; then fail "invalid UID wrongly authed"; else ok "invalid UID never authed"; fi
+stop_servers
+
+# ---------------------------------------------------------------- 10. IOTC/AV/RDT/Tunnel 四通道 + TCP 映射
+echo "== [10] IOTC/AV/RDT/Tunnel 4-channel echo =="
+start_servers ""
+stdbuf -oL $IOTC_BIN device 127.0.0.1 $NAT_PORT IOTCDEV > /tmp/iotc_dev.log 2>&1 &
+IOTC_DEV_PID=$!
+sleep 1
+stdbuf -oL $IOTC_BIN client 127.0.0.1 $NAT_PORT IOTCCLI IOTCDEV > /tmp/iotc_cli.log 2>&1
+IOTC_RC=$?
+kill -9 $IOTC_DEV_PID 2>/dev/null; IOTC_DEV_PID=""
+[ $IOTC_RC -eq 0 ] && grep -q "4-channel echo PASS" /tmp/iotc_cli.log && ok "iotc client exit 0" || fail "iotc client failed (rc=$IOTC_RC)"
+grep -q "ioctl echo ok" /tmp/iotc_cli.log && ok "IOCtrl echo" || fail "IOCtrl echo missing"
+grep -q "video echo ok frames=5" /tmp/iotc_cli.log && ok "video frame echo" || fail "video frame echo missing"
+grep -q "audio echo ok frames=5" /tmp/iotc_cli.log && ok "audio frame echo" || fail "audio frame echo missing"
+grep -q "rdt echo ok" /tmp/iotc_cli.log && ok "RDT byte-stream echo" || fail "RDT echo missing"
+grep -q "tunnel echo ok" /tmp/iotc_cli.log && ok "P2PTunnel TCP echo" || fail "P2PTunnel echo missing"
+grep -q "device session sid=" /tmp/iotc_dev.log && ok "device listen accepted" || fail "device listen missing"
 stop_servers
 
 echo
