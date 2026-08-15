@@ -1478,7 +1478,7 @@ void P2PClient::note_proxy_tcp(const std::string& ip, uint16_t port) {
         derp_addr_.ip = ip;
         derp_addr_.port = port;
     }
-    if (!derp_fd_.valid()) derp_try_connect();
+    // 只记地址，建链放到 tick_relay，避免在 CONNECT/ICE 回调里阻塞
 }
 
 bool P2PClient::derp_try_connect() {
@@ -1491,7 +1491,7 @@ bool P2PClient::derp_try_connect() {
         return false;
     }
     fd.set_nodelay();
-    fd.set_timeout_ms(2000);
+    fd.set_timeout_ms(400);
     if (!fd.connect_to(derp_addr_.ip.c_str(), derp_addr_.port)) {
         printf("[P2PClient] DERP tcp connect %s:%u failed errno=%d\n",
                derp_addr_.ip.c_str(), (unsigned)derp_addr_.port, errno);
