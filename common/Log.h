@@ -23,6 +23,8 @@ public:
     void set_level(LogLevel lv) { lv_ = lv; }
     LogLevel level() const { return lv_; }
 
+    // format 属性开启编译期格式串检查（成员函数 this 占第 1 参，fmt 为第 4 参）
+    __attribute__((format(printf, 4, 5)))
     void log(LogLevel lv, const char* tag, const char* fmt, ...) {
         if (lv < lv_) return;
         char line[1024];

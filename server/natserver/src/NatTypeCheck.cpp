@@ -61,15 +61,8 @@ static void send_rsp(const UdpFd& sock, const sockaddr_in& to, uint8_t server_in
     rsp.alt_port = htons(alt_port);
 
     uint8_t buf[sizeof(MsgHead) + sizeof(NatDetectRsp)];
-    PacketWriter w(buf, sizeof(buf));
-    MsgHead h{};
-    h.magic = htons(NAT_MAGIC);
-    h.version = PROTO_VER;
-    h.msg_id = MSG_NAT_DETECT_RSP;
-    h.length = htonl(sizeof(rsp));
-    w.write_struct(h);
-    w.write_struct(rsp);
-    sock.send_to(w.data(), w.size(), to);
+    const size_t n = build_msg(buf, sizeof(buf), MSG_NAT_DETECT_RSP, &rsp, sizeof(rsp));
+    if (n > 0) sock.send_to(buf, n, to);
 }
 
 void NatTypeCheck::dual_reply(const sockaddr_in& from, uint8_t server_index_hint) {

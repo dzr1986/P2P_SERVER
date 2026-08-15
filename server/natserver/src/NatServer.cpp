@@ -118,55 +118,78 @@ void NatServer::setup_sync_peers() {
     LOGI("NatServer", "registry sync enabled, %zu peer(s)", sync_addrs_.size());
 }
 
+// run() 线程组：收包（主 + 克隆）/处理池/定时器/NAT 备用 socket/状态服务
+struct NatServer::RunThreads {
+    std::thread main_recv;
+    std::vector<std::thread> clone_recv;
+    std::vector<std::thread> workers;
+    std::thread timer;
+    std::thread nat_alt;
+    std::thread status;
+};
+
+namespace {
+// 停机唤醒：向本机 TCP 端口发起一次连接，使阻塞在 accept 的线程返回
+void wake_tcp_accept(uint16_t port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return;
+    sockaddr_in a{};
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    a.sin_port = htons(port);
+    connect(fd, (const sockaddr*)&a, sizeof(a));
+    close(fd);
+}
+} // namespace
+
+void NatServer::start_threads(RunThreads& t) {
+    t.main_recv = std::thread(&NatServer::recv_thread, this, 0);
+    for (size_t i = 0; i < recv_socks_.size(); i++)
+        t.clone_recv.emplace_back(&NatServer::recv_thread, this, (int)(i + 1));
+    const int workers = cfg_->proc_workers;
+    for (int i = 0; i < workers; i++)
+        t.workers.emplace_back(&NatServer::proc_pool_thread, this, i);
+    t.timer = std::thread(&NatServer::timer_thread, this);
+    t.nat_alt = std::thread(&NatTypeCheck::run_alt_thread, &natcheck_);
+    if (status_port_ > 0) {
+        status_.init(status_port_, [this] { return status_json(); });
+        t.status = std::thread(&StatusServer::run, &status_);
+    }
+    LOGI("NatServer", "start receiving message from client! %zu recv threads + %d workers",
+         recv_socks_.size() + 1, workers);
+}
+
+void NatServer::stop_threads(RunThreads& t) {
+    running_ = false;
+    natcheck_.request_stop();
+    mq_cv_.notify_all();
+
+    t.main_recv.join();
+    for (auto& th : t.clone_recv) th.join();
+    for (auto& th : t.workers) th.join();
+    t.timer.join();
+    t.nat_alt.join();
+    recv_socks_.clear();   // RAII 统一关闭
+    if (t.status.joinable()) {
+        status_.request_stop();
+        wake_tcp_accept(status_port_);
+        t.status.join();
+    }
+}
+
 int NatServer::run() {
     g_srv = this;
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
 
     running_ = true;
+    RunThreads threads;
+    start_threads(threads);
 
-    std::thread rt(&NatServer::recv_thread, this, 0);
-    std::vector<std::thread> rts;
-    for (size_t i = 0; i < recv_socks_.size(); i++)
-        rts.emplace_back(&NatServer::recv_thread, this, (int)(i + 1));
-    std::vector<std::thread> pool;
-    int workers = cfg_->proc_workers;
-    for (int i = 0; i < workers; i++) pool.emplace_back(&NatServer::proc_pool_thread, this, i);
-    std::thread tt(&NatServer::timer_thread, this);
-    std::thread natth(&NatTypeCheck::run_alt_thread, &natcheck_);
-    std::thread st;
-    if (status_port_ > 0) {
-        status_.init(status_port_, [this] { return status_json(); });
-        st = std::thread(&StatusServer::run, &status_);
-    }
-
-    LOGI("NatServer", "start receiving message from client! %zu recv threads + %d workers",
-         recv_socks_.size() + 1, workers);
     request_sync_snapshot();   // 启动即拉取对端全量注册表
     while (running_) sleep(1);
 
-    running_ = false;
-    natcheck_.request_stop();
-    mq_cv_.notify_all();
-
-    rt.join();
-    for (auto& t : rts) t.join();
-    for (auto& t : pool) t.join();
-    tt.join();
-    natth.join();
-    recv_socks_.clear();   // RAII 统一关闭
-    if (st.joinable()) {
-        status_.request_stop();
-        int fd = socket(AF_INET, SOCK_STREAM, 0);  // 唤醒 accept
-        if (fd >= 0) {
-            sockaddr_in a; memset(&a, 0, sizeof(a));
-            a.sin_family = AF_INET; a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-            a.sin_port = htons(status_port_);
-            connect(fd, (sockaddr*)&a, sizeof(a));
-            close(fd);
-        }
-        st.join();
-    }
+    stop_threads(threads);
 
     LOGI("NatServer", "stopped, total_pkts=%llu connect_ok=%llu connect_fail=%llu",
          (unsigned long long)total_pkts_.load(),
@@ -178,15 +201,10 @@ int NatServer::run() {
 bool NatServer::send_msg(const sockaddr_in& to, uint8_t msg_id,
                          const void* payload, size_t plen) {
     uint8_t buf[MAX_PKT];
-    PacketWriter w(buf, sizeof(buf));
-    MsgHead h{};
-    h.magic = htons(NAT_MAGIC);
-    h.version = PROTO_VER;
-    h.msg_id = msg_id;
-    h.length = htonl((uint32_t)plen);
-    if (!w.write_struct(h) || !w.write_bytes(payload, plen)) return false;
+    const size_t n = build_msg(buf, sizeof(buf), msg_id, payload, plen);
+    if (n == 0) return false;
     int fd = natcheck_.main_fd();
-    return sendto(fd, w.data(), w.size(), 0, (const sockaddr*)&to, sizeof(to)) > 0;
+    return sendto(fd, buf, n, 0, (const sockaddr*)&to, sizeof(to)) > 0;
 }
 
 // 鉴权：签发挑战 nonce（30s 有效，一请求一签）

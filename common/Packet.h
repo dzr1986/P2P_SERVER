@@ -8,6 +8,9 @@
 // 定长结构体仍走 memcpy（wire 格式 1 字节对齐，见 ProtoDef.h），
 // 读写器负责的是「边界正确性」而非序列化格式本身。
 
+#include "ProtoDef.h"
+
+#include <arpa/inet.h>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -94,6 +97,20 @@ private:
 template <size_t N>
 inline std::string wire_str(const char (&field)[N]) {
     return std::string(field, strnlen(field, N));
+}
+
+// 构造完整 XN 报文（MsgHead + payload）到 buf，返回总长；容量不足返回 0
+// 统一服务端各处手写 MsgHead 的模式（客户端 SDK 用 proto/Codec.h 等价实现）
+inline size_t build_msg(uint8_t* buf, size_t cap, uint8_t msg_id,
+                        const void* payload, size_t plen) {
+    PacketWriter w(buf, cap);
+    MsgHead h{};
+    h.magic = htons(NAT_MAGIC);
+    h.version = PROTO_VER;
+    h.msg_id = msg_id;
+    h.length = htonl((uint32_t)plen);
+    if (!w.write_struct(h) || !w.write_bytes(payload, plen)) return 0;
+    return w.size();
 }
 
 } // namespace p2p

@@ -3,9 +3,11 @@
 #include "Log.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <unordered_map>
 
 namespace p2p {
 
@@ -41,69 +43,69 @@ static bool split_ip_port(const std::string& in, std::string& ip, uint16_t* port
     return valid_ip(ip);
 }
 
-static void parse_value(CfgData& out, const std::string& key, const std::string& val) {
-    std::string ip;
-    uint16_t p = 0;
+static bool to_bool(const std::string& v) {
+    return v == "1" || v == "true" || v == "yes";
+}
 
-    if (key.rfind("NatServer", 0) == 0) {
-        if (split_ip_port(val, ip, &p)) out.nat_ips.push_back(ip);
-        else LOGE("CfgFile", "bad NatServer value: %s", val.c_str());
-    } else if (key.rfind("Proxy", 0) == 0) {
-        if (split_ip_port(val, ip, &p)) out.proxy_ips.push_back(ip);
-        else LOGE("CfgFile", "bad Proxy value: %s", val.c_str());
-    } else if (key == "AuthSecret") {
-        out.auth_secret = val;
-    } else if (key == "EnableAuth") {
-        out.enable_auth = (val == "1" || val == "true" || val == "yes");
-    } else if (key == "EnableLicense") {
-        out.enable_license = (val == "1" || val == "true" || val == "yes");
-    } else if (key == "LicenseFile") {
-        out.license_file = val;
-    } else if (key == "LicensePass") {
-        out.license_pass = val;
-    } else if (key == "AllowedUuids" || key == "WhitelistUuids") {
-        out.allowed_uuids.clear();
-        std::string cur;
-        for (char c : val) {
-            if (c == ',') { if (!cur.empty()) out.allowed_uuids.push_back(cur); cur.clear(); }
-            else cur += c;
-        }
-        if (!cur.empty()) out.allowed_uuids.push_back(cur);
-        if (key == "WhitelistUuids") out.enable_license = true;  // 别名：写即启用白名单
-    } else if (key == "ProcWorkers") {
-        int n = atoi(val.c_str());
-        if (n >= 1 && n <= 64) out.proc_workers = n;
-    } else if (key == "RecvThreads") {
-        int n = atoi(val.c_str());
-        if (n >= 1 && n <= 16) out.recv_threads = n;
-    } else if (key == "FloodPktThreshold") {
-        uint32_t n = (uint32_t)atoi(val.c_str());
-        if (n >= 1) out.flood_pkt_threshold = n;
-    } else if (key == "BlacklistSeconds") {
-        uint32_t n = (uint32_t)atoi(val.c_str());
-        if (n >= 1) out.blacklist_seconds = n;
-    } else if (key == "NatSock2Port") {
-        uint16_t n = (uint16_t)atoi(val.c_str());
-        if (n > 0) out.nat_sock2_port = n;
-    } else if (key == "SyncPeers") {
-        out.sync_enabled = (val == "1" || val == "true" || val == "yes");
-    } else if (key == "SyncAddrs") {
-        out.sync_addrs.clear();
-        std::string cur;
-        for (char c : val) {
-            if (c == ',') { if (!cur.empty()) out.sync_addrs.push_back(cur); cur.clear(); }
-            else cur += c;
-        }
-        if (!cur.empty()) out.sync_addrs.push_back(cur);
-    } else if (key == "SyncAuthSecret") {
-        out.sync_auth_secret = val;
-    } else if (key == "AdminSecret") {
-        out.admin_secret = val;
-    } else if (key == "BlacklistFile") {
-        out.blacklist_file = val;
-    } else if (key == "BlacklistPass") {
-        out.blacklist_pass = val;
+static std::vector<std::string> split_csv(const std::string& v) {
+    std::vector<std::string> out;
+    std::string cur;
+    for (char c : v) {
+        if (c == ',') { if (!cur.empty()) out.push_back(cur); cur.clear(); }
+        else cur += c;
     }
+    if (!cur.empty()) out.push_back(cur);
+    return out;
+}
+
+// 范围校验的整数解析：越界/非法保持原值
+template <typename T>
+static void set_int_in_range(T& field, const std::string& val, long min_v, long max_v) {
+    const long n = atol(val.c_str());
+    if (n >= min_v && n <= max_v) field = (T)n;
+}
+
+// 表驱动的配置项注册：新增配置只需加一行（前缀键 NatServer*/Proxy* 单独处理）
+static void parse_value(CfgData& out, const std::string& key, const std::string& val) {
+    if (key.rfind("NatServer", 0) == 0) {
+        std::string ip;
+        if (split_ip_port(val, ip, nullptr)) out.nat_ips.push_back(ip);
+        else LOGE("CfgFile", "bad NatServer value: %s", val.c_str());
+        return;
+    }
+    if (key.rfind("Proxy", 0) == 0) {
+        std::string ip;
+        if (split_ip_port(val, ip, nullptr)) out.proxy_ips.push_back(ip);
+        else LOGE("CfgFile", "bad Proxy value: %s", val.c_str());
+        return;
+    }
+
+    using Setter = void (*)(CfgData&, const std::string&);
+    static const std::unordered_map<std::string, Setter> kSetters = {
+        {"AuthSecret",     [](CfgData& c, const std::string& v) { c.auth_secret = v; }},
+        {"EnableAuth",     [](CfgData& c, const std::string& v) { c.enable_auth = to_bool(v); }},
+        {"EnableLicense",  [](CfgData& c, const std::string& v) { c.enable_license = to_bool(v); }},
+        {"LicenseFile",    [](CfgData& c, const std::string& v) { c.license_file = v; }},
+        {"LicensePass",    [](CfgData& c, const std::string& v) { c.license_pass = v; }},
+        {"AllowedUuids",   [](CfgData& c, const std::string& v) { c.allowed_uuids = split_csv(v); }},
+        {"WhitelistUuids", [](CfgData& c, const std::string& v) {
+             c.allowed_uuids = split_csv(v);
+             c.enable_license = true;   // 别名：写即启用白名单
+         }},
+        {"ProcWorkers",       [](CfgData& c, const std::string& v) { set_int_in_range(c.proc_workers, v, 1, 64); }},
+        {"RecvThreads",       [](CfgData& c, const std::string& v) { set_int_in_range(c.recv_threads, v, 1, 16); }},
+        {"FloodPktThreshold", [](CfgData& c, const std::string& v) { set_int_in_range(c.flood_pkt_threshold, v, 1, 0x7FFFFFFF); }},
+        {"BlacklistSeconds",  [](CfgData& c, const std::string& v) { set_int_in_range(c.blacklist_seconds, v, 1, 0x7FFFFFFF); }},
+        {"NatSock2Port",      [](CfgData& c, const std::string& v) { set_int_in_range(c.nat_sock2_port, v, 1, 65535); }},
+        {"SyncPeers",      [](CfgData& c, const std::string& v) { c.sync_enabled = to_bool(v); }},
+        {"SyncAddrs",      [](CfgData& c, const std::string& v) { c.sync_addrs = split_csv(v); }},
+        {"SyncAuthSecret", [](CfgData& c, const std::string& v) { c.sync_auth_secret = v; }},
+        {"AdminSecret",    [](CfgData& c, const std::string& v) { c.admin_secret = v; }},
+        {"BlacklistFile",  [](CfgData& c, const std::string& v) { c.blacklist_file = v; }},
+        {"BlacklistPass",  [](CfgData& c, const std::string& v) { c.blacklist_pass = v; }},
+    };
+    auto it = kSetters.find(key);
+    if (it != kSetters.end()) it->second(out, val);
     // 未知 key 忽略
 }
 

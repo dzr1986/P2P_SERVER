@@ -64,16 +64,11 @@ int P2PProxy::send(const sockaddr_in& to, uint8_t msg_id,
     const UdpFd& out = socks_.front();
 
     uint8_t buf[MAX_PKT];
-    PacketWriter w(buf, sizeof(buf));
-    MsgHead h{};
-    h.magic = htons(NAT_MAGIC);
-    h.version = PROTO_VER;
-    h.msg_id = msg_id;
-    h.length = htonl((uint32_t)plen);
-    if (!w.write_struct(h) || !w.write_bytes(payload, plen)) return -1;
+    const size_t total = build_msg(buf, sizeof(buf), msg_id, payload, plen);
+    if (total == 0) return -1;
 
     for (int attempt = 0; attempt < 3; attempt++) {
-        ssize_t n = out.send_to(w.data(), w.size(), to);
+        ssize_t n = out.send_to(buf, total, to);
         if (n >= 0) return (int)n;
         if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) break;
     }

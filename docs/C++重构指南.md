@@ -62,16 +62,30 @@
 | `AntiAbuse`/`LicenseMgr`/`CfgFile` | 文件 IO 全部 `FileHandle` RAII 化，load 统一 `read_file_all` |
 | `client/sdk/api/P2PClient` | 清理全部编译警告（聚合初始化 `{}`、未用参数），全仓 `-Wall -Wextra` 零警告 |
 
-## 3. 待重构路线（后续分批，每批保持测试全绿）
+## 2.2 第三批已完成（路线收官）
 
-| 优先级 | 模块 | 计划 |
-|--------|------|------|
-| 高 | `client/sdk/api/P2PClient.cpp` | `Conn` 状态机字段（connecting/connected/have_direct/direct_ok/relay_ok 布尔组合）收拢为显式 `enum class State`，转移集中到单函数 |
-| 中 | `server/natserver/NatServer.cpp` | `run()` 线程编排拆分（start/stop helper）；StatusServer 停机唤醒 socket RAII |
-| 中 | `common/ProtoDef.h` | 消息构造统一经 `PacketWriter` 辅助函数（`make_msg<T>(id, body)`），逐步消灭调用方手写 `MsgHead` |
-| 中 | 时间类型 | `time_t`/`uint64_t ms` 混用收敛为 `std::chrono::steady_clock`（先 SDK 后服务端） |
-| 低 | `CfgFile.cpp` | `std::string_view` 解析；配置项表驱动注册 |
-| 低 | 日志 | `Log.h` 增加编译期格式检查（`__attribute__((format)))` |
+| 模块 | 改动 |
+|------|------|
+| `client/sdk/api/P2PClient` | `connecting/connected` 双布尔收拢为 `enum class ConnState`（Idle → Connecting → Connected）；连接建立转移集中到唯一入口 `set_connected()`（原先散落 4 处的「置位 + 回调」模式）；`via_relay` 记录路径类型 |
+| `server/natserver/NatServer.cpp` | `run()` 线程编排拆分为 `start_threads()`/`stop_threads()`（`RunThreads` 线程组结构）；StatusServer 停机唤醒收拢为 `wake_tcp_accept()` 辅助函数 |
+| `common/Packet.h` | 新增 `build_msg()` 统一 XN 报文构造，消灭 NatServer/P2PProxy/NatTypeCheck 三处手写 `MsgHead` |
+| `server/natserver/CfgFile.cpp` | `parse_value` 巨型 if-else 链改为表驱动（key → setter 函数指针表），新增配置项只需加一行；抽取 `to_bool`/`split_csv`/`set_int_in_range` 辅助 |
+| `common/Log.h` | `log()` 增加 `__attribute__((format(printf)))` 编译期格式串检查（全量重编零告警，存量格式串全部正确） |
+
+### 决策记录：时间类型保留 `uint64_t ms`
+
+原路线中「`std::chrono` 收敛」项评估后决定**不做**：
+- SDK 已有单一时钟源 `plat_now_ms()`（steady_clock 毫秒），所有超时/重传/心跳共用，无混用歧义；
+- 换成 `std::chrono::time_point/duration` 需触及 Session/P2PClient/NatDetect 全部计时点，
+  属纯类型改写，无行为收益，且增加嵌入式移植成本（`Plat.h` 是唯一平台隔离点）；
+- 服务端侧 `time_t`（秒级 TTL）与毫秒时钟职责不同，保留现状。
+
+## 3. 后续可选项（非必须）
+
+| 模块 | 说明 |
+|------|------|
+| `common/ProtoDef.h` | 若协议扩展频繁，可进一步引入类型安全的消息注册表（msg_id → 结构体映射，编译期校验） |
+| 客户端 SDK | 计划书 P2 阶段的 IOTC/AV/RDT 通道 API 层（新增代码直接按本指南规范编写） |
 
 ## 4. 验证清单（每批重构必跑）
 

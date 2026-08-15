@@ -102,6 +102,11 @@ private:
     void proc_pool_thread(int id);
     void timer_thread();
 
+    // run() 线程编排：启动/停止全部工作线程（定义见 NatServer.cpp）
+    struct RunThreads;
+    void start_threads(RunThreads& t);
+    void stop_threads(RunThreads& t);
+
     // SO_REUSEPORT 克隆收包 socket（与主端口同端口），失败返回无效句柄
     UdpFd make_recv_socket(uint16_t port);
 
