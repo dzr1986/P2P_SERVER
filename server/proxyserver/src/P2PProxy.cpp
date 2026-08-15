@@ -22,6 +22,8 @@ P2PProxy::~P2PProxy() {}
 
 static constexpr time_t REG_TTL = 120;   // 注册表项 120s 无刷新回收
 static constexpr time_t COUNT_TTL = 5;   // 计数衰减周期
+static constexpr size_t MAX_SRCPATHS_KEYS = 65536;   // srcpaths_ 一级 key（源地址）上限，防止短连接洪泛下无界增长
+static constexpr int    SEND_RETRY = 3;              // sendto 瞬时失败（EINTR/EAGAIN）重试次数
 
 // 代理注册鉴权共享密钥（演示用固定值；生产环境应从配置/环境变量注入）
 static const uint8_t kProxyAuthKey[] = "p2p-proxy-auth-2024";
@@ -82,7 +84,18 @@ int P2PProxy::send(const sockaddr_in& to, uint8_t msg_id,
     h.length = htonl((uint32_t)plen);
     memcpy(buf, &h, sizeof(h));
     if (plen) memcpy(buf + sizeof(h), payload, plen);
-    return (int)sendto(fd, buf, sizeof(h) + plen, 0, (const sockaddr*)&to, sizeof(to));
+
+    size_t total = sizeof(h) + plen;
+    ssize_t r = -1;
+    for (int attempt = 0; attempt < SEND_RETRY; attempt++) {
+        r = sendto(fd, buf, total, 0, (const sockaddr*)&to, sizeof(to));
+        if (r >= 0) return (int)r;
+        // 仅对瞬时错误重试（信号中断/发送缓冲区暂满），其余错误直接放弃
+        if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) break;
+    }
+    LOGW("Proxy", "sendto msg_id=0x%02x to[%s] failed after retries: %s",
+         msg_id, addr_to_str(to).c_str(), strerror(errno));
+    return -1;
 }
 
 void P2PProxy::do_register(const std::string& uuid, const sockaddr_in& from,
@@ -214,34 +227,49 @@ void P2PProxy::handle(uint8_t* data, size_t len, const sockaddr_in& from) {
                 LOGD("Proxy", "relay drop, dst[%s] not registered", frame->dst_uuid);
                 return;
             }
-            // 源->目标 中转路径：命中则计数重置，未命中则创建
+            // 源->目标 中转路径：命中则计数重置，未命中则创建（受表容量上限保护，防止
+            // 短连接洪泛下 srcpaths_ 无界增长；仅限制新增，已存在的路径正常刷新）
             uint64_t src_key = addr_to_u64(from);
-            auto& m = srcpaths_[src_key];
-            auto pit = m.find(dst_key);
-            if (pit == m.end()) {
-                PathInfo pi;
-                pi.dst = dst;
-                pi.count = 3;
-                pi.uuid = frame->dst_uuid;
-                pi.last_active = time(nullptr);
-                m[dst_key] = pi;
+            bool table_full = srcpaths_.size() >= MAX_SRCPATHS_KEYS;
+            auto sit = srcpaths_.find(src_key);
+            if (sit == srcpaths_.end() && table_full) {
+                LOGW("Proxy", "srcpaths_ full (%zu), drop new path tracking for [%s]",
+                     srcpaths_.size(), addr_to_str(from).c_str());
             } else {
-                pit->second.count = 3;
-                pit->second.last_active = time(nullptr);
+                auto& m = srcpaths_[src_key];
+                auto pit = m.find(dst_key);
+                if (pit == m.end()) {
+                    PathInfo pi;
+                    pi.dst = dst;
+                    pi.count = 3;
+                    pi.uuid = frame->dst_uuid;
+                    pi.last_active = time(nullptr);
+                    m[dst_key] = pi;
+                } else {
+                    pit->second.count = 3;
+                    pit->second.last_active = time(nullptr);
+                }
             }
-            // 目标->源 反向路径（供回包）
-            auto& m2 = srcpaths_[dst_key];
-            auto pit2 = m2.find(src_key);
-            if (pit2 == m2.end()) {
-                PathInfo pi;
-                pi.dst = from;
-                pi.count = 3;
-                pi.uuid = frame->src_uuid;
-                pi.last_active = time(nullptr);
-                m2[src_key] = pi;
+            // 目标->源 反向路径（供回包），同样受容量上限保护
+            table_full = srcpaths_.size() >= MAX_SRCPATHS_KEYS;
+            auto dit = srcpaths_.find(dst_key);
+            if (dit == srcpaths_.end() && table_full) {
+                LOGW("Proxy", "srcpaths_ full (%zu), drop reverse path tracking for [%s]",
+                     srcpaths_.size(), addr_to_str(dst).c_str());
             } else {
-                pit2->second.count = 3;
-                pit2->second.last_active = time(nullptr);
+                auto& m2 = srcpaths_[dst_key];
+                auto pit2 = m2.find(src_key);
+                if (pit2 == m2.end()) {
+                    PathInfo pi;
+                    pi.dst = from;
+                    pi.count = 3;
+                    pi.uuid = frame->src_uuid;
+                    pi.last_active = time(nullptr);
+                    m2[src_key] = pi;
+                } else {
+                    pit2->second.count = 3;
+                    pit2->second.last_active = time(nullptr);
+                }
             }
         }
 
