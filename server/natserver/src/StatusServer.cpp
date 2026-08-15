@@ -2,8 +2,10 @@
 #include "Log.h"
 
 #include <arpa/inet.h>
+#include <cerrno>
 #include <cstring>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 namespace p2p {
@@ -13,9 +15,12 @@ StatusServer::~StatusServer() {
     if (sock_ >= 0) close(sock_);
 }
 
-int StatusServer::init(uint16_t port, std::function<std::string()> json_provider) {
+int StatusServer::init(uint16_t port,
+                       std::function<std::string()> json_provider,
+                       std::function<std::string()> metrics_provider) {
     port_ = port;
-    provider_ = std::move(json_provider);
+    json_provider_ = std::move(json_provider);
+    metrics_provider_ = std::move(metrics_provider);
 
     sock_ = socket(AF_INET, SOCK_STREAM, 0);
     if (sock_ < 0) { perror("[StatusServer] socket"); return -1; }
@@ -40,8 +45,21 @@ int StatusServer::init(uint16_t port, std::function<std::string()> json_provider
         return -1;
     }
     running_ = true;
-    LOGI("StatusServer", "listening on port %u", (unsigned)port_);
+    LOGI("StatusServer", "listening on port %u (/ and /metrics)", (unsigned)port_);
     return 0;
+}
+
+static std::string http_path(const char* buf, ssize_t n) {
+    if (!buf || n < 4) return "/";
+    const char* p = buf;
+    const char* end = buf + n;
+    while (p < end && *p != ' ') p++;
+    if (p >= end) return "/";
+    p++;
+    const char* start = p;
+    while (p < end && *p != ' ' && *p != '\r' && *p != '\n') p++;
+    if (p == start) return "/";
+    return std::string(start, p);
 }
 
 void StatusServer::run() {
@@ -55,16 +73,26 @@ void StatusServer::run() {
             continue;
         }
 
-        // 简化：读掉请求头（带超时），回 HTTP/1.0 JSON，关闭
         struct timeval tv{2, 0};
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         char buf[1024];
-        recv(fd, buf, sizeof(buf), 0);  // 忽略请求体
+        ssize_t n = recv(fd, buf, sizeof(buf) - 1, 0);
+        if (n < 0) n = 0;
+        buf[n] = 0;
 
-        std::string body = provider_ ? provider_() : "{}";
+        const std::string path = http_path(buf, n);
+        const bool metrics = (path == "/metrics" || path.rfind("/metrics?", 0) == 0);
+        std::string body;
+        const char* ctype = "application/json";
+        if (metrics && metrics_provider_) {
+            body = metrics_provider_();
+            ctype = "text/plain; version=0.0.4; charset=utf-8";
+        } else {
+            body = json_provider_ ? json_provider_() : "{}";
+        }
         std::string resp =
-            "HTTP/1.0 200 OK\r\n"
-            "Content-Type: application/json\r\n"
+            std::string("HTTP/1.0 200 OK\r\n") +
+            "Content-Type: " + ctype + "\r\n"
             "Connection: close\r\n"
             "Content-Length: " + std::to_string(body.size()) + "\r\n"
             "\r\n" + body;

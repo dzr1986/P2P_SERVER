@@ -33,6 +33,9 @@ int uid_generate(const char* prefix, char region, char out[UID_LEN + 1]);
 // 校验 UID：长度、字符集、CRC 全部通过返回 true
 bool uid_valid(const char* uid);
 
+// 取出结构化 UID 的 REGION 字符（uid[4]）；非法 UID 返回 0
+char uid_region(const char* uid);
+
 // 按 master 密钥派生每 UID 独立 AuthKey（32 字节）
 void uid_derive_auth_key(const uint8_t* master, size_t master_len,
                          const char* uid, uint8_t out[AUTH_KEY_LEN]);

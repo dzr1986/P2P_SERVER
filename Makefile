@@ -16,6 +16,7 @@ BIN_SESSIONTEST := tests/bin/session_test
 BIN_UIDTEST := tests/bin/uid_test
 BIN_UIDGEN  := tools/bin/uidgen
 BIN_AVTEST  := tests/bin/av_frame_test
+BIN_SCHEDTEST := tests/bin/sched_test
 BIN_IOTCDEMO := client/bin/iotc_demo
 
 COMMON_SRCS := common/Crypto.cpp common/Uid.cpp common/X25519.cpp
@@ -39,7 +40,7 @@ PROXY_SRCS := server/proxyserver/src/P2PProxy.cpp
 PEER_SRCS  := client/demo/peer.cpp \
               client/sdk/api/P2PClient.cpp
 
-all: $(LIBJUICE) $(BIN_NAT) $(BIN_PROXY) $(BIN_PEER) $(BIN_CRYPTOTEST) $(BIN_SESSIONTEST) $(BIN_UIDTEST) $(BIN_UIDGEN) $(BIN_AVTEST) $(BIN_IOTCDEMO)
+all: $(LIBJUICE) $(BIN_NAT) $(BIN_PROXY) $(BIN_PEER) $(BIN_CRYPTOTEST) $(BIN_SESSIONTEST) $(BIN_UIDTEST) $(BIN_UIDGEN) $(BIN_AVTEST) $(BIN_SCHEDTEST) $(BIN_IOTCDEMO)
 
 $(LIBJUICE):
 	cmake -B third_party/libjuice/build -S third_party/libjuice -DCMAKE_BUILD_TYPE=Release
@@ -77,6 +78,10 @@ $(BIN_UIDGEN): tools/uidgen/uidgen.cpp $(COMMON_SRCS) common/Uid.h $(LIBJUICE)
 $(BIN_AVTEST): tests/av_frame_test.cpp client/sdk/iotc/AvCodec.h client/sdk/iotc/TunnelCodec.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tests/av_frame_test.cpp
+
+$(BIN_SCHEDTEST): tests/sched_test.cpp $(COMMON_SRCS) common/RegionSched.h common/Uid.h $(LIBJUICE)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -o $@ tests/sched_test.cpp $(COMMON_SRCS) $(LDFLAGS)
 
 $(BIN_IOTCDEMO): client/demo/iotc_demo.cpp $(IOTC_SRCS) $(COMMON_SRCS) common/ProtoDef.h $(LIBJUICE)
 	@mkdir -p $(dir $@)

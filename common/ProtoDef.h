@@ -56,7 +56,7 @@ enum MsgId : uint8_t {
     MSG_CONNECT_INVITE        = 0x08,  // 通知目标方:     ConnectInvite
     MSG_GET_DEV_LIST_REQ      = 0x09,  // 设备列表查询:   DevListReq -> DevListRsp(+entry*n)
     MSG_GET_DEV_LIST_RSP      = 0x0A,
-    MSG_GET_SERVER_LIST_REQ   = 0x0B,  // 服务器列表查询 -> ServerListRsp
+    MSG_GET_SERVER_LIST_REQ   = 0x0B,  // 服务器列表查询: ServerListReq -> ServerListRsp
     MSG_GET_SERVER_LIST_RSP   = 0x0C,
     MSG_ADD_UID_REQ           = 0x0D,  // 授权 UID 增:    UuidReq
     MSG_DELETE_UID_REQ        = 0x0E,  // 授权 UID 删:    UuidReq
@@ -184,6 +184,11 @@ struct DevListEntry {
     char     ip[MAX_IP_LEN];
     uint16_t port;            // 网络序
     uint8_t  dev_type;
+};
+
+// 服务器列表查询（可选携带本端 UID，用于 REGION 就近排序；空 uuid=按本节点区域）
+struct ServerListReq {
+    char uuid[MAX_UUID_LEN + 1];
 };
 
 // 服务器列表应答（定长头 + nat_count + proxy_count 个 MAX_IP_LEN 字节 IP 串）

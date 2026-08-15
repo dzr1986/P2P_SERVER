@@ -279,7 +279,7 @@ Client                         NatServer                       Device
   - 验证：`crypto_test` X25519/FS 派生；`test.sh` [5] `fs-hs=` 端到端
 - **未含**：连线 Token 挂 CONNECT 门（P1 遗留）
 
-### P6 服务端集群与调度
+### P6 服务端集群与调度【核心已落地，规模压测待补】
 - 范围：多区域部署模型（区域内同步已有，跨区按 UID REGION 调度）；
   客户端 `GET_SERVER_LIST`（已有）扩展为就近排序；Relay 按负载/地理择优
   （`pick_proxy` 已有雏形）；Prometheus 指标导出（StatusServer 扩展）；
@@ -287,6 +287,16 @@ Client                         NatServer                       Device
 - 依赖：P1。
 - 验收：单节点 10 万模拟设备在线心跳压测 CPU < 50%；节点故障时设备
   在一个心跳周期内迁移到备节点（跨服同步保证在线表可用）。
+- **落地情况**：
+  - 配置：`Region` / `NatRegions` / `ProxyRegions`（`ip:R` 标注）
+  - `GET_SERVER_LIST` 按请求 UID REGION（`ServerListReq`）就近稳定排序；
+    无 UID 时回退本节点 `Region`
+  - `pick_proxy`：健康代理空闲度加权 × 同区×3 / 本节点区×1.5；回退列表同样就近
+  - StatusServer：`GET /` JSON（含 region/uptime/login_*）；`GET /metrics` Prometheus
+  - 客户端：中继建链后（非 `force_relay`）后台继续打洞；`direct_ok` 后
+    `via_relay` 切回 P2P 并再次回调 `on_connected(relay=false)`
+  - 验证：`tests/sched_test.cpp`；`test.sh` [12]
+- **未含**：10 万心跳压测、节点故障热迁移演练（跨服同步已有，本轮未扩压测）
 
 ### P7 低功耗唤醒 + 多平台 SDK
 - 范围：wakeserver 与唤醒协议；SDK 移植层落地（`Plat.h` 已抽象）：

@@ -25,6 +25,9 @@ int main() {
     CHECK(strlen(uid) == UID_LEN, "length is 20");
     CHECK(uid_valid(uid), "generated uid passes validation");
     CHECK(strncmp(uid, "CAMA", 4) == 0 && uid[4] == 'C', "prefix/region preserved");
+    CHECK(uid_region(uid) == 'C', "uid_region extracts C");
+    CHECK(uid_region("BADUID") == 0, "uid_region rejects unstructured");
+    CHECK(uid_region(nullptr) == 0, "uid_region null");
 
     // 2. 篡改任一字符 CRC 必失败
     bool tamper_all_rejected = true;

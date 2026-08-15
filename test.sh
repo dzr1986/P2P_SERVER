@@ -61,6 +61,7 @@ echo "== [0] unit tests =="
 ./tests/bin/session_test > /tmp/session_test.log 2>&1 && ok "session unit tests" || fail "session unit tests"
 ./tests/bin/uid_test > /tmp/uid_test.log 2>&1 && ok "uid unit tests" || fail "uid unit tests"
 ./tests/bin/av_frame_test > /tmp/av_frame_test.log 2>&1 && ok "av/tunnel codec unit tests" || fail "av/tunnel codec unit tests"
+./tests/bin/sched_test > /tmp/sched_test.log 2>&1 && ok "region scheduler unit tests" || fail "region scheduler unit tests"
 
 # ---------------------------------------------------------------- 1. 直连
 echo "== [1] direct P2P (no auth) =="
@@ -318,6 +319,60 @@ kill -9 $IOTC_DEV_PID 2>/dev/null; IOTC_DEV_PID=""
 grep -q "relay=1" /tmp/iotc_cli.log && ok "client via relay" || fail "client not via relay"
 grep -q "rdt echo ok" /tmp/iotc_cli.log && ok "RDT echo over relay" || fail "RDT relay echo missing"
 grep -q "tunnel echo ok" /tmp/iotc_cli.log && ok "P2PTunnel over relay" || fail "tunnel relay echo missing"
+stop_servers
+
+# ---------------------------------------------------------------- 12. P6 就近调度 + Prometheus
+echo "== [12] region schedule + Prometheus /metrics =="
+STATUS_PORT=18890
+export P2P_STATUS_PORT=$STATUS_PORT
+printf 'NatServer1=10.0.0.1\nNatServer2=10.0.0.2\nNatServer3=127.0.0.1\nProxy1_1=10.1.0.1\nProxy1_2=127.0.0.1\nRegion=C\nNatRegions=10.0.0.1:A,10.0.0.2:B,127.0.0.1:C\nProxyRegions=10.1.0.1:A,127.0.0.1:C\n' > $CFG
+start_servers "$CFG"
+sleep 0.3
+MET=$(python3 - <<PY
+import urllib.request
+print(urllib.request.urlopen("http://127.0.0.1:$STATUS_PORT/metrics", timeout=2).read().decode())
+PY
+)
+echo "$MET" | grep -q "p2p_online_peers" && ok "prometheus p2p_online_peers" || fail "metrics missing p2p_online_peers"
+echo "$MET" | grep -q "p2p_connect_ok_total" && ok "prometheus connect counter" || fail "metrics missing connect counter"
+echo "$MET" | grep -q 'p2p_node_region{region="C"}' && ok "prometheus region label" || fail "metrics missing region"
+JS=$(python3 - <<PY
+import urllib.request
+print(urllib.request.urlopen("http://127.0.0.1:$STATUS_PORT/", timeout=2).read().decode())
+PY
+)
+echo "$JS" | grep -q '"region":"C"' && ok "json region=C" || fail "json region missing ($JS)"
+echo "$JS" | grep -q '"uptime_seconds"' && ok "json uptime" || fail "json uptime missing"
+
+UIDA=$(./tools/bin/uidgen CAMA A 1 master-secret-2026 | awk '{print $1}')
+UIDC=$(./tools/bin/uidgen CAMA C 1 master-secret-2026 | awk '{print $1}')
+cat > /tmp/p2p_slist.py <<'PYEOF'
+import socket, struct, sys
+port, uid = int(sys.argv[1]), sys.argv[2]
+payload = uid.encode().ljust(33, b"\x00")[:33]
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(2); s.bind(("127.0.0.1", 0))
+s.sendto(struct.pack(">HBBI", 0x584E, 0x02, 0x0B, len(payload)) + payload, ("127.0.0.1", port))
+data, _ = s.recvfrom(4096)
+body = data[8:]
+nat_n, proxy_n = struct.unpack(">HH", body[:4])
+off = 4
+nats = []
+for _ in range(nat_n):
+    nats.append(body[off:off+16].split(b"\x00")[0].decode()); off += 16
+proxies = []
+for _ in range(proxy_n):
+    proxies.append(body[off:off+16].split(b"\x00")[0].decode()); off += 16
+print("NATS=" + ",".join(nats))
+print("PROXIES=" + ",".join(proxies))
+PYEOF
+LA=$(python3 /tmp/p2p_slist.py $NAT_PORT "$UIDA")
+LC=$(python3 /tmp/p2p_slist.py $NAT_PORT "$UIDC")
+echo "$LA" | grep -q "NATS=10.0.0.1," && ok "GET_SERVER_LIST region A prefers 10.0.0.1" || fail "region A sort ($LA)"
+echo "$LC" | grep -q "NATS=127.0.0.1," && ok "GET_SERVER_LIST region C prefers 127.0.0.1" || fail "region C sort ($LC)"
+echo "$LA" | grep -q "PROXIES=10.1.0.1," && ok "proxy list region A prefers 10.1.0.1" || fail "proxy A sort ($LA)"
+echo "$LC" | grep -q "PROXIES=127.0.0.1," && ok "proxy list region C prefers 127.0.0.1" || fail "proxy C sort ($LC)"
+unset P2P_STATUS_PORT
 stop_servers
 
 echo

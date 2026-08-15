@@ -14,6 +14,7 @@
 #include <array>
 #include <condition_variable>
 #include <cstdint>
+#include <ctime>
 #include <deque>
 #include <map>
 #include <memory>
@@ -77,6 +78,8 @@ public:
                        const uint8_t* payload, size_t plen);
     void inc_connect_ok() { connect_ok_.fetch_add(1); }
     void inc_connect_fail() { connect_fail_.fetch_add(1); }
+    void inc_login_ok() { login_ok_.fetch_add(1); }
+    void inc_login_fail() { login_fail_.fetch_add(1); }
 
     // 鉴权挑战/登录（挑战应答）
     bool issue_auth_nonce(const std::string& uuid, uint8_t out_nonce[16]);
@@ -119,7 +122,7 @@ private:
     void on_msg_connect_req(const uint8_t* p, size_t plen, const sockaddr_in& from);
     void on_msg_ice_sdp(uint8_t* p, size_t plen, const sockaddr_in& from);
     void on_msg_dev_list(const uint8_t* p, size_t plen, const sockaddr_in& from);
-    void on_msg_server_list(const sockaddr_in& from);
+    void on_msg_server_list(const uint8_t* p, size_t plen, const sockaddr_in& from);
     void on_msg_delete_uid(const uint8_t* p, size_t plen);
     void on_msg_check_uid(const uint8_t* p, size_t plen, const sockaddr_in& from);
     void on_msg_auth_challenge(const uint8_t* p, size_t plen, const sockaddr_in& from);
@@ -137,8 +140,9 @@ private:
     void send_proxy_avail_query(const std::string& proxy_ip);
     void collect_proxy_avail(const sockaddr_in& from, const ProxyAvailRsp& rsp);
     void mark_proxy_stale();
-    void pick_proxy(ProxyCandidate out[3], uint8_t& count);
+    void pick_proxy(ProxyCandidate out[3], uint8_t& count, char prefer_region = 0);
     std::string status_json() const;
+    std::string status_metrics() const;
 
     // 注册表同步
     void setup_sync_peers();                          // init 后解析同步对端
@@ -182,7 +186,7 @@ private:
     std::vector<UdpFd>      recv_socks_;
 
     // 代理健康表（SP_ASK_EXTINFO_RSP 刷新）
-    std::mutex proxy_mu_;
+    mutable std::mutex proxy_mu_;
     std::vector<ProxyHealth> proxy_health_;
 
     // 鉴权 nonce 表（uuid -> {nonce, 过期}）
@@ -193,6 +197,9 @@ private:
     std::atomic<uint64_t> total_pkts_{0};
     std::atomic<uint64_t> connect_ok_{0};
     std::atomic<uint64_t> connect_fail_{0};
+    std::atomic<uint64_t> login_ok_{0};
+    std::atomic<uint64_t> login_fail_{0};
+    time_t started_at_ = 0;
 };
 
 } // namespace p2p

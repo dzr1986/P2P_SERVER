@@ -60,6 +60,10 @@ bool uid_valid(const char* uid) {
     return memcmp(crc, uid + UID_LEN - UID_CRC_LEN, UID_CRC_LEN) == 0;
 }
 
+char uid_region(const char* uid) {
+    return uid_valid(uid) ? uid[UID_PREFIX_LEN] : 0;
+}
+
 void uid_derive_auth_key(const uint8_t* master, size_t master_len,
                          const char* uid, uint8_t out[AUTH_KEY_LEN]) {
     // 域分隔标签防止与其它 HMAC 用途（登录 MAC/隧道密钥）交叉

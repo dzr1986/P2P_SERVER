@@ -5,6 +5,7 @@
 #include "Crypto.h"
 #include "Log.h"
 #include "Packet.h"
+#include "RegionSched.h"
 #include "Uid.h"
 #include "Util.h"
 
@@ -42,6 +43,7 @@ int NatServer::init(const std::string& cfg_path, uint16_t nat_port,
         return -1;
     }
     cfg_mtime_ = cfg_file_mtime(cfg_path);
+    started_at_ = time(nullptr);
 
     abuse_.configure(cfg_->flood_pkt_threshold, cfg_->blacklist_seconds);
     if (!cfg_->blacklist_file.empty()) {
@@ -153,7 +155,9 @@ void NatServer::start_threads(RunThreads& t) {
     t.timer = std::thread(&NatServer::timer_thread, this);
     t.nat_alt = std::thread(&NatTypeCheck::run_alt_thread, &natcheck_);
     if (status_port_ > 0) {
-        status_.init(status_port_, [this] { return status_json(); });
+        status_.init(status_port_,
+                     [this] { return status_json(); },
+                     [this] { return status_metrics(); });
         t.status = std::thread(&StatusServer::run, &status_);
     }
     LOGI("NatServer", "start receiving message from client! %zu recv threads + %d workers",
@@ -516,8 +520,10 @@ void NatServer::mark_proxy_stale() {
 
 // 代理择优调度：健康代理按空闲度加权随机（分散首选，天然失败转移）；
 // 无健康数据时回退配置顺序。始终给出至多 3 个候选。
-void NatServer::pick_proxy(ProxyCandidate out[3], uint8_t& count) {
+void NatServer::pick_proxy(ProxyCandidate out[3], uint8_t& count, char prefer_region) {
     count = 0;
+    auto cfg = cfg_;
+    const char local = cfg ? cfg->region : 0;
     struct Cand {
         std::string ip;
         double weight;
@@ -535,6 +541,8 @@ void NatServer::pick_proxy(ProxyCandidate out[3], uint8_t& count) {
             if (w < 0.05) w = 0.05;
             w *= 1.0 - 0.3 * p.down;   // 连续失联扣分
             if (w < 0.02) w = 0.02;
+            const char r = cfg ? region_of(p.ip, cfg->proxy_regions, local) : 0;
+            w *= region_weight_boost(r, prefer_region, local);
             cands.push_back({p.ip, w});
         }
     }
@@ -567,8 +575,10 @@ void NatServer::pick_proxy(ProxyCandidate out[3], uint8_t& count) {
         }
     }
 
-    // 候选不足时按配置顺序回退（保证永远给足 3 个入口）
-    for (auto& ip : cfg_->proxy_ips) {
+    // 候选不足时按区域亲和 + 配置顺序回退（保证永远给足 3 个入口）
+    std::vector<std::string> fallback = cfg ? cfg->proxy_ips : std::vector<std::string>{};
+    if (cfg) sort_ips_by_region(fallback, cfg->proxy_regions, prefer_region, local);
+    for (auto& ip : fallback) {
         if (count >= 3) break;
         if (dup(ip)) continue;
         memset(out + count, 0, sizeof(ProxyCandidate));
@@ -754,6 +764,8 @@ void NatServer::request_sync_snapshot() {
 }
 
 std::string NatServer::status_json() const {
+    auto cfg = cfg_;
+    const char region = cfg ? cfg->region : 0;
     std::ostringstream os;
     os << "{"
        << "\"online\":" << peers_.size()
@@ -763,16 +775,69 @@ std::string NatServer::status_json() const {
        << ",\"total_pkts\":" << total_pkts_.load()
        << ",\"connect_ok\":" << connect_ok_.load()
        << ",\"connect_fail\":" << connect_fail_.load()
+       << ",\"login_ok\":" << login_ok_.load()
+       << ",\"login_fail\":" << login_fail_.load()
        << ",\"blacklist_ips\":" << abuse_.ip_blacklist_size()
-       << ",\"proxy_count\":" << cfg_->proxy_ips.size()
+       << ",\"proxy_count\":" << (cfg ? cfg->proxy_ips.size() : 0)
+       << ",\"region\":\"" << (region ? std::string(1, region) : "") << "\""
+       << ",\"uptime_seconds\":" << (started_at_ ? (long)(time(nullptr) - started_at_) : 0)
        << "}";
+    return os.str();
+}
+
+std::string NatServer::status_metrics() const {
+    auto cfg = cfg_;
+    const char region = cfg ? cfg->region : 0;
+    const long uptime = started_at_ ? (long)(time(nullptr) - started_at_) : 0;
+    std::ostringstream os;
+    auto gauge = [&](const char* name, const char* help, long v) {
+        os << "# HELP " << name << " " << help << "\n"
+           << "# TYPE " << name << " gauge\n"
+           << name << " " << v << "\n";
+    };
+    auto counter = [&](const char* name, const char* help, unsigned long long v) {
+        os << "# HELP " << name << " " << help << "\n"
+           << "# TYPE " << name << " counter\n"
+           << name << " " << v << "\n";
+    };
+    gauge("p2p_online_peers", "Online peers in the registry", (long)peers_.size());
+    gauge("p2p_online_devices", "Online device-role peers", (long)peers_.device_count());
+    gauge("p2p_online_apps", "Online app-role peers", (long)peers_.client_count());
+    gauge("p2p_authed_peers", "Authenticated peers", (long)peers_.authed_count());
+    gauge("p2p_blacklist_ips", "Blacklisted source IPs", (long)abuse_.ip_blacklist_size());
+    gauge("p2p_proxy_configured", "Configured proxy endpoints",
+          (long)(cfg ? cfg->proxy_ips.size() : 0));
+    gauge("p2p_uptime_seconds", "Process uptime in seconds", uptime);
+    counter("p2p_packets_total", "UDP packets processed", total_pkts_.load());
+    counter("p2p_connect_ok_total", "Successful CONNECT coordinations", connect_ok_.load());
+    counter("p2p_connect_fail_total", "Failed CONNECT coordinations", connect_fail_.load());
+    counter("p2p_login_ok_total", "Successful AUTH_LOGIN", login_ok_.load());
+    counter("p2p_login_fail_total", "Failed AUTH_LOGIN", login_fail_.load());
+    os << "# HELP p2p_node_region Node REGION label (1=set)\n"
+       << "# TYPE p2p_node_region gauge\n"
+       << "p2p_node_region{region=\"" << (region ? std::string(1, region) : "") << "\"} 1\n";
+    {
+        std::lock_guard<std::mutex> lk(proxy_mu_);
+        os << "# HELP p2p_proxy_used Current relay sessions on a proxy\n"
+           << "# TYPE p2p_proxy_used gauge\n";
+        for (auto& p : proxy_health_)
+            os << "p2p_proxy_used{ip=\"" << p.ip << "\"} " << p.used << "\n";
+        os << "# HELP p2p_proxy_up Proxy liveness (1=fresh and available)\n"
+           << "# TYPE p2p_proxy_up gauge\n";
+        time_t now = time(nullptr);
+        for (auto& p : proxy_health_) {
+            const int up = (now - p.last_seen <= 30 && p.available && p.down < 2) ? 1 : 0;
+            os << "p2p_proxy_up{ip=\"" << p.ip << "\"} " << up << "\n";
+        }
+    }
     return os.str();
 }
 
 int main(int argc, char** argv) {
     if (argc < 4) {
         printf("Usage: %s <NatServerPort> <ProxyServerPort> <WanIP> [P2pServers.cfg]\n"
-               "  env P2P_STATUS_PORT=NNN  启用 JSON 状态服务\n", argv[0]);
+               "  env P2P_STATUS_PORT=NNN  启用 HTTP 状态服务（GET / JSON，GET /metrics Prometheus）\n",
+               argv[0]);
         return 1;
     }
     uint16_t nat_port = (uint16_t)atoi(argv[1]);

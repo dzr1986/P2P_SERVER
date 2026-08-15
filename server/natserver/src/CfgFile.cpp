@@ -58,6 +58,28 @@ static std::vector<std::string> split_csv(const std::string& v) {
     return out;
 }
 
+static char parse_region_char(const std::string& v) {
+    if (v.empty()) return 0;
+    char r = v[0];
+    if (r >= 'a' && r <= 'z') r = (char)(r - 'a' + 'A');
+    const bool ok = (r >= 'A' && r <= 'Z') || (r >= '2' && r <= '7');
+    return ok ? r : 0;
+}
+
+// "ip:R,ip:R" → map[ip]=REGION
+static void parse_ip_regions(const std::string& v,
+                             std::unordered_map<std::string, char>& out) {
+    for (auto item : split_csv(v)) {
+        trim(item);
+        size_t pos = item.rfind(':');
+        if (pos == std::string::npos || pos + 1 >= item.size()) continue;
+        std::string ip = item.substr(0, pos);
+        trim(ip);
+        char r = parse_region_char(item.substr(pos + 1));
+        if (valid_ip(ip) && r) out[ip] = r;
+    }
+}
+
 // 范围校验的整数解析：越界/非法保持原值
 template <typename T>
 static void set_int_in_range(T& field, const std::string& val, long min_v, long max_v) {
@@ -104,6 +126,9 @@ static void parse_value(CfgData& out, const std::string& key, const std::string&
         {"AdminSecret",    [](CfgData& c, const std::string& v) { c.admin_secret = v; }},
         {"BlacklistFile",  [](CfgData& c, const std::string& v) { c.blacklist_file = v; }},
         {"BlacklistPass",  [](CfgData& c, const std::string& v) { c.blacklist_pass = v; }},
+        {"Region",         [](CfgData& c, const std::string& v) { c.region = parse_region_char(v); }},
+        {"NatRegions",     [](CfgData& c, const std::string& v) { parse_ip_regions(v, c.nat_regions); }},
+        {"ProxyRegions",   [](CfgData& c, const std::string& v) { parse_ip_regions(v, c.proxy_regions); }},
     };
     auto it = kSetters.find(key);
     if (it != kSetters.end()) it->second(out, val);
@@ -157,9 +182,10 @@ bool load_server_set(CfgData& out, const std::string& path) {
         out.proxy_ips = {"127.0.0.1"};
         out.cfg_path = path;
     }
-    LOGI("CfgFile", "loaded %s: nat[%zu] proxy[%zu] auth[%d] license[%d]",
+    LOGI("CfgFile", "loaded %s: nat[%zu] proxy[%zu] auth[%d] license[%d] region[%c]",
          path.c_str(), out.nat_ips.size(), out.proxy_ips.size(),
-         (int)out.enable_auth, (int)out.enable_license);
+         (int)out.enable_auth, (int)out.enable_license,
+         out.region ? out.region : '-');
     return ok;
 }
 

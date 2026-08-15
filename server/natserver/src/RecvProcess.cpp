@@ -5,6 +5,7 @@
 #include "Crypto.h"
 #include "Log.h"
 #include "Packet.h"
+#include "RegionSched.h"
 #include "Uid.h"
 #include "Util.h"
 
@@ -43,7 +44,7 @@ void NatServer::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
     case MSG_CONNECT_REQ:          on_msg_connect_req(p, plen, from); break;
     case MSG_ICE_SDP:              on_msg_ice_sdp(const_cast<uint8_t*>(p), plen, from); break;
     case MSG_GET_DEV_LIST_REQ:     on_msg_dev_list(p, plen, from); break;
-    case MSG_GET_SERVER_LIST_REQ:  on_msg_server_list(from); break;
+    case MSG_GET_SERVER_LIST_REQ:  on_msg_server_list(p, plen, from); break;
     case MSG_DELETE_UID_REQ:       on_msg_delete_uid(p, plen); break;
     case MSG_CHECK_UID_REQ:        on_msg_check_uid(p, plen, from); break;
     case MSG_AUTH_CHALLENGE_REQ:   on_msg_auth_challenge(p, plen, from); break;
@@ -212,7 +213,7 @@ void NatServer::on_msg_connect_req(const uint8_t* p, size_t plen,
     inet_ntop(AF_INET, &dst.lan_addr.sin_addr, ack.dst_lan_ip, MAX_IP_LEN);
     ack.dst_lan_port = dst.lan_addr.sin_port;
     ack.dst_nattype = dst.nattype;
-    pick_proxy(ack.proxies, ack.proxy_count);
+    pick_proxy(ack.proxies, ack.proxy_count, uid_region(req.src_uuid));
     send_msg(from, MSG_CONNECT_ACK, &ack, sizeof(ack));
     LOGI("NatServer", "ack===>to initiator [%s], dst pub[%s:%d] nattype[%d] proxy[%d]",
          req.src_uuid, ack.dst_pub_ip, ntohs(ack.dst_pub_port), dst.nattype,
@@ -234,7 +235,7 @@ void NatServer::on_msg_connect_req(const uint8_t* p, size_t plen,
         inv.src_lan_port = from.sin_port;
         inv.src_nattype = NAT_UNKNOWN;
     }
-    pick_proxy(inv.proxies, inv.proxy_count);
+    pick_proxy(inv.proxies, inv.proxy_count, uid_region(req.dst_uuid));
     send_msg(dst.pub_addr, MSG_CONNECT_INVITE, &inv, sizeof(inv));
     LOGI("NatServer", "invite===>to dst UUID[%s] port:[%d] nattype[%d]",
          req.dst_uuid, ntohs(dst.pub_addr.sin_port), inv.src_nattype);
@@ -290,15 +291,29 @@ void NatServer::on_msg_dev_list(const uint8_t* p, size_t plen,
     send_msg(from, MSG_GET_DEV_LIST_RSP, buf.data(), off);
 }
 
-void NatServer::on_msg_server_list(const sockaddr_in& from) {
+void NatServer::on_msg_server_list(const uint8_t* p, size_t plen, const sockaddr_in& from) {
     auto cfg = cfg_;
+    char prefer = 0;
+    if (p && plen >= sizeof(ServerListReq)) {
+        ServerListReq req{};
+        memcpy(&req, p, sizeof(req));
+        req.uuid[MAX_UUID_LEN] = 0;
+        prefer = uid_region(req.uuid);
+    }
+    if (!prefer && cfg) prefer = cfg->region;
+    const char local = cfg ? cfg->region : 0;
+
     std::vector<std::string> nats = cfg->nat_ips;
     if (!wan_ip_.empty() && wan_ip_ != "0.0.0.0") {
         bool dup = false;
         for (auto& ip : nats) if (ip == wan_ip_) { dup = true; break; }
         if (!dup) nats.push_back(wan_ip_);
     }
-    const std::vector<std::string>& proxies = cfg->proxy_ips;
+    std::vector<std::string> proxies = cfg->proxy_ips;
+    if (cfg) {
+        sort_ips_by_region(nats, cfg->nat_regions, prefer, local);
+        sort_ips_by_region(proxies, cfg->proxy_regions, prefer, local);
+    }
 
     std::vector<uint8_t> buf(sizeof(ServerListRsp) +
                              (nats.size() + proxies.size()) * MAX_IP_LEN, 0);
@@ -372,13 +387,17 @@ void NatServer::on_msg_auth_login(const uint8_t* p, size_t plen,
     rsp.session_ttl = htons(3600);
     if (abuse_.is_uuid_blacklisted(req.uuid)) {
         rsp.result = AUTH_BLACKLIST;
+        inc_login_fail();
     } else if (cfg->enable_license && !license_.allowed(req.uuid)) {
         rsp.result = AUTH_WHITELIST_REJ;
+        inc_login_fail();
     } else if (verify_auth_login(req.uuid, req.nonce, req.mac)) {
         rsp.result = AUTH_OK;
+        inc_login_ok();
         LOGI("NatServer", "AUTH_LOGIN uuid[%s] OK", req.uuid);
     } else {
         rsp.result = AUTH_BAD_MAC;
+        inc_login_fail();
         LOGW("NatServer", "AUTH_LOGIN uuid[%s] FAIL", req.uuid);
     }
     send_msg(from, MSG_AUTH_LOGIN_RSP, &rsp, sizeof(rsp));

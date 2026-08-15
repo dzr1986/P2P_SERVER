@@ -159,7 +159,7 @@ private:
     void tick_auth(uint64_t now);            // 鉴权状态机（challenge/login 重试）
     void tick_nat_detect(uint64_t now);      // NAT 检测推进
     void tick_relay(uint64_t now);           // 中继注册重试
-    void tick_connections(uint64_t now);     // 连接状态机（打洞/超时/降级中继）
+    void tick_connections(uint64_t now);     // 连接状态机（打洞/超时/降级中继/回切 P2P）
     void tick_conn_punch(Conn& c, uint64_t now);   // 打洞子状态机
     void tick_conn_relay(Conn& c, uint64_t now);   // 中继子状态机
     void tick_conn_fsm(Conn& c, uint64_t now);     // 连接主状态机（中继建链判定）

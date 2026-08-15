@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace p2p {
@@ -30,10 +31,16 @@ namespace p2p {
 //   BlacklistFile=<path>            IP/UUID 黑名单持久化文件
 //   BlacklistPass=<pass>            黑名单文件加密口令（空=明文存取）
 //   UidStrict=0|1                   仅接受结构化 UID（20 字符 Base32+CRC，见 common/Uid.h）
+//   Region=C                        本节点区域（1 字符 Base32，P6 就近调度）
+//   NatRegions=ip:R,ip:R            NAT 入口区域标注（缺省继承 Region）
+//   ProxyRegions=ip:R,ip:R          Proxy 入口区域标注（缺省继承 Region）
 // ---------------------------------------------------------------------------
 struct CfgData {
     std::vector<std::string> nat_ips;
     std::vector<std::string> proxy_ips;
+    char        region = 0;           // 本节点 REGION（0=未配置）
+    std::unordered_map<std::string, char> nat_regions;
+    std::unordered_map<std::string, char> proxy_regions;
 
     std::string auth_secret;
     bool        enable_auth = false;

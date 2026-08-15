@@ -278,23 +278,29 @@ void P2PClient::tick_relay(uint64_t now) {
     }
 }
 
-// 连接状态机（打洞/超时/降级中继）
+// 连接状态机（打洞/超时/降级中继；Connected+中继时后台继续打洞以便回切 P2P）
 void P2PClient::tick_connections(uint64_t now) {
     for (auto& kv : conns_) {
         Conn& c = kv.second;
-        if (c.state != ConnState::Connecting) continue;
-        tick_conn_punch(c, now);
-        tick_conn_relay(c, now);
-        tick_conn_fsm(c, now);
+        if (c.state == ConnState::Connecting) {
+            tick_conn_punch(c, now);
+            tick_conn_relay(c, now);
+            tick_conn_fsm(c, now);
+        } else if (c.state == ConnState::Connected && c.via_relay && !cfg_.force_relay) {
+            tick_conn_punch(c, now);
+        }
     }
 }
 
 // 打洞子状态机：周期发包与超时判定
 void P2PClient::tick_conn_punch(Conn& c, uint64_t now) {
-    if (c.punch.have_direct && now < c.punch.punch_deadline && now >= c.punch.next_punch) {
+    const bool upgrade = (c.state == ConnState::Connected && c.via_relay && !cfg_.force_relay);
+    if (c.punch.have_direct && !c.punch.direct_ok && now >= c.punch.next_punch &&
+        (now < c.punch.punch_deadline || upgrade)) {
         do_punch(c);
         c.punch.next_punch = now + cfg_.punch_interval_ms;
     }
+    if (upgrade) return;  // 中继已通，后台打洞失败不关连接
     // force_relay 时 have_direct=false 是预期行为，不视为“服务器无响应”
     if (!cfg_.force_relay && !c.punch.have_direct &&
         now >= c.punch.punch_deadline + cfg_.connect_timeout_ms) {
@@ -341,9 +347,16 @@ void P2PClient::tick_conn_fsm(Conn& c, uint64_t /*now*/) {
     if (c.relay.relay_ok) set_connected(c, true);
 }
 
-// 连接建立唯一转移点（幂等）：Connecting -> Connected 并触发回调
+// 连接建立唯一转移点（幂等）：Connecting -> Connected；
+// 已 Connected 且中继路径上直连打通时无缝切回 P2P（再触发一次 on_connected(relay=false)）
 void P2PClient::set_connected(Conn& c, bool relay) {
-    if (c.state == ConnState::Connected) return;
+    if (c.state == ConnState::Connected) {
+        if (c.via_relay && !relay) {
+            c.via_relay = false;
+            if (on_connected) on_connected(c.peer_uuid, false);
+        }
+        return;
+    }
     c.state = ConnState::Connected;
     c.via_relay = relay;
     // 握手放到 tick_handshake，避免在 libjuice 状态回调里 juice_send
