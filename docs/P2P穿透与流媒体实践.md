@@ -83,6 +83,10 @@ libjuice 向 `stun_server_host:port` 发 Binding Request，用
 - 回环 400ms / 公网 25s 兜底（`tick_ice`），防止只收到一包时永远不收口
 - 回环不发「首个 host」SDP：此时往往只有非 127.0.0.1 网卡，controlling 会打偏；
   等 gather 完成再发齐。连线中每 200ms 重传完整 SDP（最多 8 次），抗跨服丢包
+- **跨服 ICE_SDP**：A 在 S1、B 在 S2 时，A 的 SDP 先到 S1，B 的 `SYNC_PEER`
+  可能还没到。S1 不再 drop，而是经 `broadcast_sync_msg` 转给同步对端；
+  谁本地有 dst 谁投递给客户端。`except=from` 防环。配了 `SyncAuthSecret`
+  时转发尾部带 HMAC，对端校验后剥掉再投递，避免 MAC 污染 SDP
 
 ### 2.2.2 `Conn` 必须堆分配
 

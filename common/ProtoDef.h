@@ -74,7 +74,7 @@ enum MsgId : uint8_t {
     MSG_ADMIN_STATS_RSP       = 0x1A,  // AdminStatsRsp
     MSG_ADMIN_BLACKLIST_REQ   = 0x1D,  // 管理黑名单增删查:   AdminBlacklistReq
     MSG_ADMIN_BLACKLIST_RSP   = 0x1E,  // 管理黑名单应答:     AdminBlacklistRsp
-    MSG_ICE_SDP               = 0x1F,  // #19 ICE SDP 中转（按 dst_uuid 投递）
+    MSG_ICE_SDP               = 0x1F,  // #19 ICE SDP 中转（按 dst_uuid 投递；跨服无 dst 则 sync 转发）
     MSG_HEARTBEAT_REQ_ENC     = 0x1B,  // 加密心跳注册: HeartbeatReqEnc（开启鉴权后使用）
     MSG_HEARTBEAT_RSP_ENC     = 0x1C,  // 加密心跳应答: HeartbeatRspEnc
     // ---- NatServer 间注册表同步（服务器间直连，不经 Proxy）----

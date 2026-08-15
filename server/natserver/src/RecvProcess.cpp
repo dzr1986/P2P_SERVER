@@ -257,22 +257,44 @@ void NatServer::on_msg_connect_req(const uint8_t* p, size_t plen,
 }
 
 // ---------------------------------------------------------------- #19 ICE SDP 中转
-void NatServer::on_msg_ice_sdp(uint8_t* p, size_t plen, const sockaddr_in&) {
+void NatServer::on_msg_ice_sdp(uint8_t* p, size_t plen, const sockaddr_in& from) {
     // 变长消息：IceSdpMsg { dst_uuid; src_uuid; sdp_len(net); sdp[] }
     if (plen < sizeof(IceSdpMsg) - 1) return;
     auto* m = reinterpret_cast<IceSdpMsg*>(p);
     m->dst_uuid[MAX_UUID_LEN] = 0;
     m->src_uuid[MAX_UUID_LEN] = 0;
     const uint16_t slen = ntohs(m->sdp_len);
-    if (plen < sizeof(IceSdpMsg) - 1 + slen) return;
+    const size_t body = sizeof(IceSdpMsg) - 1 + slen;
+    if (plen < body) return;
+
+    // 跨服转发走 sync_send_msg，配了 SyncAuthSecret 时末尾多 32B HMAC。
+    // 投递给客户端前必须剥掉，否则对端按 sdp_len 解析会把 MAC 当 SDP。
+    auto cfg = cfg_;
+    if (cfg && !cfg->sync_auth_secret.empty() && plen >= body + 32) {
+        if (!sync_verify(p, plen, body)) {
+            LOGW("NatServer", "ICE_SDP sync MAC invalid dst[%s]", m->dst_uuid);
+            return;
+        }
+        plen = body;
+    } else if (plen > body) {
+        plen = body;
+    }
+
     Peer dst;
-    if (!peers_.get(m->dst_uuid, dst)) {
-        LOGW("NatServer", "ICE_SDP dst[%s] not found, drop", m->dst_uuid);
+    if (peers_.get(m->dst_uuid, dst)) {
+        send_msg(dst.pub_addr, MSG_ICE_SDP, p, plen);
+        LOGI("NatServer", "ICE_SDP===>to dst UUID[%s] from[%s] len[%d]",
+             m->dst_uuid, m->src_uuid, (int)plen);
         return;
     }
-    send_msg(dst.pub_addr, MSG_ICE_SDP, p, plen);
-    LOGI("NatServer", "ICE_SDP===>to dst UUID[%s] from[%s] len[%d]",
-         m->dst_uuid, m->src_uuid, (int)plen);
+    // B 刚报到 S2 时，S1 的 SYNC_PEER 可能还没到。把 ICE_SDP 转给其它
+    // NatServer，谁本地有 dst 谁投递。except=from 防止环。
+    if (sync_enabled()) {
+        LOGI("NatServer", "ICE_SDP dst[%s] not local, sync-forward", m->dst_uuid);
+        broadcast_sync_msg(MSG_ICE_SDP, p, plen, &from);
+        return;
+    }
+    LOGW("NatServer", "ICE_SDP dst[%s] not found, drop", m->dst_uuid);
 }
 
 // ---------------------------------------------------------------- 设备/服务器列表

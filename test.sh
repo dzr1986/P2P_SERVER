@@ -186,7 +186,7 @@ grep -q "registry sync enabled, 1 peer(s)" /tmp/nat2.log && ok "S2 sync peers" |
 stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT A > /tmp/peerA.log 2>&1 & PA_PID=$!
 sleep 1
 stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT2 B A 127.0.0.1 $PROXY_PORT > /tmp/peerB.log 2>&1 & PB_PID=$!
-sleep 7
+sleep 8
 kill -9 $PA_PID $PB_PID 2>/dev/null; PA_PID=""; PB_PID=""
 
 grep -q "sync entry uuid\[A\]" /tmp/nat2.log && ok "S2 learned A via sync" || fail "S2 did not sync A"
@@ -276,7 +276,7 @@ sleep 0.5
 stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT A > /tmp/peerA.log 2>&1 & PA_PID=$!
 sleep 1
 stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT2 B A 127.0.0.1 $PROXY_PORT > /tmp/peerB.log 2>&1 & PB_PID=$!
-sleep 7
+sleep 8
 kill -9 $PA_PID $PB_PID 2>/dev/null; PA_PID=""; PB_PID=""
 grep -q "sync entry uuid\[A\]" /tmp/nat2.log && ok "signed sync entry accepted" || fail "signed sync not accepted"
 grep -q "CONNECTED to A via direct" /tmp/peerB.log && ok "B->A direct (signed sync)" || fail "cross-server direct missing"

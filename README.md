@@ -118,7 +118,7 @@ magic = 0x584E ("XN")，length = payload 字节数（不含头）
 | 0x19 | ADMIN_STATS_REQ/RSP | 客户端->NatServer | 管理统计查询/应答（AdminStatsRsp） |
 | 0x1D | ADMIN_BLACKLIST_REQ | 客户端->NatServer | 黑名单管理：op+key+HMAC(AdminSecret,op+key)，应答 0x1E |
 | 0x1E | ADMIN_BLACKLIST_RSP | NatServer->客户端 | 结果+总数+明细（AdminBlacklistRsp） |
-| 0x1F | ICE_SDP | 经 NatServer 或局域网 | ICE local description（dst/src UID + SDP） |
+| 0x1F | ICE_SDP | 经 NatServer 或局域网 | ICE local description（dst/src UID + SDP）；跨服时本机无 dst 则经 sync 对端转发 |
 | 0x40–0x43 | WAKE_* | wakeserver | 低功耗保活 / 触发 / POKE |
 | 0x50 | LAN_QUERY | 局域网组播 | 按 UID 询问同网段设备 |
 | 0x51 | LAN_ANNOUNCE | 局域网组播 | 宣告本机 UID + 主 socket 端口 |
@@ -403,6 +403,9 @@ ALL TESTS PASSED
 - **跨服 CONNECT**：`PeerManager::upsert_synced` 保留源服务器心跳时间并把同步条目视为
   已鉴权（`auth_expire = hb_time + 3600`），目标公网地址即源服务器观测值，客户端无感跨服打洞。
   心跳超时清理改为 `cleanup_timeout_and_collect`，回收的 uuid 自动广播 `MSG_SYNC_PEER_DEL`。
+- **跨服 ICE_SDP**：本地没有 `dst_uuid` 时不再 drop，而是经同步对端转发（`except=from`
+  防环）。`SyncAuthSecret` 非空时转发尾部带 HMAC，对端校验后剥掉再投递给客户端。
+  避免 B 刚报到对端、本服尚未 sync 到 B 时 controlling 的 SDP 丢失。
 - **配置**：`SyncPeers=1` 启用；`SyncAddrs=ip:port,...` 显式指定对端（缺省用 `NatServer*`
   列表并排除本机 `WanIP:Port`）。
 - **验证**：`bash test.sh` 新增 [6] 双 NatServer 用例——A 注册 S1、B 注册 S2 并跨服连接 A，
