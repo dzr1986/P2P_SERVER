@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -26,7 +27,7 @@ static const char* nattype_str(uint8_t t) {
 int main(int argc, char** argv) {
     if (argc < 4) {
         fprintf(stderr, "usage: %s <NatServerIP> <NatServerPort> <UUID> [peerUUID] "
-                        "[ProxyIP] [ProxyPort] [-s secret] [-k authkey_hex] [-t token_hex] [-relay]\n",
+                        "[ProxyIP] [ProxyPort] [-s secret] [-k authkey_hex] [-t token_hex] [-relay] [-lan|-nolan]\n",
                 argv[0]);
         return 1;
     }
@@ -35,11 +36,15 @@ int main(int argc, char** argv) {
     std::string auth_key_hex;          // 每 UID AuthKey（uidgen 签发，设备侧凭据）
     std::string connect_token_hex;     // 连线 Token（tokengen 签发，EnableConnectToken 时必带）
     bool force_relay = false;
+    bool lan_discover = true;
+    bool lan_flag = false;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) secret = argv[++i];
         else if (strcmp(argv[i], "-k") == 0 && i + 1 < argc) auth_key_hex = argv[++i];
         else if (strcmp(argv[i], "-t") == 0 && i + 1 < argc) connect_token_hex = argv[++i];
         else if (strcmp(argv[i], "-relay") == 0) force_relay = true;
+        else if (strcmp(argv[i], "-nolan") == 0) { lan_discover = false; lan_flag = true; }
+        else if (strcmp(argv[i], "-lan") == 0) { lan_discover = true; lan_flag = true; }
         else pos.push_back(argv[i]);
     }
     if (pos.size() < 3) {
@@ -85,6 +90,11 @@ int main(int argc, char** argv) {
     cfg.nat_servers.push_back({nat_ip, nat_port});
     cfg.proxy_servers = proxies;
     cfg.force_relay = force_relay;
+    if (!lan_flag) {
+        const char* e = getenv("P2P_DISABLE_LAN");
+        if (e && e[0] == '1') lan_discover = false;
+    }
+    cfg.lan_discover = lan_discover;
 
     P2PClient client;
     std::atomic<int> connected{0};

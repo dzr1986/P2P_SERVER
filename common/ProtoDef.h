@@ -465,8 +465,9 @@ struct IceSdpMsg {
 
 // 局域网发现信标（QUERY / ANNOUNCE 共用）
 struct LanBeacon {
-    char     uuid[MAX_UUID_LEN + 1]; // QUERY: 要找的 UID（空=任意）；ANNOUNCE: 本机 UID
-    uint16_t lan_port;               // 网络序：主信令/媒体 socket 端口
+    char     uuid[MAX_UUID_LEN + 1];     // QUERY: 要找的 UID（空=任意）；ANNOUNCE: 本机 UID
+    char     src_uuid[MAX_UUID_LEN + 1]; // 发送方 UID（被查方据此缓存查询者）
+    uint16_t lan_port;                   // 网络序：主信令/媒体 socket 端口
 };
 } // namespace p2p
 

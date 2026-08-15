@@ -56,6 +56,10 @@ stop_all() {
 echo "== build =="
 make -s all || { echo "BUILD FAILED"; exit 1; }
 echo "build ok"
+# 测试默认关闭 LAN 组播，避免占用 17890 / 串扰 ICE；[15] 再打开
+export P2P_DISABLE_LAN=1
+killall -9 peer iotc_demo p2p_natserver p2p_proxy p2p_wakeserver 2>/dev/null || true
+sleep 0.3
 
 # ---------------------------------------------------------------- 0. 单元测试
 echo "== [0] unit tests =="
@@ -516,10 +520,10 @@ stop_servers
 # ---------------------------------------------------------------- 15. 局域网组播发现（LAN Search）
 echo "== [15] LAN multicast discovery =="
 start_servers ""
-stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT LANDEV > /tmp/peerLanDev.log 2>&1 & PA_PID=$!
+P2P_DISABLE_LAN=0 stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT LANDEV -lan > /tmp/peerLanDev.log 2>&1 & PA_PID=$!
 sleep 1
-stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT LANCLI LANDEV > /tmp/peerLanCli.log 2>&1 & PB_PID=$!
-sleep 4
+P2P_DISABLE_LAN=0 stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT LANCLI LANDEV -lan > /tmp/peerLanCli.log 2>&1 & PB_PID=$!
+sleep 6
 kill -9 $PA_PID $PB_PID 2>/dev/null; PA_PID=""; PB_PID=""
 grep -q "LAN found LANDEV" /tmp/peerLanCli.log && ok "client found device on LAN" || fail "LAN search client ($([ -f /tmp/peerLanCli.log ] && cat /tmp/peerLanCli.log | tail -20))"
 grep -q "LAN found LANCLI" /tmp/peerLanDev.log && ok "device found client on LAN" || fail "LAN search device"

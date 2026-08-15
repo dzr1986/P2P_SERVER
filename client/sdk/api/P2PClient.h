@@ -117,6 +117,7 @@ private:
         int direct_sock_idx = -1;            // 直连确认时选用的打洞 socket 索引（-1=未确认）
         juice_agent_t* juice = nullptr;      // #19 libjuice ICE agent（替换自研打洞）
         bool ice_gathered = false;           // 已 juice_gather：发起方先 gather=controlling
+        bool ice_host_sdp_sent = false;      // 已用 host 候选发出首版 SDP（不等 STUN）
         std::string local_sdp;               // #19 本端 ICE SDP（gather 后填充）
         std::string remote_sdp;              // #19 对端 ICE SDP（信令交换）
     };
@@ -211,6 +212,8 @@ private:
                        const sockaddr_in& from);
     void apply_lan_peer(const std::string& uuid, const sockaddr_in& from,
                         uint16_t media_port_nbo);
+    void remember_lan_peer(const std::string& uuid, const sockaddr_in& from,
+                           uint16_t media_port_nbo);
     void do_punch(Conn& c);
     // #19 libjuice ICE 回调（静态转发至 Conn 上下文）
     static void on_juice_state(juice_agent_t* agent, juice_state_t state, void* user_ptr);

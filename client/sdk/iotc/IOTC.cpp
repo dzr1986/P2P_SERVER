@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <memory>
@@ -176,6 +177,10 @@ int IOTC_Login(const char* uid, const char* secret, const char* auth_key_hex,
     if (!g->proxy_ip.empty() && g->proxy_port != 0)
         cfg.proxy_servers.push_back({g->proxy_ip, g->proxy_port});
     cfg.force_relay = g->force_relay;
+    {
+        const char* e = std::getenv("P2P_DISABLE_LAN");
+        if (e && e[0] == '1') cfg.lan_discover = false;
+    }
     if (!g->client.start(cfg)) return IOTC_ER_InvalidArg;
 
     std::unique_lock<std::mutex> lk(g->mu);
