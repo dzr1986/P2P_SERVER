@@ -1054,9 +1054,14 @@ void P2PClient::ensure_ice_agent(Conn& c, bool as_offerer) {
         jcfg.user_ptr = &c;
         // 公网 NatServer 兼 STUN，收集 srflx。回环本机测试跳过：
         // juice STUN 重传合计约 23.5s，host 候选已足够同机直连。
+        // 回环还把 juice socket 绑到 127.0.0.1，避免 host 候选落在 eth0/docker
+        // 导致 controlling 单向打不通。
         if (!nat_server_.ip.empty() && !is_loopback_host(nat_server_.ip)) {
             jcfg.stun_server_host = nat_server_.ip.c_str();
             jcfg.stun_server_port = nat_server_.port;
+        } else {
+            static const char kLoopback[] = "127.0.0.1";
+            jcfg.bind_address = kLoopback;
         }
         c.punch.juice = juice_create(&jcfg);
     }
