@@ -117,7 +117,7 @@ WebRTC 的 ICE restart / 持续探测：网络从蜂窝切 Wi-Fi 后应重新打
 | 分片 | RTP / FU-A | `AvCodec` 11B 切片头 |
 | 过期丢帧 | SRT too-late-drop | `AvReassembler` + `av_should_drop_p`（拥塞丢 P、保 I/音频） |
 | 可靠控制 | DataChannel / RTCP | 通道 0 IOCtrl、RDT 字节流 |
-| 拥塞 | GCC / TWCC / BBR | Session：自适应 RTO、快重传、cwnd；`avSuggestedBitrateKbps` |
+| 拥塞 | GCC / TWCC / BBR | Session：自适应 RTO、快重传、cwnd；`AbrController` AIMD |
 | 加密 | DTLS-SRTP / QUIC | PSK 或 X25519 FS + AES-CTR |
 
 一对一预览优先 **不可靠视频 + 可靠 I 帧关键补**；录像回放走 RDT/可靠通道。
@@ -147,9 +147,9 @@ WebRTC 的 ICE restart / 持续探测：网络从蜂窝切 Wi-Fi 后应重新打
 
 1. **ICE restart**：`juice` 当前不支持换 ufrag；网络切换可重建 agent
 2. **TURN-over-443**：穿透企业防火墙
-3. **完整 GCC / TWCC**：`AbrEstimate.h` 已是 delay-based 分档；下一步用 RTT 趋势做 AIMD
+3. **完整 GCC / TWCC**：`AbrEstimate.h` 已有 delay-based 分档 + RTT 趋势 AIMD；下一步 Kalman + TWCC
 4. **真实 `tc netem` 1080p**：卡顿率 / P99 延迟验收（P3）
-5. **Token nonce 防重放表**：连线 Token 已验签，尚未记已用 nonce
+5. **Token nonce 防重放**：`TokenNonceCache` 已记已用 nonce，过期前重放返回 `CONNECT_BAD_TOKEN`
 
 参考文献：RFC 8445 / 8489 / 8656；pion/ice 角色冲突处理；
 WebRTC 生产经验（15–30% TURN、区域化中继、443/TLS）；

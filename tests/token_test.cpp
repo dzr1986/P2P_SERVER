@@ -51,6 +51,18 @@ int main() {
     CHECK(!connect_token_from_hex("zz", back), "bad hex rejected");
     CHECK(!connect_token_from_hex("", back), "empty hex rejected");
 
+    TokenNonceCache cache;
+    CHECK(cache.claim(tok.nonce, now + 300, now), "nonce first claim");
+    CHECK(!cache.claim(tok.nonce, now + 300, now), "nonce replay rejected");
+    CHECK(cache.size() == 1, "cache holds one nonce");
+    uint8_t other_n[16];
+    memset(other_n, 0xAB, 16);
+    CHECK(cache.claim(other_n, now + 10, now), "different nonce accepted");
+    CHECK(cache.size() == 2, "cache holds two");
+    cache.purge(now + 11);
+    CHECK(cache.size() == 1, "expired nonce purged");
+    CHECK(cache.claim(other_n, now + 100, now + 11), "expired slot reusable");
+
     if (g_fail == 0) { printf("token tests PASS\n"); return 0; }
     printf("token tests FAIL (%d)\n", g_fail);
     return 1;

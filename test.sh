@@ -523,8 +523,14 @@ kill -9 $PB_PID 2>/dev/null; PB_PID=""
 grep -q "bad or expired connect token" /tmp/peerTokBad.log && ok "wrong-src token rejected" || fail "wrong-src token not rejected"
 stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT "$CLI_UID" "$DEV_UID" -k "$CLI_KEY" -t "$TOK" > /tmp/peerTokOk.log 2>&1 & PB_PID=$!
 sleep 8
-kill -9 $PA_PID $PB_PID 2>/dev/null; PA_PID=""; PB_PID=""
 grep -q "CONNECTED to $DEV_UID via direct" /tmp/peerTokOk.log && ok "valid token CONNECT" || fail "valid token connect missing"
+kill -9 $PB_PID 2>/dev/null; PB_PID=""
+# 同一 Token 再连一次：nonce 已用，应被拒
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT "$CLI_UID" "$DEV_UID" -k "$CLI_KEY" -t "$TOK" > /tmp/peerTokReplay.log 2>&1 & PB_PID=$!
+sleep 3
+kill -9 $PA_PID $PB_PID 2>/dev/null; PA_PID=""; PB_PID=""
+grep -q "bad or expired connect token" /tmp/peerTokReplay.log && ok "replayed token rejected" || fail "replayed token not rejected"
+grep -q "CONNECT token replay" /tmp/nat.log && ok "server logged token replay" || fail "server token replay log missing"
 grep -q "CONNECT token rejected" /tmp/nat.log && ok "server logged token rejects" || fail "server token reject log missing"
 stop_servers
 

@@ -266,7 +266,7 @@ bool NatServer::verify_auth_login(const std::string& uuid, const uint8_t nonce[1
 }
 
 bool NatServer::verify_connect_token(const char* src_uuid, const char* dst_uuid,
-                                     const uint8_t* trailer, size_t tlen) const {
+                                     const uint8_t* trailer, size_t tlen) {
     auto cfg = cfg_;
     if (!cfg || !cfg->enable_connect_token) return true;
     if (cfg->auth_secret.empty()) return false;
@@ -276,7 +276,13 @@ bool NatServer::verify_connect_token(const char* src_uuid, const char* dst_uuid,
     uint8_t key[AUTH_KEY_LEN];
     uid_derive_auth_key(reinterpret_cast<const uint8_t*>(cfg->auth_secret.data()),
                         cfg->auth_secret.size(), dst_uuid, key);
-    return connect_token_verify(key, dst_uuid, src_uuid, tok, (uint32_t)time(nullptr));
+    const uint32_t now = (uint32_t)time(nullptr);
+    if (!connect_token_verify(key, dst_uuid, src_uuid, tok, now)) return false;
+    if (!token_nonces_.claim(tok.nonce, ntohl(tok.expire), now)) {
+        LOGW("NatServer", "CONNECT token replay src[%s] dst[%s]", src_uuid, dst_uuid);
+        return false;
+    }
+    return true;
 }
 
 // 心跳应答（明文 0x02 / 加密 0x1C）

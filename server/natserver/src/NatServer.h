@@ -3,6 +3,7 @@
 
 #include "AntiAbuse.h"
 #include "CfgFile.h"
+#include "ConnectToken.h"
 #include "LicenseMgr.h"
 #include "NatTypeCheck.h"
 #include "Net.h"
@@ -142,7 +143,7 @@ private:
     void mark_proxy_stale();
     void notify_wake(const char* uuid);
     bool verify_connect_token(const char* src_uuid, const char* dst_uuid,
-                              const uint8_t* trailer, size_t tlen) const;
+                              const uint8_t* trailer, size_t tlen);
     void pick_proxy(ProxyCandidate out[3], uint8_t& count, char prefer_region = 0);
     std::string status_json() const;
     std::string status_metrics() const;
@@ -195,6 +196,8 @@ private:
     // 鉴权 nonce 表（uuid -> {nonce, 过期}）
     std::mutex nonce_mu_;
     std::unordered_map<std::string, std::pair<std::array<uint8_t, 16>, time_t>> auth_nonces_;
+    // 连线 Token 已用 nonce（过期前拒绝重放）
+    TokenNonceCache token_nonces_;
 
     std::atomic<bool> running_{false};
     std::atomic<uint64_t> total_pkts_{0};

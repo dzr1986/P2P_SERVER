@@ -29,6 +29,7 @@ struct AvChannel {
     bool last_fail = false;
     uint64_t dropped_p = 0;
     uint64_t sent_frames = 0;
+    AbrController abr;
 };
 
 std::mutex g_mu;
@@ -260,7 +261,10 @@ int avGetDropStats(int av, uint64_t* dropped_p, uint64_t* sent) {
 int avSuggestedBitrateKbps(int av) {
     AVLinkStats st;
     if (avGetLinkStats(av, &st) != AV_ER_NoERROR) return AV_ER_ChannelNoExist;
-    return p2p::abr_suggest_kbps(st.srtt_ms, st.rttvar_ms, st.cwnd, st.rx_lost);
+    std::lock_guard<std::mutex> lk(g_mu);
+    if (av < 0 || av >= AV_MAX_CHANNELS_TOTAL || !g_ch[av].used)
+        return AV_ER_ChannelNoExist;
+    return g_ch[av].abr.update(st.srtt_ms, st.rttvar_ms, st.cwnd, st.rx_lost);
 }
 
 } // extern "C"

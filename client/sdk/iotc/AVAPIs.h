@@ -65,7 +65,7 @@ typedef struct {
     uint64_t rx_lost;
 } AVLinkStats;
 int avGetLinkStats(int av, AVLinkStats* st);
-// 基于 RTT/窗口/丢包给出建议码率（kbps）；失败返回 <0
+// 基于 RTT/窗口/丢包给出建议码率（kbps，AIMD 平滑）；失败返回 <0
 int avSuggestedBitrateKbps(int av);
 
 // 丢帧统计：dropped_p=拥塞丢弃的 P 帧数，sent=成功发出的帧数

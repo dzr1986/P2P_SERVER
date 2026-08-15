@@ -23,6 +23,21 @@ int main() {
     CHECK(abr_suggest_kbps(500, 100, 2, 10) >= ABR_MIN_KBPS, "floor at min");
     CHECK(abr_suggest_kbps(10, 1, 64, 0) <= ABR_MAX_KBPS, "cap at max");
 
+    CHECK(abr_aimd_step(0, 6000, false) == 6000, "AIMD bootstrap snaps to target");
+    CHECK(abr_aimd_step(4000, 6000, false) == 4200, "AIMD additive +200");
+    CHECK(abr_aimd_step(4200, 6000, false) == 4400, "AIMD additive again");
+    CHECK(abr_aimd_step(5900, 6000, false) == 6000, "AIMD AI clamps to target");
+    int md = abr_aimd_step(4400, 2000, true);
+    CHECK(md < 4400 && md > 2000, "AIMD MD + blend toward lower target");
+    CHECK(abr_aimd_step(800, 800, false) == 800, "AIMD hold at target");
+
+    AbrController ctl;
+    CHECK(ctl.update(0, 0, 16, 0) == ABR_BASE_KBPS, "controller bootstrap base");
+    CHECK(ctl.update(40, 8, 16, 0) == ABR_BASE_KBPS + ABR_AI_KBPS, "controller AI underuse");
+    CHECK(ctl.update(40, 8, 16, 0) == ABR_BASE_KBPS + 2 * ABR_AI_KBPS, "controller AI again");
+    int after_rise = ctl.update(80, 8, 16, 0);
+    CHECK(after_rise < ABR_BASE_KBPS + 2 * ABR_AI_KBPS, "controller MD on rising RTT");
+
     if (g_fail) {
         printf("abr_test FAIL=%d\n", g_fail);
         return 1;

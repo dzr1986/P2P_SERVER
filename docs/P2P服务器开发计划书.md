@@ -52,7 +52,7 @@ TUTK Kalay 平台的核心价值：设备烧录一个 **UID** 即可被全球任
 | avSendIOCtrl | 控制指令通道 | `avSendIOCtrl/avRecvIOCtrl`（通道 0 可靠） | 已落地 |
 | LAN Search | 局域网免服务器发现 | 组播 `239.255.77.89:17890` + `IOTC_Search_Device` | 免服务器纯 LAN 建链（无 NatServer）待补 |
 | Device Wakeup | 低功耗设备唤醒 | `p2p_wakeserver` + `MSG_WAKE_*` | 三平台 SDK 接入与 <6s 出图待补 |
-| AuthKey / Token 鉴权 | 报到与连线鉴权 | 每 UID AuthKey + `EnableConnectToken` + X25519 FS | Token nonce 防重放表未做 |
+| AuthKey / Token 鉴权 | 报到与连线鉴权 | 每 UID AuthKey + `EnableConnectToken` + nonce 防重放 + X25519 FS | — |
 
 **结论**：连接底座（报到/打洞/中继/加密/同步）已具备且经过两轮加固，
 主要差距集中在：UID 体系、SDK 通道 API 层（AV/RDT/Tunnel）、集群调度、低功耗唤醒。
@@ -161,7 +161,7 @@ Client                         NatServer                       Device
 ```
 
 模式偏好与 TUTK 一致：LAN > P2P > Relay；连接建立后 `link_stats()` +
-`abr_suggest_kbps()`（delay-based 分档）驱动通道层码率自适应。
+`abr_suggest_kbps()` + AIMD 平滑驱动通道层码率自适应。
 
 ### 4.4 AV 通道（流媒体面，直接受益于第二轮优化）
 
@@ -187,7 +187,7 @@ Client                         NatServer                       Device
 | 层 | 现状 | 计划 |
 |----|------|------|
 | 报到鉴权 | 全局 secret 挑战应答、常量时间比较 | 每 UID 独立 AuthKey；失败限速与封禁（AntiAbuse 已有） |
-| 连线授权 | `EnableConnectToken` + `tokengen` | 已落地（可复用至过期；nonce 防重放表未做） |
+| 连线授权 | `EnableConnectToken` + `tokengen` | 已落地（验签 + `TokenNonceCache` 防重放） |
 | 数据加密 | AEAD(AES-256-CTR+HMAC)、密钥自 PSK 派生 | X25519 ECDH 握手实现前向保密，AEAD 复用现有实现；预留 DTLS 选项 |
 | 服务器间 | 同步 HMAC 签名+时间戳防重放（已有） | 无大改 |
 | 中继 | 注册 HMAC + 源地址校验（已有） | 中继流量按 UID 计量，配额超限限速 |
@@ -226,7 +226,8 @@ Client                         NatServer                       Device
     伪造 UID 双门被拒）；全量 **PASS=50 FAIL=0**
   - 连线 Token：`common/ConnectToken.*` + `tools/tokengen`；
     `EnableConnectToken=1` 时 CONNECT 必须尾随 Token（HMAC(dst AuthKey, src‖dst‖expire‖nonce)）；
-    过期/错 src/错 MAC 返回 `CONNECT_BAD_TOKEN`；旧客户端不带 Token 在开关关闭时兼容
+    过期/错 src/错 MAC/已用 nonce 返回 `CONNECT_BAD_TOKEN`（`TokenNonceCache` 记已用至 expire）；
+    旧客户端不带 Token 在开关关闭时兼容
   - 验证：`tests/token_test.cpp`；`test.sh` [14]
   - 未含：dev_type 角色语义细化
 
@@ -240,7 +241,7 @@ Client                         NatServer                       Device
   - `IOTC.h/.cpp`：进程级单例、SID 句柄表、每通道接收队列、阻塞 Read、
     `IOTC_Session_GetLinkStats`；锁序约定避免与 P2PClient 回调死锁
   - `AVAPIs` + `AvCodec.h`：帧分片/重组、resend 开关、too-late-drop、IOCtrl、
-    `avGetLinkStats` / `avSuggestedBitrateKbps`（`common/AbrEstimate.h` delay-based）
+    `avGetLinkStats` / `avSuggestedBitrateKbps`（`AbrEstimate.h` delay-based + AIMD）
   - `iotc_demo`：设备/客户端四通道并发回声验收
   - 验证：`tests/av_frame_test.cpp`；`test.sh` [10] 端到端
 
