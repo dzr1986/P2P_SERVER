@@ -3,7 +3,7 @@
 // 锁序约定：绝不在持有 g_mu 时调用 P2PClient 方法（其回调线程会反向取 g_mu，防 ABBA 死锁）
 #include "IOTC.h"
 
-#include "client/sdk/api/P2PClient.h"
+#include "core/instance/P2PClient.h"
 
 #include <chrono>
 #include <condition_variable>

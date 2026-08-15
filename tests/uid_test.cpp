@@ -1,7 +1,7 @@
 // uid_test.cpp：结构化 UID（P1）单测
 //   - 生成/校验/CRC 防篡改
 //   - AuthKey 派生确定性与设备隔离
-#include "common/Uid.h"
+#include "core/foundation/Uid.h"
 
 #include <cstdio>
 #include <cstring>

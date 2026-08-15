@@ -3,7 +3,7 @@
 //   - 有丢包链路：重传（超时/快速重传）保证不丢不乱序
 //   - 拥塞窗口：断链时发送被 cwnd 限流
 //   - 不可靠通道 FEC：单帧丢失免重传恢复 + 丢包统计
-#include "client/sdk/session/Session.h"
+#include "core/tunnel/Session.h"
 
 #include <cstdio>
 #include <cstring>

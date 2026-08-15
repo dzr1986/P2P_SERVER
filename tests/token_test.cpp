@@ -1,6 +1,6 @@
 // token_test.cpp：连线 Token 签发/验签单测
-#include "common/ConnectToken.h"
-#include "common/Uid.h"
+#include "core/foundation/ConnectToken.h"
+#include "core/foundation/Uid.h"
 
 #include <cstdio>
 #include <cstring>

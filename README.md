@@ -14,9 +14,9 @@
 | P2PProxy | `server/proxyserver/bin/p2p_proxy` | `proxy_server` | UDP 中继兜底：代理注册、RELAY_DATA 转发、可用性查询、协助打洞 |
 | 测试客户端 | `client/bin/peer` | （原版设备侧 SDK） | 注册 -> 鉴权 -> CONNECT -> 打洞直连 -> 失败走中继，端到端演示 |
 
-另外提供 **可复用的客户端 SDK**（`client/sdk/`，纯 C++17、单线程事件循环）：外部程序可
-直接链入 `P2PClient.cpp` 使用注册/鉴权/打洞/中继能力，演示程序 `client/demo/peer.cpp` 即为用法示例。
-SDK 分层设计与二次开发要点见 [`docs/开发指南.md`](docs/开发指南.md)。
+另外提供 **可复用的客户端 SDK**：编排层在 [`core/`](core/README.md)（按 EasyTier 目录拆：
+`foundation → socket → packet → tunnel → connectivity → instance`），对外 UID API 在
+`client/sdk/iotc/`。演示程序 `client/demo/peer.cpp`。导读见 [`docs/开发指南.md`](docs/开发指南.md)。
 ICE/STUN/TURN 与流媒体通道对照见 [`docs/P2P穿透与流媒体实践.md`](docs/P2P穿透与流媒体实践.md)。
 
 ## 目录结构
@@ -27,9 +27,14 @@ p2p_server_byding/
 ├── P2pServers.cfg            # 服务器地址配置
 ├── start.sh / stop.sh        # 启停（NatServer 16001 / P2PProxy 16002，与原版 8832/8833 区分）
 ├── test.sh                   # 本地端到端测试（端口 18832/18833，避免冲突）
-├── common/                   # 服务端与客户端共享代码
-│   ├── ProtoDef.h            # 协议定义（报文头/消息ID/结构体）
-│   └── Crypto.h/.cpp         # HMAC-SHA256 / PBKDF2 / AES-256-CBC / 流式 XOR 加密
+├── core/                     # 按 EasyTier 层拆的共享核（见 core/README.md）
+│   ├── foundation/           # 时钟/加密/UID（无网络域）
+│   ├── socket/               # UDP/TCP/TLS 端点
+│   ├── packet/               # ProtoDef / Codec / STUN / ICE SDP
+│   ├── tunnel/               # Session 可靠帧
+│   ├── connectivity/         # STUN 探测 / 打洞 / PathSelect
+│   └── instance/             # P2PClient 门面
+├── common/                   # 旧路径兼容头（转发到 core/）
 ├── server/
 │   ├── natserver/src/        # NatServer 源码
 │   │   ├── NatServer.cpp     #   主程序/线程/epoll/定时任务
@@ -42,12 +47,7 @@ p2p_server_byding/
 │   │   └── StatusServer.cpp  #   状态信息线程
 │   └── proxyserver/src/P2PProxy.cpp   # 中继代理
 └── client/
-    ├── sdk/                  # 客户端 SDK（可复用）
-    │   ├── api/P2PClient.h/.cpp    # 对外 API：connect/send/on_* 回调
-    │   ├── session/Session.h      # 可靠消息会话（重传/ACK/保活）
-    │   ├── transport/NatDetect.h  # NAT 类型探测
-    │   ├── transport/UdpSocket.h  # UDP socket 封装
-    │   └── proto/Codec.h          # 报文编解码
+    ├── sdk/iotc/             # TUTK 形 UID API（包着 core/instance）
     └── demo/peer.cpp         # 测试对端（-s 密钥 / -relay 强制中继）
 ```
 

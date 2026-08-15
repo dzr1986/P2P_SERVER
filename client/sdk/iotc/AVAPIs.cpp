@@ -3,8 +3,8 @@
 
 #include "AvCodec.h"
 #include "IOTC.h"
-#include "client/sdk/plat/Plat.h"
-#include "common/AbrEstimate.h"
+#include "core/foundation/Plat.h"
+#include "core/tunnel/AbrEstimate.h"
 
 #include <cstring>
 #include <mutex>

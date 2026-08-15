@@ -1,5 +1,5 @@
-#include "ConnectToken.h"
-#include "Crypto.h"
+#include "core/foundation/ConnectToken.h"
+#include "core/foundation/Crypto.h"
 
 #include <arpa/inet.h>
 #include <cstring>

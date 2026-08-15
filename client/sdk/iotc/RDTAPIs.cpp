@@ -2,8 +2,8 @@
 #include "RDTAPIs.h"
 
 #include "IOTC.h"
-#include "common/ProtoDef.h"
-#include "client/sdk/plat/Plat.h"
+#include "core/packet/ProtoDef.h"
+#include "core/foundation/Plat.h"
 
 #include <cstring>
 #include <mutex>

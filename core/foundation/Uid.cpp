@@ -1,6 +1,6 @@
-#include "Uid.h"
-#include "Crypto.h"
-#include "ProtoDef.h"
+#include "core/foundation/Uid.h"
+#include "core/foundation/Crypto.h"
+#include "core/packet/ProtoDef.h"
 
 #include <cstring>
 

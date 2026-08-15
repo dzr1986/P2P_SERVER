@@ -3,8 +3,8 @@
 //   发起方： peer <NatServerIP> <NatServerPort> <UUID> <对端UUID> [ProxyIP] [ProxyPort]
 //   等待方： peer <NatServerIP> <NatServerPort> <UUID>            [ProxyIP] [ProxyPort]
 //   -s <secret>  鉴权密钥（可选）
-#include "client/sdk/api/P2PClient.h"
-#include "common/NatMatrix.h"
+#include "core/instance/P2PClient.h"
+#include "core/connectivity/hole_punch/NatMatrix.h"
 
 #include <atomic>
 #include <cstdio>

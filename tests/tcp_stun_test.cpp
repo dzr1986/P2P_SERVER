@@ -1,6 +1,6 @@
-#include "common/Net.h"
-#include "common/StunBind.h"
-#include "common/TcpPunch.h"
+#include "core/socket/Net.h"
+#include "core/packet/StunBind.h"
+#include "core/connectivity/hole_punch/TcpPunch.h"
 
 #include <arpa/inet.h>
 #include <cstdio>

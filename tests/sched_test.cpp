@@ -1,6 +1,6 @@
 // sched_test.cpp：P6 区域调度单测（就近排序 + 权重加成）
-#include "common/RegionSched.h"
-#include "common/Uid.h"
+#include "core/foundation/RegionSched.h"
+#include "core/foundation/Uid.h"
 
 #include <cstdio>
 #include <string>

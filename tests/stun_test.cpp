@@ -1,5 +1,5 @@
 // stun_test.cpp：RFC 8489 Binding Success / XOR-MAPPED-ADDRESS
-#include "common/StunBind.h"
+#include "core/packet/StunBind.h"
 
 #include <arpa/inet.h>
 #include <cstdio>

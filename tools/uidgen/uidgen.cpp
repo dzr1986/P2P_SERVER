@@ -4,7 +4,7 @@
 //     - UID     烧录到设备（20 字符 Base32，含 CRC）
 //     - AuthKey 烧录到设备安全存储（HMAC(master, uid) 派生，服务端持 master 即可验证）
 //   master_secret 即服务端 P2pServers.cfg 的 AuthSecret。
-#include "common/Uid.h"
+#include "core/foundation/Uid.h"
 
 #include <cstdio>
 #include <cstdlib>

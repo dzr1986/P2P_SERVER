@@ -82,22 +82,26 @@ EasyTier 把「怎么连上」从「连上之后怎么转发」拆开：
 
 ---
 
-## 4. 本仓库的「crate 图」（对照上面）
+## 4. 本仓库已拆成的目录（对照上面）
+
+物理树在 [`core/`](../core/README.md)，`ls core` 即可按层学：
 
 ```
-common/          foundation + packet 头 + 策略纯函数
-  Plat / Crypto / ProtoDef / StunBind / NatMatrix / PathSelect / PortMap / TcpPunch
-client/sdk/
-  transport/     socket + NAT 探测
-  session/       tunnel 可靠帧
-  proto/         编解码
-  api/P2PClient  instance + connectivity 编排 + 选路发送
-  iotc/          对外 UID API（TUTK 形）
-server/
-  natserver      中心信令（EasyTier 没有对等物；他们是 mesh）
-  proxyserver    专用中继（对标 DERP / EasyTier 失败回退，不是 peer 转发）
-  wakeserver     休眠唤醒（IoT 专有）
+core/
+  foundation/                 Plat Crypto Uid Token Handshake Log File Util
+  socket/                     Net UdpSocket TlsIo Packet
+  packet/                     ProtoDef Codec StunBind IceSdp
+  tunnel/                     Session AbrEstimate TwccEstimate
+  connectivity/
+    stun/                     NatDetect
+    hole_punch/               TcpPunch PortMap NatMatrix NatSim
+    transport/                PathSelect
+  instance/                   P2PClient（生命周期 + 选路发送）
+client/sdk/iotc/              对外 UID API（TUTK 形，不是 EasyTier 层）
+server/natserver|proxyserver  中心信令 + 专用中继（他们没有对等物）
 ```
+
+`common/*.h` 与旧 `client/sdk/{plat,proto,session,transport,api}` 只是兼容转发头。
 
 `send_tunnel_via` 用 `PathSelect` 决定走哪条已就绪路径：
 

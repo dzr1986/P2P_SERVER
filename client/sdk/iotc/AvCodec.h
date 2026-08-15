@@ -14,7 +14,7 @@
 #include <map>
 #include <vector>
 
-#include "common/ProtoDef.h"
+#include "core/packet/ProtoDef.h"
 
 namespace p2p {
 

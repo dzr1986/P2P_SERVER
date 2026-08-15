@@ -1,5 +1,5 @@
-#include "common/TcpPunch.h"
-#include "common/NatMatrix.h"
+#include "core/connectivity/hole_punch/TcpPunch.h"
+#include "core/connectivity/hole_punch/NatMatrix.h"
 
 #include <arpa/inet.h>
 #include <cstdio>

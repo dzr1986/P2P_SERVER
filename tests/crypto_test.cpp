@@ -1,7 +1,7 @@
 // crypto_test.cpp：加密原语单测（NIST SP 800-38A AES-256-CBC 向量 + 往返/错误密钥 + PBKDF2 冒烟）
-#include "common/Crypto.h"
-#include "common/Handshake.h"
-#include "common/X25519.h"
+#include "core/foundation/Crypto.h"
+#include "core/foundation/Handshake.h"
+#include "core/foundation/X25519.h"
 
 #include <cstdio>
 #include <cstring>

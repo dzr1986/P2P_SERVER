@@ -1,6 +1,6 @@
-#include "PortMap.h"
-#include "Log.h"
-#include "Net.h"
+#include "core/connectivity/hole_punch/PortMap.h"
+#include "core/foundation/Log.h"
+#include "core/socket/Net.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>

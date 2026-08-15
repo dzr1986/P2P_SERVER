@@ -2,8 +2,8 @@
 //   用法：tokengen <dst_uid> <src_uid> <ttl_sec> <master_secret>
 //   输出：一行 104 字符 hex（ConnectToken）
 //   Token 用 dst 的 AuthKey 签名，授权 src 连接 dst；ttl_sec=0 表示已过期（测试用）。
-#include "common/ConnectToken.h"
-#include "common/Uid.h"
+#include "core/foundation/ConnectToken.h"
+#include "core/foundation/Uid.h"
 
 #include <cstdio>
 #include <cstdlib>

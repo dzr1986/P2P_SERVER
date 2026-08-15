@@ -1,5 +1,5 @@
-#include "client/sdk/transport/NatDetect.h"
-#include "common/NatMatrix.h"
+#include "core/connectivity/stun/NatDetect.h"
+#include "core/connectivity/hole_punch/NatMatrix.h"
 
 #include <cstdio>
 #include <cstring>

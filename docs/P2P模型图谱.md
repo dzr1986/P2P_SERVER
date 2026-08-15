@@ -178,7 +178,7 @@ ICE 并行打洞，`direct_ok` 后 `send_tunnel_via` 切 `juice_send`，再回�
 
 只学策略与开关设计，不把本仓库做成 SD-WAN。
 **目录级对照**（`foundation` → `connectivity` → `instance`，以及明确不抄的 `gateway` / `peers/route`）见
-[`EasyTier核心架构对照.md`](EasyTier核心架构对照.md)。发送准入已抽到 `common/PathSelect.h`。
+[`EasyTier核心架构对照.md`](EasyTier核心架构对照.md)。发送准入在 `core/connectivity/transport/PathSelect.h`；分层目录见 [`../core/README.md`](../core/README.md)。
 
 ### 4.6 组网 VPN 族（分层不同，只学编排）
 

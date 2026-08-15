@@ -1,11 +1,11 @@
-#include "client/sdk/api/P2PClient.h"
-#include "common/IceSdp.h"
-#include "common/ConnectToken.h"
-#include "common/NatMatrix.h"
-#include "common/Packet.h"
-#include "common/PathSelect.h"
-#include "common/TcpPunch.h"
-#include "common/StunBind.h"
+#include "core/instance/P2PClient.h"
+#include "core/packet/IceSdp.h"
+#include "core/foundation/ConnectToken.h"
+#include "core/connectivity/hole_punch/NatMatrix.h"
+#include "core/socket/Packet.h"
+#include "core/connectivity/transport/PathSelect.h"
+#include "core/connectivity/hole_punch/TcpPunch.h"
+#include "core/packet/StunBind.h"
 
 #include <cerrno>
 #include <cstdio>

@@ -9,7 +9,7 @@
 #include <cstdint>
 #include <cstring>
 
-#include "common/ProtoDef.h"
+#include "core/packet/ProtoDef.h"
 
 namespace p2p {
 

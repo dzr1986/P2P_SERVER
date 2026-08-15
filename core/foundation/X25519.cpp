@@ -1,7 +1,7 @@
 // X25519（RFC 7748）
 // 域运算与梯子来自 TweetNaCl（公有领域），常量 a24=121665
-#include "X25519.h"
-#include "Crypto.h"
+#include "core/foundation/X25519.h"
+#include "core/foundation/Crypto.h"
 
 #include <cstring>
 

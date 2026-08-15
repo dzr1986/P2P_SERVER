@@ -3,8 +3,8 @@
 
 #include "IOTC.h"
 #include "TunnelCodec.h"
-#include "common/Net.h"
-#include "common/ProtoDef.h"
+#include "core/socket/Net.h"
+#include "core/packet/ProtoDef.h"
 
 #include <atomic>
 #include <cerrno>

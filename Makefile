@@ -32,12 +32,14 @@ BIN_PATHSELECTTEST := tests/bin/path_select_test
 BIN_IOTCDEMO := client/bin/iotc_demo
 BIN_WAKE    := server/wakeserver/bin/p2p_wakeserver
 
-COMMON_SRCS := common/Crypto.cpp common/Uid.cpp common/X25519.cpp common/ConnectToken.cpp common/TlsIo.cpp common/PortMap.cpp
+COMMON_SRCS := core/foundation/Crypto.cpp core/foundation/Uid.cpp \
+            core/foundation/X25519.cpp core/foundation/ConnectToken.cpp \
+            core/socket/TlsIo.cpp core/connectivity/hole_punch/PortMap.cpp
 IOTC_SRCS := client/sdk/iotc/IOTC.cpp \
              client/sdk/iotc/AVAPIs.cpp \
              client/sdk/iotc/RDTAPIs.cpp \
              client/sdk/iotc/P2PTunnelAPIs.cpp \
-             client/sdk/api/P2PClient.cpp
+             core/instance/P2PClient.cpp
 
 NAT_SRCS := server/natserver/src/NatServer.cpp \
             server/natserver/src/RecvProcess.cpp \
@@ -51,7 +53,7 @@ NAT_SRCS := server/natserver/src/NatServer.cpp \
 PROXY_SRCS := server/proxyserver/src/P2PProxy.cpp
 
 PEER_SRCS  := client/demo/peer.cpp \
-              client/sdk/api/P2PClient.cpp
+              core/instance/P2PClient.cpp
 
 all: $(LIBJUICE) $(BIN_NAT) $(BIN_PROXY) $(BIN_PEER) $(BIN_CRYPTOTEST) $(BIN_SESSIONTEST) $(BIN_UIDTEST) $(BIN_UIDGEN) $(BIN_TOKENGEN) $(BIN_TOKENTEST) $(BIN_AVTEST) $(BIN_SCHEDTEST) $(BIN_STUNTEST) $(BIN_ABRTEST) $(BIN_ICESDPTEST) $(BIN_TWCCTEST) $(BIN_PORTMAPTEST) $(BIN_NATDETECTTEST) $(BIN_TCPPUNCHTEST) $(BIN_TCPSTUNTEST) $(BIN_NATSIMTEST) $(BIN_PATHSELECTTEST) $(BIN_IOTCDEMO) $(BIN_WAKE)
 
@@ -60,39 +62,39 @@ $(LIBJUICE):
 	cmake --build third_party/libjuice/build --target juice-static -j
 	ln -sfn libjuice-static.a $(LIBJUICE)
 
-$(BIN_NAT): $(NAT_SRCS) $(COMMON_SRCS) common/ProtoDef.h $(LIBJUICE)
+$(BIN_NAT): $(NAT_SRCS) $(COMMON_SRCS) core/packet/ProtoDef.h $(LIBJUICE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ $(NAT_SRCS) $(COMMON_SRCS) $(LDFLAGS)
 
-$(BIN_PROXY): $(PROXY_SRCS) $(COMMON_SRCS) common/ProtoDef.h $(LIBJUICE)
+$(BIN_PROXY): $(PROXY_SRCS) $(COMMON_SRCS) core/packet/ProtoDef.h $(LIBJUICE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ $(PROXY_SRCS) $(COMMON_SRCS) $(LDFLAGS)
 
-$(BIN_PEER): $(PEER_SRCS) $(COMMON_SRCS) common/ProtoDef.h $(LIBJUICE)
+$(BIN_PEER): $(PEER_SRCS) $(COMMON_SRCS) core/packet/ProtoDef.h $(LIBJUICE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ $(PEER_SRCS) $(COMMON_SRCS) $(LDFLAGS)
 
-$(BIN_CRYPTOTEST): tests/crypto_test.cpp $(COMMON_SRCS) common/ProtoDef.h $(LIBJUICE)
+$(BIN_CRYPTOTEST): tests/crypto_test.cpp $(COMMON_SRCS) core/packet/ProtoDef.h $(LIBJUICE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tests/crypto_test.cpp $(COMMON_SRCS) $(LDFLAGS)
 
-$(BIN_SESSIONTEST): tests/session_test.cpp client/sdk/session/Session.h $(COMMON_SRCS) common/ProtoDef.h $(LIBJUICE)
+$(BIN_SESSIONTEST): tests/session_test.cpp core/tunnel/Session.h $(COMMON_SRCS) core/packet/ProtoDef.h $(LIBJUICE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tests/session_test.cpp $(COMMON_SRCS) $(LDFLAGS)
 
-$(BIN_UIDTEST): tests/uid_test.cpp $(COMMON_SRCS) common/Uid.h $(LIBJUICE)
+$(BIN_UIDTEST): tests/uid_test.cpp $(COMMON_SRCS) core/foundation/Uid.h $(LIBJUICE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tests/uid_test.cpp $(COMMON_SRCS) $(LDFLAGS)
 
-$(BIN_UIDGEN): tools/uidgen/uidgen.cpp $(COMMON_SRCS) common/Uid.h $(LIBJUICE)
+$(BIN_UIDGEN): tools/uidgen/uidgen.cpp $(COMMON_SRCS) core/foundation/Uid.h $(LIBJUICE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tools/uidgen/uidgen.cpp $(COMMON_SRCS) $(LDFLAGS)
 
-$(BIN_TOKENGEN): tools/tokengen/tokengen.cpp $(COMMON_SRCS) common/ConnectToken.h $(LIBJUICE)
+$(BIN_TOKENGEN): tools/tokengen/tokengen.cpp $(COMMON_SRCS) core/foundation/ConnectToken.h $(LIBJUICE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tools/tokengen/tokengen.cpp $(COMMON_SRCS) $(LDFLAGS)
 
-$(BIN_TOKENTEST): tests/token_test.cpp $(COMMON_SRCS) common/ConnectToken.h $(LIBJUICE)
+$(BIN_TOKENTEST): tests/token_test.cpp $(COMMON_SRCS) core/foundation/ConnectToken.h $(LIBJUICE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tests/token_test.cpp $(COMMON_SRCS) $(LDFLAGS)
 
@@ -100,55 +102,55 @@ $(BIN_AVTEST): tests/av_frame_test.cpp client/sdk/iotc/AvCodec.h client/sdk/iotc
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tests/av_frame_test.cpp
 
-$(BIN_SCHEDTEST): tests/sched_test.cpp $(COMMON_SRCS) common/RegionSched.h common/Uid.h $(LIBJUICE)
+$(BIN_SCHEDTEST): tests/sched_test.cpp $(COMMON_SRCS) core/foundation/RegionSched.h core/foundation/Uid.h $(LIBJUICE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tests/sched_test.cpp $(COMMON_SRCS) $(LDFLAGS)
 
-$(BIN_STUNTEST): tests/stun_test.cpp common/StunBind.h
+$(BIN_STUNTEST): tests/stun_test.cpp core/packet/StunBind.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tests/stun_test.cpp
 
-$(BIN_ABRTEST): tests/abr_test.cpp common/AbrEstimate.h
+$(BIN_ABRTEST): tests/abr_test.cpp core/tunnel/AbrEstimate.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tests/abr_test.cpp
 
-$(BIN_ICESDPTEST): tests/ice_sdp_test.cpp common/IceSdp.h
+$(BIN_ICESDPTEST): tests/ice_sdp_test.cpp core/packet/IceSdp.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tests/ice_sdp_test.cpp
 
-$(BIN_TWCCTEST): tests/twcc_test.cpp common/TwccEstimate.h common/AbrEstimate.h
+$(BIN_TWCCTEST): tests/twcc_test.cpp core/tunnel/TwccEstimate.h core/tunnel/AbrEstimate.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tests/twcc_test.cpp
 
-$(BIN_PORTMAPTEST): tests/portmap_test.cpp common/PortMap.cpp common/PortMap.h
+$(BIN_PORTMAPTEST): tests/portmap_test.cpp core/connectivity/hole_punch/PortMap.cpp core/connectivity/hole_punch/PortMap.h
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -o $@ tests/portmap_test.cpp common/PortMap.cpp $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ tests/portmap_test.cpp core/connectivity/hole_punch/PortMap.cpp $(LDFLAGS)
 
-$(BIN_NATDETECTTEST): tests/nat_detect_test.cpp client/sdk/transport/NatDetect.h common/NatMatrix.h common/ProtoDef.h
+$(BIN_NATDETECTTEST): tests/nat_detect_test.cpp core/connectivity/stun/NatDetect.h core/connectivity/hole_punch/NatMatrix.h core/packet/ProtoDef.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tests/nat_detect_test.cpp
 
-$(BIN_TCPPUNCHTEST): tests/tcp_punch_test.cpp common/TcpPunch.h common/Net.h common/Packet.h common/ProtoDef.h
+$(BIN_TCPPUNCHTEST): tests/tcp_punch_test.cpp core/connectivity/hole_punch/TcpPunch.h core/socket/Net.h core/socket/Packet.h core/packet/ProtoDef.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tests/tcp_punch_test.cpp
 
-$(BIN_TCPSTUNTEST): tests/tcp_stun_test.cpp common/StunBind.h common/TcpPunch.h common/Net.h
+$(BIN_TCPSTUNTEST): tests/tcp_stun_test.cpp core/packet/StunBind.h core/connectivity/hole_punch/TcpPunch.h core/socket/Net.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tests/tcp_stun_test.cpp
 
-$(BIN_NATSIMTEST): tests/nat_sim_test.cpp common/NatSim.h common/NatMatrix.h common/ProtoDef.h
+$(BIN_NATSIMTEST): tests/nat_sim_test.cpp core/connectivity/hole_punch/NatSim.h core/connectivity/hole_punch/NatMatrix.h core/packet/ProtoDef.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tests/nat_sim_test.cpp
 
-$(BIN_PATHSELECTTEST): tests/path_select_test.cpp common/PathSelect.h
+$(BIN_PATHSELECTTEST): tests/path_select_test.cpp core/connectivity/transport/PathSelect.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tests/path_select_test.cpp
 
-$(BIN_IOTCDEMO): client/demo/iotc_demo.cpp $(IOTC_SRCS) $(COMMON_SRCS) common/ProtoDef.h $(LIBJUICE)
+$(BIN_IOTCDEMO): client/demo/iotc_demo.cpp $(IOTC_SRCS) $(COMMON_SRCS) core/packet/ProtoDef.h $(LIBJUICE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ client/demo/iotc_demo.cpp $(IOTC_SRCS) $(COMMON_SRCS) $(LDFLAGS)
 
-$(BIN_WAKE): server/wakeserver/WakeServer.cpp server/wakeserver/WakeServer.h $(COMMON_SRCS) common/ProtoDef.h
+$(BIN_WAKE): server/wakeserver/WakeServer.cpp server/wakeserver/WakeServer.h $(COMMON_SRCS) core/packet/ProtoDef.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ server/wakeserver/WakeServer.cpp $(COMMON_SRCS) $(LDFLAGS)
 
