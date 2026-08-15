@@ -21,7 +21,7 @@ P2PProxy::P2PProxy() {}
 P2PProxy::~P2PProxy() {}
 
 static constexpr time_t REG_TTL = 120;   // 注册表项 120s 无刷新回收
-static constexpr time_t COUNT_TTL = 5;   // 计数衰减周期
+static constexpr time_t COUNT_TTL = 3;   // 计数衰减周期（缩短以控制 srcpaths 膨胀）
 
 // 代理注册鉴权共享密钥（演示用固定值；生产环境应从配置/环境变量注入）
 static const uint8_t kProxyAuthKey[] = "p2p-proxy-auth-2024";
@@ -82,7 +82,54 @@ int P2PProxy::send(const sockaddr_in& to, uint8_t msg_id,
     h.length = htonl((uint32_t)plen);
     memcpy(buf, &h, sizeof(h));
     if (plen) memcpy(buf + sizeof(h), payload, plen);
-    return (int)sendto(fd, buf, sizeof(h) + plen, 0, (const sockaddr*)&to, sizeof(to));
+    const size_t nsend = sizeof(h) + plen;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        ssize_t n = sendto(fd, buf, nsend, 0, (const sockaddr*)&to, sizeof(to));
+        if (n >= 0) return (int)n;
+        if (errno != EINTR && errno != EAGAIN && errno != EWOULDBLOCK) break;
+    }
+    LOGW("Proxy", "sendto failed msg=0x%02x dest[%s] errno=%d",
+         msg_id, addr_to_str(to).c_str(), errno);
+    return -1;
+}
+
+void P2PProxy::touch_path(uint64_t src_key, uint64_t dst_key,
+                          const sockaddr_in& dst, const char* uuid) {
+    auto& sh = path_shards_[shard_of(src_key)];
+    std::lock_guard<std::mutex> lk(sh.mu);
+    auto& m = sh.paths[src_key];
+    auto it = m.find(dst_key);
+    if (it == m.end()) {
+        if (m.size() >= kMaxPathsPerSrc) {
+            auto oldest = m.begin();
+            for (auto jt = m.begin(); jt != m.end(); ++jt) {
+                if (jt->second.last_active < oldest->second.last_active) oldest = jt;
+            }
+            m.erase(oldest);
+        }
+        PathInfo pi;
+        pi.dst = dst;
+        pi.count = 3;
+        pi.uuid = uuid ? uuid : "";
+        pi.last_active = time(nullptr);
+        m[dst_key] = pi;
+    } else {
+        it->second.count = 3;
+        it->second.last_active = time(nullptr);
+    }
+}
+
+void P2PProxy::erase_paths_for(uint64_t addr_key) {
+    {
+        auto& sh = path_shards_[shard_of(addr_key)];
+        std::lock_guard<std::mutex> lk(sh.mu);
+        sh.paths.erase(addr_key);
+    }
+    for (int i = 0; i < kPathShards; i++) {
+        if (i == shard_of(addr_key)) continue;
+        std::lock_guard<std::mutex> lk(path_shards_[i].mu);
+        for (auto& kv : path_shards_[i].paths) kv.second.erase(addr_key);
+    }
 }
 
 void P2PProxy::do_register(const std::string& uuid, const sockaddr_in& from,
@@ -106,14 +153,14 @@ void P2PProxy::do_register(const std::string& uuid, const sockaddr_in& from,
     uint8_t expect[32];
     hmac_sha256(kProxyAuthKey, kProxyAuthKeyLen,
                 reinterpret_cast<const uint8_t*>(uuid.data()), uuid.size(), expect);
-    if (memcmp(expect, hmac, 32) != 0) {
+    if (!p2p_const_time_eq(expect, hmac, 32)) {
         rsp.result = 3;
         if (with_rsp) send(from, MSG_PROXY_REGISTER_RSP, &rsp, sizeof(rsp));
         LOGW("Proxy", "register rejected, bad hmac uuid[%s]", uuid.c_str());
         return;
     }
 
-    std::lock_guard<std::mutex> lk(mu_);
+    std::unique_lock<std::shared_mutex> lk(reg_mu_);
 
     // 满员拒绝（已注册的刷新不受限）
     if (uuid2addr_.size() >= max_proxy_ &&
@@ -149,16 +196,17 @@ void P2PProxy::do_register(const std::string& uuid, const sockaddr_in& from,
 }
 
 void P2PProxy::unregister(const std::string& uuid, const sockaddr_in& from) {
-    std::lock_guard<std::mutex> lk(mu_);
-    auto it = uuid2addr_.find(uuid);
-    if (it == uuid2addr_.end()) return;
-    if (!sockaddr_eq(it->second.addr, from)) return;   // 仅注册方可注销
-    addr2uuid_.erase(addr_to_u64(it->second.addr));
-    // 删除相关中转路径
-    uint64_t ua = addr_to_u64(it->second.addr);
-    srcpaths_.erase(ua);
-    for (auto& kv : srcpaths_) kv.second.erase(ua);
-    uuid2addr_.erase(it);
+    uint64_t ua = 0;
+    {
+        std::unique_lock<std::shared_mutex> lk(reg_mu_);
+        auto it = uuid2addr_.find(uuid);
+        if (it == uuid2addr_.end()) return;
+        if (!sockaddr_eq(it->second.addr, from)) return;   // 仅注册方可注销
+        ua = addr_to_u64(it->second.addr);
+        addr2uuid_.erase(ua);
+        uuid2addr_.erase(it);
+    }
+    erase_paths_for(ua);
 }
 
 void P2PProxy::handle(uint8_t* data, size_t len, const sockaddr_in& from) {
@@ -188,7 +236,12 @@ void P2PProxy::handle(uint8_t* data, size_t len, const sockaddr_in& from) {
         if (plen >= sizeof(ProxyRegReq)) memcpy(&req, p, sizeof(ProxyRegReq));
         req.uuid[MAX_UUID_LEN] = 0;
         unregister(req.uuid, from);
-        LOGI("Proxy", "unregister uuid[%s] used=%zu", req.uuid, uuid2addr_.size());
+        size_t used = 0;
+        {
+            std::shared_lock<std::shared_mutex> lk(reg_mu_);
+            used = uuid2addr_.size();
+        }
+        LOGI("Proxy", "unregister uuid[%s] used=%zu", req.uuid, used);
         break;
     }
 
@@ -200,50 +253,25 @@ void P2PProxy::handle(uint8_t* data, size_t len, const sockaddr_in& from) {
 
         sockaddr_in dst;
         uint64_t dst_key = 0;
-        bool found = false;
         {
-            // 合并原两次加锁为单次临界区：查目标地址并同时维护双向中转路径
-            std::lock_guard<std::mutex> lk(mu_);
-            auto it = uuid2addr_.find(frame->dst_uuid);
-            if (it != uuid2addr_.end()) {
-                dst = it->second.addr;
-                dst_key = addr_to_u64(dst);
-                found = true;
-            }
-            if (!found) {
+            std::shared_lock<std::shared_mutex> lk(reg_mu_);
+            auto dit = uuid2addr_.find(frame->dst_uuid);
+            if (dit == uuid2addr_.end()) {
                 LOGD("Proxy", "relay drop, dst[%s] not registered", frame->dst_uuid);
                 return;
             }
-            // 源->目标 中转路径：命中则计数重置，未命中则创建
-            uint64_t src_key = addr_to_u64(from);
-            auto& m = srcpaths_[src_key];
-            auto pit = m.find(dst_key);
-            if (pit == m.end()) {
-                PathInfo pi;
-                pi.dst = dst;
-                pi.count = 3;
-                pi.uuid = frame->dst_uuid;
-                pi.last_active = time(nullptr);
-                m[dst_key] = pi;
-            } else {
-                pit->second.count = 3;
-                pit->second.last_active = time(nullptr);
+            auto sit = uuid2addr_.find(frame->src_uuid);
+            if (sit == uuid2addr_.end() || !sockaddr_eq(sit->second.addr, from)) {
+                LOGD("Proxy", "relay drop, src[%s] not registered or spoofed",
+                     frame->src_uuid);
+                return;
             }
-            // 目标->源 反向路径（供回包）
-            auto& m2 = srcpaths_[dst_key];
-            auto pit2 = m2.find(src_key);
-            if (pit2 == m2.end()) {
-                PathInfo pi;
-                pi.dst = from;
-                pi.count = 3;
-                pi.uuid = frame->src_uuid;
-                pi.last_active = time(nullptr);
-                m2[src_key] = pi;
-            } else {
-                pit2->second.count = 3;
-                pit2->second.last_active = time(nullptr);
-            }
+            dst = dit->second.addr;
+            dst_key = addr_to_u64(dst);
         }
+        uint64_t src_key = addr_to_u64(from);
+        touch_path(src_key, dst_key, dst, frame->dst_uuid);
+        touch_path(dst_key, src_key, from, frame->src_uuid);
 
         // 原样转发整包（RelayFrame + TunnelFrame + 负载），已在锁外
         send(dst, MSG_PROXY_RELAY_DATA, p, plen);
@@ -260,7 +288,7 @@ void P2PProxy::handle(uint8_t* data, size_t len, const sockaddr_in& from) {
 
         ProxyRegRsp rsp;
         memset(&rsp, 0, sizeof(rsp));
-        std::lock_guard<std::mutex> lk(mu_);
+        std::shared_lock<std::shared_mutex> lk(reg_mu_);
         auto it = uuid2addr_.find(frame->dst_uuid);
         if (it == uuid2addr_.end()) {
             rsp.result = 1;
@@ -276,7 +304,7 @@ void P2PProxy::handle(uint8_t* data, size_t len, const sockaddr_in& from) {
     case MSG_SP_ASK_EXTINFO_REQ: {
         ProxyAvailRsp rsp;
         memset(&rsp, 0, sizeof(rsp));
-        std::lock_guard<std::mutex> lk(mu_);
+        std::shared_lock<std::shared_mutex> lk(reg_mu_);
         rsp.available = (uuid2addr_.size() < max_proxy_) ? 1 : 0;
         rsp.used = htons((uint16_t)uuid2addr_.size());
         rsp.max_proxy = htons(max_proxy_);
@@ -295,11 +323,11 @@ void P2PProxy::timer_loop() {
     while (running_) {
         sleep(COUNT_TTL);
         time_t now = time(nullptr);
-        // 缩小持锁粒度：先短锁内收集待回收键，再短锁内删除，避免全表扫描长期持锁
-        std::vector<uint64_t> dead_src, dead_uuid;
-        {
-            std::lock_guard<std::mutex> lk(mu_);
-            for (auto it = srcpaths_.begin(); it != srcpaths_.end();) {
+        size_t path_count = 0;
+        for (int i = 0; i < kPathShards; i++) {
+            std::lock_guard<std::mutex> lk(path_shards_[i].mu);
+            auto& paths = path_shards_[i].paths;
+            for (auto it = paths.begin(); it != paths.end();) {
                 for (auto jt = it->second.begin(); jt != it->second.end();) {
                     if (jt->second.count > 0) jt->second.count--;
                     if (jt->second.count == 0 || now - jt->second.last_active > REG_TTL)
@@ -307,8 +335,14 @@ void P2PProxy::timer_loop() {
                     else
                         ++jt;
                 }
-                if (it->second.empty()) it = srcpaths_.erase(it); else ++it;
+                if (it->second.empty()) it = paths.erase(it);
+                else { path_count += it->second.size(); ++it; }
             }
+        }
+        std::vector<uint64_t> dead_uuid;
+        size_t uuid_n = 0;
+        {
+            std::unique_lock<std::shared_mutex> lk(reg_mu_);
             for (auto it = uuid2addr_.begin(); it != uuid2addr_.end();) {
                 if (now - it->second.last_reg > REG_TTL) {
                     dead_uuid.push_back(addr_to_u64(it->second.addr));
@@ -317,14 +351,11 @@ void P2PProxy::timer_loop() {
                     ++it;
                 }
             }
-        }
-        if (!dead_uuid.empty()) {
-            std::lock_guard<std::mutex> lk(mu_);
             for (auto k : dead_uuid) addr2uuid_.erase(k);
+            uuid_n = uuid2addr_.size();
         }
         LOGD("Proxy", "tables: uuid=%zu srcpaths=%zu relay_pkts=%llu",
-             uuid2addr_.size(), srcpaths_.size(),
-             (unsigned long long)relay_pkts_.load());
+             uuid_n, path_count, (unsigned long long)relay_pkts_.load());
     }
 }
 

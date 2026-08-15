@@ -1,11 +1,14 @@
 #include "Crypto.h"
 
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <fcntl.h>
-#include <unistd.h>
+#include <memory>
 #include <string>
+#include <sys/random.h>
+#include <unistd.h>
 
 namespace p2p {
 
@@ -274,13 +277,15 @@ void sha256_hex(const uint8_t* data, size_t len, char out_hex[65]) {
     out_hex[64] = 0;
 }
 
-void hmac_sha256(const uint8_t* key, size_t key_len,
-                 const uint8_t* msg, size_t msg_len,
-                 uint8_t out[SHA256_DIGEST_LEN]) {
+// HMAC-SHA256，支持两段消息拼接（避免 AEAD 再拷贝 nonce||ciphertext）
+static void hmac_sha256_parts(const uint8_t* key, size_t key_len,
+                              const uint8_t* a, size_t a_len,
+                              const uint8_t* b, size_t b_len,
+                              uint8_t out[SHA256_DIGEST_LEN]) {
     uint8_t k[64] = {0};
     if (key_len > 64) {
         sha256(key, key_len, k);
-    } else {
+    } else if (key && key_len) {
         memcpy(k, key, key_len);
     }
     uint8_t ipad[64], opad[64];
@@ -290,7 +295,8 @@ void hmac_sha256(const uint8_t* key, size_t key_len,
     }
     Sha256Ctx inner;
     inner.update(ipad, 64);
-    inner.update(msg, msg_len);
+    if (a && a_len) inner.update(a, a_len);
+    if (b && b_len) inner.update(b, b_len);
     uint8_t ih[SHA256_DIGEST_LEN];
     inner.final(ih);
 
@@ -298,6 +304,20 @@ void hmac_sha256(const uint8_t* key, size_t key_len,
     outer.update(opad, 64);
     outer.update(ih, SHA256_DIGEST_LEN);
     outer.final(out);
+}
+
+void hmac_sha256(const uint8_t* key, size_t key_len,
+                 const uint8_t* msg, size_t msg_len,
+                 uint8_t out[SHA256_DIGEST_LEN]) {
+    hmac_sha256_parts(key, key_len, msg, msg_len, nullptr, 0, out);
+}
+
+bool p2p_const_time_eq(const uint8_t* a, const uint8_t* b, size_t n) {
+    if (n == 0) return true;
+    if (!a || !b) return false;
+    uint8_t diff = 0;
+    for (size_t i = 0; i < n; i++) diff |= (uint8_t)(a[i] ^ b[i]);
+    return diff == 0;
 }
 
 void p2p_stream_xor(const uint8_t* secret, size_t secret_len,
@@ -321,17 +341,16 @@ void p2p_stream_xor(const uint8_t* secret, size_t secret_len,
     }
 }
 
-void pbkdf2_hmac_sha256(const uint8_t* pw, size_t pw_len,
-                        const uint8_t* salt, size_t salt_len,
-                        uint32_t iterations,
-                        uint8_t* out, size_t out_len) {
-    if (iterations == 0) iterations = 1;
-    // HMAC-SHA256 block size 为 64 字节，salt + 4 字节 block counter 不能超过 block size
-    // 调用方应确保 salt_len <= 60，否则视为参数错误
-    if (salt_len > 60) {
+int pbkdf2_hmac_sha256(const uint8_t* pw, size_t pw_len,
+                       const uint8_t* salt, size_t salt_len,
+                       uint32_t iterations,
+                       uint8_t* out, size_t out_len) {
+    if (!out || out_len == 0) return -1;
+    if (salt_len > 60 || (salt_len > 0 && !salt)) {
         memset(out, 0, out_len);
-        return;
+        return -1;
     }
+    if (iterations == 0) iterations = 1;
     uint8_t buf[64];
     memcpy(buf, salt, salt_len);
 
@@ -354,6 +373,7 @@ void pbkdf2_hmac_sha256(const uint8_t* pw, size_t pw_len,
         off += n;
         block++;
     }
+    return 0;
 }
 
 int aes256_cbc_encrypt(const uint8_t key[32], const uint8_t iv[16],
@@ -458,18 +478,12 @@ int p2p_aead_encrypt(const uint8_t key[32], const uint8_t nonce[12],
     aes256_ctr_xor(key, nonce, in, in_len, out);
     *out_len = in_len;
 
-    // HMAC-SHA256 计算认证标签（Encrypt-then-MAC）
-    // MAC 输入：nonce(12B) || ciphertext
+    // HMAC-SHA256 计算认证标签（Encrypt-then-MAC，分段更新避免大栈缓冲）
     uint8_t mac_key[SHA256_DIGEST_LEN];
     hmac_sha256(key, 32, (const uint8_t*)"aead-mac", 8, mac_key);
 
-    uint8_t mac_buf[12 + 4096];
-    if (in_len > 4096) return -1;
-    memcpy(mac_buf, nonce, 12);
-    memcpy(mac_buf + 12, out, in_len);
-
     uint8_t mac[SHA256_DIGEST_LEN];
-    hmac_sha256(mac_key, SHA256_DIGEST_LEN, mac_buf, 12 + in_len, mac);
+    hmac_sha256_parts(mac_key, SHA256_DIGEST_LEN, nonce, 12, out, in_len, mac);
     memcpy(tag, mac, 16);
 
     return 0;
@@ -481,22 +495,13 @@ int p2p_aead_decrypt(const uint8_t key[32], const uint8_t nonce[12],
                      const uint8_t tag[16]) {
     if (in_len > out_cap) return -1;
 
-    // 先校验 HMAC-SHA256 标签
     uint8_t mac_key[SHA256_DIGEST_LEN];
     hmac_sha256(key, 32, (const uint8_t*)"aead-mac", 8, mac_key);
 
-    uint8_t mac_buf[12 + 4096];
-    if (in_len > 4096) return -1;
-    memcpy(mac_buf, nonce, 12);
-    memcpy(mac_buf + 12, in, in_len);
-
     uint8_t mac[SHA256_DIGEST_LEN];
-    hmac_sha256(mac_key, SHA256_DIGEST_LEN, mac_buf, 12 + in_len, mac);
+    hmac_sha256_parts(mac_key, SHA256_DIGEST_LEN, nonce, 12, in, in_len, mac);
 
-    // 常量时间比较（防止时序攻击）
-    uint8_t diff = 0;
-    for (int i = 0; i < 16; i++) diff |= mac[i] ^ tag[i];
-    if (diff != 0) return -1;
+    if (!p2p_const_time_eq(mac, tag, 16)) return -1;
 
     // AES-256-CTR 解密
     aes256_ctr_xor(key, nonce, in, in_len, out);
@@ -546,7 +551,7 @@ public:
                 uint8_t* out, size_t out_cap, size_t* out_len) override {
         if (in_len > out_cap - 28) return -1;  // nonce(12) + tag(16)
         uint8_t nonce[12];
-        p2p_random_bytes(nonce, 12);
+        if (p2p_random_bytes(nonce, 12) != 0) return -1;
         uint8_t tag[16];
         if (p2p_aead_encrypt(key_, nonce, in, in_len, out + 12, out_cap - 12, out_len, tag) != 0)
             return -1;
@@ -566,35 +571,52 @@ public:
     EncryptionAlgorithm algorithm() const override { return EncryptionAlgorithm::Aes256Ctr; }
 };
 
-Encryptor* create_encryptor(EncryptionAlgorithm alg,
-                            const uint8_t key[32],
-                            const char* uuid, const uint8_t iv[8]) {
+std::unique_ptr<Encryptor> create_encryptor(EncryptionAlgorithm alg,
+                                            const uint8_t key[32],
+                                            const char* uuid, const uint8_t iv[8]) {
     switch (alg) {
         case EncryptionAlgorithm::Xor:
-            return new XorEncryptor(key, uuid, iv);
+            return std::make_unique<XorEncryptor>(key, uuid, iv);
         case EncryptionAlgorithm::Aes256Ctr:
-            return new AesCtrEncryptor(key);
+            return std::make_unique<AesCtrEncryptor>(key);
         default:
             return nullptr;
     }
 }
 
-void p2p_random_bytes(uint8_t* out, size_t len) {
-    // 生产环境必须使用平台安全随机源（/dev/urandom）
-    // 参考 libjuice 做法：无安全随机源时直接返回全零，不做降级
+int p2p_random_bytes(uint8_t* out, size_t len) {
+    if (len == 0) return 0;
+    if (!out) return -1;
+
+    size_t got = 0;
+    while (got < len) {
+        ssize_t n = getrandom(out + got, len - got, 0);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        got += (size_t)n;
+    }
+    if (got == len) return 0;
+
     int fd = open("/dev/urandom", O_RDONLY);
     if (fd >= 0) {
-        size_t got = 0;
+        got = 0;
         while (got < len) {
             ssize_t n = read(fd, out + got, len - got);
-            if (n <= 0) break;
+            if (n < 0) {
+                if (errno == EINTR) continue;
+                break;
+            }
+            if (n == 0) break;
             got += (size_t)n;
         }
         close(fd);
-        if (got == len) return;
+        if (got == len) return 0;
     }
-    // 安全随机源不可用：填充全零，调用方应检测并拒绝服务
+
     memset(out, 0, len);
+    return -1;
 }
 
 } // namespace p2p

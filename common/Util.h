@@ -70,6 +70,14 @@ inline uint32_t rand_u32() {
 
 inline uint16_t rand_u16() { return (uint16_t)(rand_u32() >> 16); }
 
+// 定长协议字段拷贝：截断并保证 NUL 结尾（dst_cap 含结尾 0，不越界读 src）
+inline void copy_str_field(char* dst, size_t dst_cap, const char* src) {
+    if (!dst || dst_cap == 0) return;
+    memset(dst, 0, dst_cap);
+    if (!src) return;
+    memcpy(dst, src, strnlen(src, dst_cap - 1));
+}
+
 } // namespace p2p
 
 #endif // P2P_COMMON_UTIL_H

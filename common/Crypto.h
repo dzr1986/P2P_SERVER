@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 
 namespace p2p {
 
@@ -22,14 +23,19 @@ void hmac_sha256(const uint8_t* key, size_t key_len,
                  const uint8_t* msg, size_t msg_len,
                  uint8_t out[SHA256_DIGEST_LEN]);
 
+// 常量时间比较：长度相等且内容相同返回 true（防时序攻击，参考 libjuice）
+bool p2p_const_time_eq(const uint8_t* a, const uint8_t* b, size_t n);
+
 // ---------------------------------------------------------------------------
 // PBKDF2-HMAC-SHA256：口令派生（License 文件加密密钥等）
 //   out_len 任意；推导强度由 iterations 控制（>=1000 起）
+//   salt_len 必须 <= 60（HMAC-SHA256 单块容纳 salt+counter）
+//   返回 0 成功 / -1 参数非法（不静默截断 salt）
 // ---------------------------------------------------------------------------
-void pbkdf2_hmac_sha256(const uint8_t* pw, size_t pw_len,
-                        const uint8_t* salt, size_t salt_len,
-                        uint32_t iterations,
-                        uint8_t* out, size_t out_len);
+int pbkdf2_hmac_sha256(const uint8_t* pw, size_t pw_len,
+                       const uint8_t* salt, size_t salt_len,
+                       uint32_t iterations,
+                       uint8_t* out, size_t out_len);
 
 // ---------------------------------------------------------------------------
 // AES-256-CBC（自研，PKCS7 填充，iv 16B）
@@ -43,9 +49,10 @@ int aes256_cbc_decrypt(const uint8_t key[32], const uint8_t iv[16],
                        uint8_t* out, size_t out_cap, size_t* out_len);
 
 // ---------------------------------------------------------------------------
-// 密码学安全随机（/dev/urandom 优先，失败退回 xorshift 播种的混合随机）
+// 密码学安全随机：getrandom(2) 优先，其次 /dev/urandom
+//   无安全熵源时返回 -1 并清零输出，不做伪随机降级（调用方应拒绝服务）
 // ---------------------------------------------------------------------------
-void p2p_random_bytes(uint8_t* out, size_t len);
+int p2p_random_bytes(uint8_t* out, size_t len);
 
 // ---------------------------------------------------------------------------
 // 心跳载荷流加密（XOR 对称，加密/解密同一函数）
@@ -95,9 +102,10 @@ public:
 
 // 工厂函数：创建加密器（key 32 字节；Xor 模式使用 uuid+iv 作为上下文）
 // 返回 nullptr 表示不支持的算法
-Encryptor* create_encryptor(EncryptionAlgorithm alg,
-                            const uint8_t key[32],
-                            const char* uuid = nullptr, const uint8_t iv[8] = nullptr);
+std::unique_ptr<Encryptor> create_encryptor(EncryptionAlgorithm alg,
+                                            const uint8_t key[32],
+                                            const char* uuid = nullptr,
+                                            const uint8_t iv[8] = nullptr);
 
 } // namespace p2p
 

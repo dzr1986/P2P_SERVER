@@ -162,6 +162,9 @@ private:
     void on_nat_detect_rsp(const uint8_t* p, size_t plen, bool from_alt_req);
     void on_connect_ack(const uint8_t* p, size_t plen);
     void on_connect_invite(const uint8_t* p, size_t plen);
+    void on_proxy_register_rsp(const uint8_t* p, size_t plen);
+    void on_proxy_relay_data(const uint8_t* p, size_t plen);
+    void ensure_punch_pool(Conn& c);
     // #19 阶段 B 收尾：经 NatServer 发送本地 ICE SDP / 接收对端 SDP
     void send_ice_sdp(const std::string& peer, const std::string& local_sdp);
     void on_ice_sdp(const uint8_t* p, size_t plen);

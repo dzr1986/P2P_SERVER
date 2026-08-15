@@ -106,8 +106,11 @@ bool AntiAbuse::load() {
         size_t clen = raw.size() - off;
 
         uint8_t key[32];
-        pbkdf2_hmac_sha256((const uint8_t*)pass_.data(), pass_.size(),
-                           salt, SALT_LEN, iter ? iter : PBKDF2_ITER, key, 32);
+        if (pbkdf2_hmac_sha256((const uint8_t*)pass_.data(), pass_.size(),
+                               salt, SALT_LEN, iter ? iter : PBKDF2_ITER, key, 32) != 0) {
+            LOGE("AntiAbuse", "pbkdf2 failed for %s", path_.c_str());
+            return false;
+        }
         plain.resize(clen + 1);
         size_t plen = 0;
         if (aes256_cbc_decrypt(key, iv, cipher, clen, (uint8_t*)plain.data(),
@@ -164,11 +167,18 @@ bool AntiAbuse::save() const {
     }
 
     uint8_t salt[SALT_LEN], iv[IV_LEN];
-    p2p_random_bytes(salt, SALT_LEN);
-    p2p_random_bytes(iv, IV_LEN);
+    if (p2p_random_bytes(salt, SALT_LEN) != 0 || p2p_random_bytes(iv, IV_LEN) != 0) {
+        fclose(fp);
+        LOGE("AntiAbuse", "secure random unavailable, refuse to write blacklist");
+        return false;
+    }
     uint8_t key[32];
-    pbkdf2_hmac_sha256((const uint8_t*)pass_.data(), pass_.size(),
-                       salt, SALT_LEN, PBKDF2_ITER, key, 32);
+    if (pbkdf2_hmac_sha256((const uint8_t*)pass_.data(), pass_.size(),
+                           salt, SALT_LEN, PBKDF2_ITER, key, 32) != 0) {
+        fclose(fp);
+        LOGE("AntiAbuse", "pbkdf2 failed");
+        return false;
+    }
     std::vector<uint8_t> cipher(plain.size() + 16);
     size_t clen = 0;
     if (aes256_cbc_encrypt(key, iv, (const uint8_t*)plain.data(), plain.size(),

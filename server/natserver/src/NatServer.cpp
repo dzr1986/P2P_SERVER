@@ -193,8 +193,11 @@ bool NatServer::send_msg(const sockaddr_in& to, uint8_t msg_id,
 
 // 鉴权：签发挑战 nonce（30s 有效，一请求一签）
 bool NatServer::issue_auth_nonce(const std::string& uuid, uint8_t out_nonce[16]) {
+    if (p2p_random_bytes(out_nonce, 16) != 0) {
+        LOGE("NatServer", "secure random unavailable, refuse auth nonce");
+        return false;
+    }
     std::lock_guard<std::mutex> lk(nonce_mu_);
-    for (int i = 0; i < 16; i++) out_nonce[i] = (uint8_t)(rand_u32() & 0xFF);
     std::array<uint8_t, 16> n;
     memcpy(n.data(), out_nonce, 16);
     auth_nonces_[uuid] = {n, time(nullptr) + 30};
@@ -218,7 +221,7 @@ bool NatServer::verify_auth_login(const std::string& uuid, const uint8_t nonce[1
         expire = it->second.second;
         auth_nonces_.erase(it);   // 一次性使用
     }
-    if (memcmp(n.data(), nonce, 16) != 0) return false;
+    if (!p2p_const_time_eq(n.data(), nonce, 16)) return false;
 
     // expected = HMAC-SHA256(secret, uuid || nonce)
     uint8_t msg[16 + MAX_UUID_LEN + 1];
@@ -229,9 +232,7 @@ bool NatServer::verify_auth_login(const std::string& uuid, const uint8_t nonce[1
     hmac_sha256((const uint8_t*)cfg->auth_secret.data(), cfg->auth_secret.size(),
                 msg, 16 + MAX_UUID_LEN + 1, expect);
 
-    volatile int diff = 0;
-    for (int i = 0; i < 32; i++) diff |= expect[i] ^ mac[i];
-    if (diff != 0) return false;
+    if (!p2p_const_time_eq(expect, mac, 32)) return false;
 
     peers_.set_auth_expire(uuid, (time_t)time(nullptr) + 3600);
     (void)expire;
@@ -587,7 +588,7 @@ bool NatServer::sync_verify(const uint8_t* payload, size_t plen,
     uint8_t expect[32];
     hmac_sha256((const uint8_t*)cfg->sync_auth_secret.data(),
                 cfg->sync_auth_secret.size(), payload, body_len, expect);
-    return memcmp(expect, payload + body_len, 32) == 0;
+    return p2p_const_time_eq(expect, payload + body_len, 32);
 }
 
 // 向所有同步对端广播一条消息（except 可选排除来源）

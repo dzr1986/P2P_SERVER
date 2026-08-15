@@ -7,12 +7,12 @@
 #include <arpa/inet.h>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 namespace p2p {
 
 static void copy_uuid(char* dst, const char* src) {
-    memcpy(dst, src, MAX_UUID_LEN);
-    dst[MAX_UUID_LEN] = 0;
+    copy_str_field(dst, MAX_UUID_LEN + 1, src);
 }
 
 void NatServer::handle_packet(const uint8_t* data, size_t len, const sockaddr_in& from) {
@@ -281,24 +281,22 @@ void NatServer::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
         }
         std::vector<std::string> proxies = cfg->proxy_ips;
 
-        uint8_t buf[128 + 32 * MAX_IP_LEN];
-        memset(buf, 0, sizeof(buf));
-        ServerListRsp* rsp = reinterpret_cast<ServerListRsp*>(buf);
+        std::vector<uint8_t> buf(sizeof(ServerListRsp) +
+                                 (nats.size() + proxies.size()) * MAX_IP_LEN, 0);
+        ServerListRsp* rsp = reinterpret_cast<ServerListRsp*>(buf.data());
         rsp->nat_count = htons((uint16_t)nats.size());
         rsp->proxy_count = htons((uint16_t)proxies.size());
 
         size_t off = sizeof(ServerListRsp);
         for (auto& ip : nats) {
-            char* d = reinterpret_cast<char*>(buf + off);
-            strncpy(d, ip.c_str(), MAX_IP_LEN - 1);
+            copy_str_field(reinterpret_cast<char*>(buf.data() + off), MAX_IP_LEN, ip.c_str());
             off += MAX_IP_LEN;
         }
         for (auto& ip : proxies) {
-            char* d = reinterpret_cast<char*>(buf + off);
-            strncpy(d, ip.c_str(), MAX_IP_LEN - 1);
+            copy_str_field(reinterpret_cast<char*>(buf.data() + off), MAX_IP_LEN, ip.c_str());
             off += MAX_IP_LEN;
         }
-        send_msg(from, MSG_GET_SERVER_LIST_RSP, buf, off);
+        send_msg(from, MSG_GET_SERVER_LIST_RSP, buf.data(), off);
         break;
     }
 
@@ -338,10 +336,8 @@ void NatServer::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
 
         if (abuse_.is_uuid_blacklisted(req.uuid)) { rsp.result = 1; }
         else if (cfg->enable_license && !license_.allowed(req.uuid)) { rsp.result = 2; }
-        else {
-            rsp.result = 0;
-            issue_auth_nonce(req.uuid, rsp.nonce);
-        }
+        else if (!issue_auth_nonce(req.uuid, rsp.nonce)) { rsp.result = 3; }
+        else { rsp.result = 0; }
         send_msg(from, MSG_AUTH_CHALLENGE_RSP, &rsp, sizeof(rsp));
         LOGI("NatServer", "AUTH_CHALLENGE uuid[%s] result[%d]", req.uuid, rsp.result);
         break;
@@ -414,7 +410,7 @@ void NatServer::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
         memcpy(mac_in + 1, req.key, 64);
         uint8_t expect[32];
         hmac_sha256((const uint8_t*)sec.data(), sec.size(), mac_in, sizeof(mac_in), expect);
-        if (memcmp(expect, req.mac, 32) != 0) {
+        if (!p2p_const_time_eq(expect, req.mac, 32)) {
             rsp.result = 1;
             LOGW("NatServer", "admin blacklist bad mac from [%s:%d]", ipbuf, from_port);
             send_msg(from, MSG_ADMIN_BLACKLIST_RSP, &rsp, sizeof(rsp));

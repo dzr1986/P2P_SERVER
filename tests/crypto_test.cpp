@@ -74,13 +74,86 @@ int main() {
     // PBKDF2 确定性 + 长度任意
     uint8_t k1[32], k2[48];
     const uint8_t salt[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
-    pbkdf2_hmac_sha256((const uint8_t*)"s3cr3t", 6, salt, 16, 1000, k1, 32);
-    pbkdf2_hmac_sha256((const uint8_t*)"s3cr3t", 6, salt, 16, 1000, k2, 48);
+    if (pbkdf2_hmac_sha256((const uint8_t*)"s3cr3t", 6, salt, 16, 1000, k1, 32) != 0 ||
+        pbkdf2_hmac_sha256((const uint8_t*)"s3cr3t", 6, salt, 16, 1000, k2, 48) != 0) {
+        printf("FAIL PBKDF2 returned error\n");
+        return 1;
+    }
     if (memcmp(k1, k2, 32) != 0) {
         printf("FAIL PBKDF2 nondeterministic / length mismatch\n");
         return 1;
     }
 
-    printf("crypto tests PASS (NIST AES-256-CBC, roundtrip, wrong-key, PKCS7, PBKDF2)\n");
+    uint8_t kbad[32];
+    uint8_t long_salt[61] = {0};
+    if (pbkdf2_hmac_sha256((const uint8_t*)"s3cr3t", 6, long_salt, 61, 1000, kbad, 32) == 0) {
+        printf("FAIL PBKDF2 should reject salt_len > 60\n");
+        return 1;
+    }
+
+    // 常量时间比较
+    uint8_t a[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    uint8_t b[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    uint8_t c[8] = {1, 2, 3, 4, 5, 6, 7, 9};
+    if (!p2p_const_time_eq(a, b, 8) || p2p_const_time_eq(a, c, 8)) {
+        printf("FAIL const-time compare\n");
+        return 1;
+    }
+
+    // 安全随机：成功且不全零
+    uint8_t rnd[32] = {0};
+    if (p2p_random_bytes(rnd, sizeof(rnd)) != 0) {
+        printf("FAIL p2p_random_bytes\n");
+        return 1;
+    }
+    int nz = 0;
+    for (size_t i = 0; i < sizeof(rnd); i++) if (rnd[i]) nz++;
+    if (nz == 0) {
+        printf("FAIL p2p_random_bytes all-zero\n");
+        return 1;
+    }
+
+    // AEAD 往返 + 篡改检测（超过旧 4096 栈限制的长度也走分段 HMAC）
+    uint8_t aead_key[32];
+    memcpy(aead_key, key, 32);
+    uint8_t nonce[12];
+    if (p2p_random_bytes(nonce, sizeof(nonce)) != 0) {
+        printf("FAIL AEAD nonce random\n");
+        return 1;
+    }
+    const char* aead_pt = "p2p-aead-roundtrip-payload";
+    size_t aead_ptlen = strlen(aead_pt);
+    uint8_t aead_ct[64], aead_back[64], tag[16];
+    size_t aead_ctlen = 0, aead_backlen = 0;
+    if (p2p_aead_encrypt(aead_key, nonce, (const uint8_t*)aead_pt, aead_ptlen,
+                         aead_ct, sizeof(aead_ct), &aead_ctlen, tag) != 0 ||
+        p2p_aead_decrypt(aead_key, nonce, aead_ct, aead_ctlen,
+                         aead_back, sizeof(aead_back), &aead_backlen, tag) != 0 ||
+        aead_backlen != aead_ptlen || memcmp(aead_back, aead_pt, aead_ptlen) != 0) {
+        printf("FAIL AEAD roundtrip\n");
+        return 1;
+    }
+    tag[0] ^= 0x01;
+    if (p2p_aead_decrypt(aead_key, nonce, aead_ct, aead_ctlen,
+                         aead_back, sizeof(aead_back), &aead_backlen, tag) == 0) {
+        printf("FAIL AEAD should reject bad tag\n");
+        return 1;
+    }
+
+    auto enc = create_encryptor(EncryptionAlgorithm::Aes256Ctr, aead_key);
+    if (!enc) {
+        printf("FAIL create_encryptor\n");
+        return 1;
+    }
+    uint8_t boxed[128], plain[64];
+    size_t boxed_len = 0, plain_len = 0;
+    if (enc->encrypt((const uint8_t*)aead_pt, aead_ptlen, boxed, sizeof(boxed), &boxed_len) != 0 ||
+        enc->decrypt(boxed, boxed_len, plain, sizeof(plain), &plain_len) != 0 ||
+        plain_len != aead_ptlen || memcmp(plain, aead_pt, aead_ptlen) != 0) {
+        printf("FAIL Encryptor AEAD roundtrip\n");
+        return 1;
+    }
+
+    printf("crypto tests PASS (NIST AES-256-CBC, roundtrip, wrong-key, PKCS7, PBKDF2, AEAD, RNG)\n");
     return 0;
 }

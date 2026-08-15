@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstdint>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -21,6 +22,7 @@ namespace p2p {
 //   - PUNCH_HELPER 打洞协助：返回目标当前公网地址
 //   - SP_ASK_EXTINFO 可用性查询（供 NatServer 调度）
 // 线程模型：SO_REUSEPORT 多 socket 多收包线程 + 定时回收线程
+// 锁模型：注册表 shared_mutex（读多写少）+ 转发表按源地址分片
 // ---------------------------------------------------------------------------
 class P2PProxy {
 public:
@@ -32,6 +34,9 @@ public:
     void request_stop() { running_ = false; }
 
 private:
+    static constexpr int kPathShards = 16;
+    static constexpr size_t kMaxPathsPerSrc = 256;
+
     struct PathInfo {
         sockaddr_in dst;            // 目标地址
         uint32_t    count;          // 连接计数（对照 CountRecoverInMapAddrAddr）
@@ -41,6 +46,10 @@ private:
     struct UuidEntry {
         sockaddr_in addr;
         time_t      last_reg;       // 最近注册时间
+    };
+    struct PathShard {
+        std::mutex mu;
+        std::unordered_map<uint64_t, std::unordered_map<uint64_t, PathInfo>> paths;
     };
 
     void recv_loop(int fd);
@@ -52,18 +61,20 @@ private:
     int  send(const sockaddr_in& to, uint8_t msg_id,
               const void* payload, size_t plen);
     int  out_fd() const { return fds_.empty() ? -1 : fds_[0]; }
+    void touch_path(uint64_t src_key, uint64_t dst_key,
+                    const sockaddr_in& dst, const char* uuid);
+    void erase_paths_for(uint64_t addr_key);
+    static int shard_of(uint64_t key) { return (int)(key & (kPathShards - 1)); }
 
     uint16_t port_ = 0;
     uint16_t max_proxy_ = 0;
     int      workers_ = 4;
     std::vector<int> fds_;
 
-    mutable std::mutex mu_;
+    mutable std::shared_mutex reg_mu_;
     std::unordered_map<std::string, UuidEntry> uuid2addr_;      // uuid -> 地址
     std::unordered_map<uint64_t, std::string>  addr2uuid_;      // 地址 -> uuid
-    // srcAddr(u64) -> (dstAddr(u64) -> 路径)
-    std::unordered_map<uint64_t,
-        std::unordered_map<uint64_t, PathInfo>> srcpaths_;
+    PathShard path_shards_[kPathShards];
 
     std::atomic<bool> running_{false};
     std::atomic<uint64_t> relay_pkts_{0};

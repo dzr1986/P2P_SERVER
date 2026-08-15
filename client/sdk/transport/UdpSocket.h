@@ -37,6 +37,15 @@ public:
     ~UdpSocket() { close(); }
     UdpSocket(const UdpSocket&) = delete;
     UdpSocket& operator=(const UdpSocket&) = delete;
+    UdpSocket(UdpSocket&& o) noexcept : fd_(o.fd_) { o.fd_ = -1; }
+    UdpSocket& operator=(UdpSocket&& o) noexcept {
+        if (this != &o) {
+            close();
+            fd_ = o.fd_;
+            o.fd_ = -1;
+        }
+        return *this;
+    }
 
     bool open(uint16_t bind_port = 0, const char* bind_ip = nullptr) {
         fd_ = socket(AF_INET, SOCK_DGRAM, 0);

@@ -382,41 +382,8 @@ void P2PClient::handle_proto(uint8_t msg_id, const uint8_t* p, size_t plen,
     case MSG_CONNECT_ACK:            on_connect_ack(p, plen); break;
     case MSG_CONNECT_INVITE:         on_connect_invite(p, plen); break;
     case MSG_ICE_SDP:                on_ice_sdp(p, plen); break;
-    case MSG_PROXY_REGISTER_RSP: {
-        if (plen >= 1) {
-            uint8_t result = p[0];
-            if (result == 0) {
-                relay_registered_ = true;
-                for (auto& kv : conns_) kv.second.backoff_attempt = 0;  // #18 注册成功重置退避
-            } else if (on_error) {
-                char tmp[64];
-                snprintf(tmp, sizeof(tmp), "relay register failed result=%d", result);
-                on_error(tmp);
-            }
-        }
-        break;
-    }
-    case MSG_PROXY_RELAY_DATA: {
-        if (plen < sizeof(RelayFrame) + 14) break;
-        const char* src = (const char*)p;
-        const char* dst = (const char*)p + MAX_UUID_LEN + 1;
-        if (strncmp(dst, cfg_.uuid.c_str(), MAX_UUID_LEN) != 0) break;
-        std::string peer_uuid(src, strnlen(src, MAX_UUID_LEN));
-        if (peer_uuid.empty()) break;
-        auto& c = conns_[peer_uuid];
-        if (c.peer_uuid.empty()) {
-            c.peer_uuid = peer_uuid;   // 中继侧未知对端
-        }
-        on_tunnel_frame(p + sizeof(RelayFrame), plen - sizeof(RelayFrame), peer_uuid);
-        if (!c.relay.relay_ok) {
-            c.relay.relay_ok = true;
-            if (!c.connected && on_connected) {
-                c.connected = true;
-                on_connected(peer_uuid, true);
-            }
-        }
-        break;
-    }
+    case MSG_PROXY_REGISTER_RSP:     on_proxy_register_rsp(p, plen); break;
+    case MSG_PROXY_RELAY_DATA:       on_proxy_relay_data(p, plen); break;
     default:
         break;
     }
@@ -441,7 +408,10 @@ void P2PClient::do_heartbeat() {
         memset(payload, 0, sizeof(payload));
         memcpy(payload, cfg_.uuid.c_str(), cfg_.uuid.size());
         uint8_t iv[8];
-        plat_rand_bytes(iv, sizeof(iv));
+        if (!plat_rand_bytes(iv, sizeof(iv))) {
+            if (on_error) on_error("secure random unavailable for heartbeat iv");
+            return;
+        }
         memcpy(payload + 33, iv, sizeof(iv));
         memcpy(payload + 41, &req, sizeof(UuidReq));
         p2p_stream_xor((const uint8_t*)secret_.data(), secret_.size(),
@@ -606,6 +576,49 @@ bool P2PClient::parse_proxies(uint8_t count, const ProxyCandidate* cands,
     return !out.empty();
 }
 
+void P2PClient::on_proxy_register_rsp(const uint8_t* p, size_t plen) {
+    if (plen < 1) return;
+    uint8_t result = p[0];
+    if (result == 0) {
+        relay_registered_ = true;
+        for (auto& kv : conns_) kv.second.backoff_attempt = 0;
+    } else if (on_error) {
+        char tmp[64];
+        snprintf(tmp, sizeof(tmp), "relay register failed result=%d", result);
+        on_error(tmp);
+    }
+}
+
+void P2PClient::on_proxy_relay_data(const uint8_t* p, size_t plen) {
+    if (plen < sizeof(RelayFrame) + 14) return;
+    const char* src = (const char*)p;
+    const char* dst = (const char*)p + MAX_UUID_LEN + 1;
+    if (strncmp(dst, cfg_.uuid.c_str(), MAX_UUID_LEN) != 0) return;
+    std::string peer_uuid(src, strnlen(src, MAX_UUID_LEN));
+    if (peer_uuid.empty()) return;
+    auto& c = conns_[peer_uuid];
+    if (c.peer_uuid.empty()) c.peer_uuid = peer_uuid;
+    on_tunnel_frame(p + sizeof(RelayFrame), plen - sizeof(RelayFrame), peer_uuid);
+    if (!c.relay.relay_ok) {
+        c.relay.relay_ok = true;
+        if (!c.connected && on_connected) {
+            c.connected = true;
+            on_connected(peer_uuid, true);
+        }
+    }
+}
+
+void P2PClient::ensure_punch_pool(Conn& c) {
+    if (c.punch.juice || !c.punch.punch_socks.empty()) return;
+    constexpr int kPunchSocks = 8;
+    c.punch.punch_socks.reserve(kPunchSocks);
+    for (int i = 0; i < kPunchSocks; i++) {
+        UdpSocket s;
+        if (!s.open(0, "0.0.0.0")) continue;
+        c.punch.punch_socks.push_back(std::move(s));
+    }
+}
+
 void P2PClient::on_connect_ack(const uint8_t* p, size_t plen) {
     if (plen < sizeof(ConnectAck)) return;
     ConnectAck ack;
@@ -642,6 +655,8 @@ void P2PClient::on_connect_ack(const uint8_t* p, size_t plen) {
             }
         }
         c.punch.punch_deadline = plat_now_ms() + cfg_.connect_timeout_ms;
+        ensure_ice_agent(c);
+        ensure_punch_pool(c);
     }
 
     std::vector<ServerAddr> cands;
@@ -683,6 +698,7 @@ void P2PClient::on_connect_invite(const uint8_t* p, size_t plen) {
             apply_remote_ice_sdp(c, pending_remote_sdp_);
             pending_remote_sdp_.clear();
         }
+        ensure_punch_pool(c);
     }
 
     std::vector<ServerAddr> cands;
@@ -840,11 +856,17 @@ void P2PClient::on_juice_recv(juice_agent_t* agent, const char* data, size_t siz
 
 void P2PClient::do_punch(Conn& c) {
     if (c.punch.juice) return; // #19 ICE 由 libjuice 线程驱动，跳过自研发包
+    ensure_punch_pool(c);
     auto* s = session_for(c.peer_uuid);
     std::vector<uint8_t> frame(14);
     codec_write_tunnel(frame.data(), (int)frame.size(), TT_PING, s->id(),
                        0, 0, 0, 0, nullptr, 0);
     // #17 多 socket 打洞池：每个 socket 均向目标发送，提升穿透概率
+    if (c.punch.punch_socks.empty()) {
+        sock_.send_to(frame.data(), frame.size(), c.punch.direct);
+        if (c.punch.have_lan) sock_.send_to(frame.data(), frame.size(), c.punch.direct_lan);
+        return;
+    }
     for (auto& ps : c.punch.punch_socks) {
         ps.send_to(frame.data(), frame.size(), c.punch.direct);
         if (c.punch.have_lan) ps.send_to(frame.data(), frame.size(), c.punch.direct_lan);
@@ -955,7 +977,7 @@ bool P2PClient::encrypt_tunnel_frame(const std::string& peer, uint8_t* out,
 
     memcpy(out, in, 14);                       // 帧头保持明文（type/seq/ack 元数据）
     uint8_t nonce[12];
-    p2p_random_bytes(nonce, sizeof(nonce));
+    if (p2p_random_bytes(nonce, sizeof(nonce)) != 0) return false;
     memcpy(out + 14, nonce, 12);
 
     // AEAD 加密：AES-256-CTR + HMAC-SHA256
