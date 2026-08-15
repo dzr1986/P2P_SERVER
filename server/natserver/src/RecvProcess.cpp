@@ -258,19 +258,21 @@ void NatServer::on_msg_connect_req(const uint8_t* p, size_t plen,
 
 // ---------------------------------------------------------------- #19 ICE SDP 中转
 void NatServer::on_msg_ice_sdp(uint8_t* p, size_t plen, const sockaddr_in&) {
-    // 变长消息：IceSdpMsg { uuid; sdp_len(net); sdp[] }
+    // 变长消息：IceSdpMsg { dst_uuid; src_uuid; sdp_len(net); sdp[] }
     if (plen < sizeof(IceSdpMsg) - 1) return;
     auto* m = reinterpret_cast<IceSdpMsg*>(p);
-    m->uuid[MAX_UUID_LEN] = 0;
+    m->dst_uuid[MAX_UUID_LEN] = 0;
+    m->src_uuid[MAX_UUID_LEN] = 0;
     const uint16_t slen = ntohs(m->sdp_len);
     if (plen < sizeof(IceSdpMsg) - 1 + slen) return;
     Peer dst;
-    if (!peers_.get(m->uuid, dst)) {
-        LOGW("NatServer", "ICE_SDP dst[%s] not found, drop", m->uuid);
+    if (!peers_.get(m->dst_uuid, dst)) {
+        LOGW("NatServer", "ICE_SDP dst[%s] not found, drop", m->dst_uuid);
         return;
     }
     send_msg(dst.pub_addr, MSG_ICE_SDP, p, plen);
-    LOGI("NatServer", "ICE_SDP===>to dst UUID[%s] len[%d]", m->uuid, (int)plen);
+    LOGI("NatServer", "ICE_SDP===>to dst UUID[%s] from[%s] len[%d]",
+         m->dst_uuid, m->src_uuid, (int)plen);
 }
 
 // ---------------------------------------------------------------- 设备/服务器列表

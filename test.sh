@@ -66,6 +66,7 @@ echo "== [0] unit tests =="
 ./tests/bin/av_frame_test > /tmp/av_frame_test.log 2>&1 && ok "av/tunnel codec unit tests" || fail "av/tunnel codec unit tests"
 ./tests/bin/sched_test > /tmp/sched_test.log 2>&1 && ok "region scheduler unit tests" || fail "region scheduler unit tests"
 ./tests/bin/stun_test > /tmp/stun_test.log 2>&1 && ok "STUN Binding unit tests" || fail "STUN Binding unit tests"
+./tests/bin/abr_test > /tmp/abr_test.log 2>&1 && ok "ABR delay-based unit tests" || fail "ABR delay-based unit tests"
 
 # ---------------------------------------------------------------- 1. 直连
 echo "== [1] direct P2P (no auth) =="
@@ -510,6 +511,19 @@ sleep 6
 kill -9 $PA_PID $PB_PID 2>/dev/null; PA_PID=""; PB_PID=""
 grep -q "CONNECTED to $DEV_UID via direct" /tmp/peerTokOk.log && ok "valid token CONNECT" || fail "valid token connect missing"
 grep -q "CONNECT token rejected" /tmp/nat.log && ok "server logged token rejects" || fail "server token reject log missing"
+stop_servers
+
+# ---------------------------------------------------------------- 15. 局域网组播发现（LAN Search）
+echo "== [15] LAN multicast discovery =="
+start_servers ""
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT LANDEV > /tmp/peerLanDev.log 2>&1 & PA_PID=$!
+sleep 1
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT LANCLI LANDEV > /tmp/peerLanCli.log 2>&1 & PB_PID=$!
+sleep 4
+kill -9 $PA_PID $PB_PID 2>/dev/null; PA_PID=""; PB_PID=""
+grep -q "LAN found LANDEV" /tmp/peerLanCli.log && ok "client found device on LAN" || fail "LAN search client ($([ -f /tmp/peerLanCli.log ] && cat /tmp/peerLanCli.log | tail -20))"
+grep -q "LAN found LANCLI" /tmp/peerLanDev.log && ok "device found client on LAN" || fail "LAN search device"
+grep -q "CONNECTED to LANDEV via direct" /tmp/peerLanCli.log && ok "LAN peers still P2P connect" || fail "LAN peers connect missing"
 stop_servers
 
 echo

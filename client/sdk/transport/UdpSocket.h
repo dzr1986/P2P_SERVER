@@ -47,7 +47,8 @@ public:
         return *this;
     }
 
-    bool open(uint16_t bind_port = 0, const char* bind_ip = nullptr) {
+    bool open(uint16_t bind_port = 0, const char* bind_ip = nullptr,
+              bool reuse_port = false) {
         fd_ = socket(AF_INET, SOCK_DGRAM, 0);
         if (fd_ < 0) return false;
         sockaddr_in bind_addr;
@@ -58,6 +59,10 @@ public:
         else bind_addr.sin_addr.s_addr = INADDR_ANY;
         int on = 1;
         setsockopt(fd_, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+#ifdef SO_REUSEPORT
+        if (reuse_port)
+            setsockopt(fd_, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on));
+#endif
         if (bind(fd_, (sockaddr*)&bind_addr, sizeof(bind_addr)) != 0) {
             close();
             return false;
@@ -105,6 +110,35 @@ public:
     }
 
     int fd() const { return fd_; }
+
+    bool enable_broadcast() {
+        if (fd_ < 0) return false;
+        int on = 1;
+        return setsockopt(fd_, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on)) == 0;
+    }
+
+    // 加入 IPv4 组播（TTL=1，环回开启，便于同机多进程互相发现）
+    bool join_multicast(const char* group) {
+        if (fd_ < 0 || !group) return false;
+        ip_mreq mreq;
+        memset(&mreq, 0, sizeof(mreq));
+        if (inet_pton(AF_INET, group, &mreq.imr_multiaddr) != 1) return false;
+        in_addr iface;
+        memset(&iface, 0, sizeof(iface));
+        inet_pton(AF_INET, "127.0.0.1", &iface);
+        mreq.imr_interface = iface;
+        if (setsockopt(fd_, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) != 0) {
+            mreq.imr_interface.s_addr = htonl(INADDR_ANY);
+            if (setsockopt(fd_, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) != 0)
+                return false;
+        }
+        setsockopt(fd_, IPPROTO_IP, IP_MULTICAST_IF, &iface, sizeof(iface));
+        int loop = 1;
+        setsockopt(fd_, IPPROTO_IP, IP_MULTICAST_LOOP, &loop, sizeof(loop));
+        int ttl = 1;
+        setsockopt(fd_, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
+        return true;
+    }
 
     void close() {
         if (fd_ >= 0) { ::close(fd_); fd_ = -1; }

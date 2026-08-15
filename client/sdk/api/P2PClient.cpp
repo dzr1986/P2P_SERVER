@@ -72,6 +72,16 @@ bool P2PClient::start(const Config& cfg) {
     next_relay_reg_ = proxies_.empty() ? 0 : plat_now_ms();
     running_.store(true);
     pending_remote_sdp_.clear();
+    lan_cache_.clear();
+    lan_enabled_ = false;
+    if (cfg_.lan_discover) {
+        if (lan_sock_.open(LAN_MCAST_PORT, "0.0.0.0", true)) {
+            lan_sock_.enable_broadcast();
+            lan_sock_.join_multicast(LAN_MCAST_IP);
+            lan_enabled_ = true;
+            next_lan_announce_ms_ = plat_now_ms() + 150;
+        }
+    }
     thread_ = std::thread([this] { worker_loop(); });
     return true;
 }
@@ -89,6 +99,9 @@ void P2PClient::stop() {
     }
     if (thread_.joinable()) thread_.join();
     sock_.close();
+    lan_sock_.close();
+    lan_enabled_ = false;
+    lan_cache_.clear();
     conns_.clear();
     sessions_.clear();
     addr_to_peer_.clear();
@@ -113,9 +126,12 @@ void P2PClient::connect(const std::string& peer_uuid, const std::string& token_h
     c.self = this; // #19 reverse ptr for ICE callback
     c.connect_token_hex = !token_hex.empty() ? token_hex : cfg_.connect_token_hex;
 
-    // 发起方先 gather：libjuice 将本端定为 controlling（RFC 8445 / WebRTC offerer）
-    ensure_ice_agent(c, true);
+    // 只建 agent，等 CONNECT_OK（对端已收到 INVITE）再 gather：
+    // 1) 鉴权/Token 被拒时不会先把过期 SDP 发给对端
+    // 2) 发起方 gather = controlling；被邀方先 set_remote 再 gather = controlled
+    ensure_ice_agent(c, false);
     send_connect_req(c);
+    if (lan_enabled_) send_lan_beacon(MSG_LAN_QUERY, peer_uuid, nullptr);
 }
 
 void P2PClient::disconnect(const std::string& peer_uuid) {
@@ -147,6 +163,30 @@ bool P2PClient::link_stats(const std::string& peer_uuid, Session::LinkStats& out
     return true;
 }
 
+std::vector<P2PClient::LanPeer> P2PClient::lan_peers() {
+    std::lock_guard<std::recursive_mutex> lk(mu_);
+    std::vector<LanPeer> out;
+    out.reserve(lan_cache_.size());
+    for (const auto& kv : lan_cache_) {
+        LanPeer p;
+        p.uuid = kv.first;
+        p.ip = sockaddr_ip(kv.second.addr);
+        p.port = sockaddr_port(kv.second.addr);
+        out.push_back(std::move(p));
+    }
+    return out;
+}
+
+bool P2PClient::lan_lookup(const std::string& uuid, LanPeer& out) {
+    std::lock_guard<std::recursive_mutex> lk(mu_);
+    auto it = lan_cache_.find(uuid);
+    if (it == lan_cache_.end()) return false;
+    out.uuid = it->first;
+    out.ip = sockaddr_ip(it->second.addr);
+    out.port = sockaddr_port(it->second.addr);
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // 工作线程
 // ---------------------------------------------------------------------------
@@ -165,6 +205,10 @@ void P2PClient::worker_loop() {
         // select() 的 nfds 必须是最大 fd + 1，否则主信令 socket 永远进不了可读集合
         int maxfd = sock_.fd() + 1;
         FD_SET(sock_.fd(), &rfds);
+        if (lan_enabled_ && lan_sock_.fd() >= 0) {
+            FD_SET(lan_sock_.fd(), &rfds);
+            if (lan_sock_.fd() + 1 > maxfd) maxfd = lan_sock_.fd() + 1;
+        }
         std::vector<std::pair<std::string, int>> punch_fds; // peer_uuid -> socket fd
         for (auto& kv : conns_) {
             for (auto& ps : kv.second.punch.punch_socks) {
@@ -183,6 +227,11 @@ void P2PClient::worker_loop() {
             if (FD_ISSET(sock_.fd(), &rfds)) {
                 sockaddr_in from;
                 int n = sock_.recv_from(recv_buf_, sizeof(recv_buf_), from);
+                if (n > 0) handle_packet(recv_buf_, (size_t)n, from);
+            }
+            if (lan_enabled_ && lan_sock_.fd() >= 0 && FD_ISSET(lan_sock_.fd(), &rfds)) {
+                sockaddr_in from;
+                int n = lan_sock_.recv_from(recv_buf_, sizeof(recv_buf_), from);
                 if (n > 0) handle_packet(recv_buf_, (size_t)n, from);
             }
             for (auto& pf : punch_fds) {
@@ -220,6 +269,7 @@ void P2PClient::tick(uint64_t now) {
     tick_connections(now);
     tick_sessions(now);
     tick_handshake(now);
+    tick_lan(now);
 }
 
 // 心跳发送与重试间隔
@@ -522,7 +572,7 @@ void P2PClient::handle_packet(const uint8_t* buf, size_t len,
 }
 
 void P2PClient::handle_proto(uint8_t msg_id, const uint8_t* p, size_t plen,
-                             const sockaddr_in&) {
+                             const sockaddr_in& from) {
     switch (msg_id) {
     case MSG_HEARTBEAT_RSP:          on_heartbeat_rsp(p, plen); break;
     case MSG_HEARTBEAT_RSP_ENC:      on_heartbeat_rsp_enc(p, plen); break;
@@ -535,6 +585,8 @@ void P2PClient::handle_proto(uint8_t msg_id, const uint8_t* p, size_t plen,
     case MSG_CONNECT_ACK:            on_connect_ack(p, plen); break;
     case MSG_CONNECT_INVITE:         on_connect_invite(p, plen); break;
     case MSG_ICE_SDP:                on_ice_sdp(p, plen); break;
+    case MSG_LAN_QUERY:
+    case MSG_LAN_ANNOUNCE:           on_lan_beacon(msg_id, p, plen, from); break;
     case MSG_PROXY_REGISTER_RSP:     on_proxy_register_rsp(p, plen); break;
     case MSG_PROXY_RELAY_DATA:       on_proxy_relay_data(p, plen); break;
     default:
@@ -805,7 +857,11 @@ void P2PClient::on_connect_ack(const uint8_t* p, size_t plen) {
             }
         }
         c.punch.punch_deadline = plat_now_ms() + cfg_.connect_timeout_ms;
-        ensure_ice_agent(c, true);
+        ensure_ice_agent(c, true);   // CONNECT 已成功：发起方 gather → controlling
+        auto lit = lan_cache_.find(peer);
+        if (lit != lan_cache_.end()) {
+            apply_lan_peer(peer, lit->second.addr, lit->second.addr.sin_port);
+        }
         ensure_punch_pool(c);
     }
 
@@ -844,9 +900,14 @@ void P2PClient::on_connect_invite(const uint8_t* p, size_t plen) {
         addr_to_peer_[addr_key(c.punch.direct)] = peer;
         // 被邀方只建 agent、先等对端 SDP：set_remote 后再 gather → controlled
         ensure_ice_agent(c, false);
-        if (!pending_remote_sdp_.empty()) {
-            apply_remote_ice_sdp(c, pending_remote_sdp_);
-            pending_remote_sdp_.clear();
+        auto pit = pending_remote_sdp_.find(peer);
+        if (pit != pending_remote_sdp_.end()) {
+            apply_remote_ice_sdp(c, pit->second);
+            pending_remote_sdp_.erase(pit);
+        }
+        auto lit = lan_cache_.find(peer);
+        if (lit != lan_cache_.end()) {
+            apply_lan_peer(peer, lit->second.addr, lit->second.addr.sin_port);
         }
         ensure_punch_pool(c);
     }
@@ -945,28 +1006,39 @@ void P2PClient::send_ice_sdp(const std::string& peer, const std::string& local_s
     size_t msglen = sizeof(IceSdpMsg) - 1 + plen;
     std::vector<uint8_t> buf(msglen);
     IceSdpMsg* m = reinterpret_cast<IceSdpMsg*>(buf.data());
-    // uuid = 路由目标（NatServer 按此转发）；接收端需自行映射到对端 Conn
-    strncpy(m->uuid, peer.c_str(), MAX_UUID_LEN);
-    m->uuid[MAX_UUID_LEN] = 0;
+    strncpy(m->dst_uuid, peer.c_str(), MAX_UUID_LEN);
+    m->dst_uuid[MAX_UUID_LEN] = 0;
+    strncpy(m->src_uuid, cfg_.uuid.c_str(), MAX_UUID_LEN);
+    m->src_uuid[MAX_UUID_LEN] = 0;
     m->sdp_len = htons(static_cast<uint16_t>(plen));
     memcpy(m->sdp, local_sdp.data(), plen);
-    send_proto(MSG_ICE_SDP, buf.data(), static_cast<int>(msglen));
+    send_proto(MSG_ICE_SDP, buf.data(), msglen);
+    auto it = conns_.find(peer);
+    if (it != conns_.end() && it->second.punch.have_lan) {
+        send_proto(MSG_ICE_SDP, buf.data(), msglen, it->second.punch.direct_lan);
+    }
     fprintf(stderr, "[P2PClient] ICE_SDP sent to %s len=%zu\n", peer.c_str(), plen);
 }
 
 void P2PClient::on_ice_sdp(const uint8_t* p, size_t plen) {
     if (!p || plen < (sizeof(IceSdpMsg) - 1)) return;
     const IceSdpMsg* m = reinterpret_cast<const IceSdpMsg*>(p);
-    std::string dst(m->uuid, strnlen(m->uuid, MAX_UUID_LEN));
+    std::string dst(m->dst_uuid, strnlen(m->dst_uuid, MAX_UUID_LEN));
+    std::string src(m->src_uuid, strnlen(m->src_uuid, MAX_UUID_LEN));
     uint16_t slen = ntohs(m->sdp_len);
     if (plen < (sizeof(IceSdpMsg) - 1 + slen)) return;
     std::string remote_sdp(m->sdp, slen);
-    std::lock_guard<std::recursive_mutex> lk(mu_);
+    if (!dst.empty() && dst != cfg_.uuid) {
+        fprintf(stderr, "[P2PClient] ICE_SDP dst=%s not self, drop\n", dst.c_str());
+        return;
+    }
 
-    // 协议字段 uuid 是 dst（供 NatServer 路由），不是 src。
-    // 本端收到后应落到“正在连接的对端” Conn 上。
     Conn* target = nullptr;
-    if (dst == cfg_.uuid) {
+    if (!src.empty()) {
+        auto it = conns_.find(src);
+        if (it != conns_.end()) target = &it->second;
+    }
+    if (!target) {
         for (auto& kv : conns_) {
             Conn& c = kv.second;
             if (c.connecting() && c.punch.juice && c.punch.remote_sdp.empty()) {
@@ -974,24 +1046,12 @@ void P2PClient::on_ice_sdp(const uint8_t* p, size_t plen) {
                 break;
             }
         }
-        if (!target) {
-            // CONNECT_INVITE 可能尚未到达：暂存，邀方创建后再应用
-            pending_remote_sdp_ = remote_sdp;
-            fprintf(stderr, "[P2PClient] ICE_SDP buffered (invite not ready yet)\n");
-            return;
-        }
-    } else {
-        auto it = conns_.find(dst);
-        if (it == conns_.end()) {
-            fprintf(stderr, "[P2PClient] ICE_SDP from unknown peer %s, drop\n", dst.c_str());
-            return;
-        }
-        target = &it->second;
     }
-    if (!target->punch.juice) {
-        fprintf(stderr, "[P2PClient] ICE_SDP but no juice agent for %s\n",
-                target->peer_uuid.c_str());
-        pending_remote_sdp_ = remote_sdp;
+    if (!target || !target->punch.juice) {
+        const std::string key = !src.empty() ? src : std::string("_");
+        pending_remote_sdp_[key] = remote_sdp;
+        fprintf(stderr, "[P2PClient] ICE_SDP buffered from %s (invite not ready)\n",
+                key.c_str());
         return;
     }
     apply_remote_ice_sdp(*target, remote_sdp);
@@ -1026,6 +1086,80 @@ void P2PClient::do_punch(Conn& c) {
         ps.send_to(frame.data(), frame.size(), c.punch.direct);
         if (c.punch.have_lan) ps.send_to(frame.data(), frame.size(), c.punch.direct_lan);
     }
+}
+
+// ---------------------------------------------------------------------------
+// 局域网组播发现（对标 TUTK LAN Search）
+// ---------------------------------------------------------------------------
+void P2PClient::tick_lan(uint64_t now) {
+    if (!lan_enabled_) return;
+    if (now >= next_lan_announce_ms_) {
+        send_lan_beacon(MSG_LAN_ANNOUNCE, cfg_.uuid, nullptr);
+        next_lan_announce_ms_ = now + 2000;
+        for (auto it = lan_cache_.begin(); it != lan_cache_.end();) {
+            if (now - it->second.seen_ms > 15000) it = lan_cache_.erase(it);
+            else ++it;
+        }
+    }
+}
+
+void P2PClient::send_lan_beacon(uint8_t msg_id, const std::string& uuid,
+                                const sockaddr_in* to) {
+    if (!lan_enabled_ || lan_sock_.fd() < 0) return;
+    LanBeacon b{};
+    strncpy(b.uuid, uuid.c_str(), MAX_UUID_LEN);
+    b.lan_port = htons(sock_.local_port());
+    uint8_t buf[MAX_PKT];
+    if (sizeof(LanBeacon) + 8 > sizeof(buf)) return;
+    codec_write_head(buf, msg_id, (uint32_t)sizeof(LanBeacon));
+    memcpy(buf + 8, &b, sizeof(b));
+    if (to) {
+        lan_sock_.send_to(buf, 8 + sizeof(b), *to);
+        return;
+    }
+    sockaddr_in mcast{};
+    if (sockaddr_from(LAN_MCAST_IP, LAN_MCAST_PORT, mcast))
+        lan_sock_.send_to(buf, 8 + sizeof(b), mcast);
+    sockaddr_in loop{};
+    if (sockaddr_from("127.0.0.1", LAN_MCAST_PORT, loop))
+        lan_sock_.send_to(buf, 8 + sizeof(b), loop);
+}
+
+void P2PClient::on_lan_beacon(uint8_t msg_id, const uint8_t* p, size_t plen,
+                              const sockaddr_in& from) {
+    if (plen < sizeof(LanBeacon)) return;
+    LanBeacon b{};
+    memcpy(&b, p, sizeof(b));
+    b.uuid[MAX_UUID_LEN] = 0;
+    std::string uuid(b.uuid, strnlen(b.uuid, MAX_UUID_LEN));
+    if (msg_id == MSG_LAN_QUERY) {
+        if (uuid.empty() || uuid == cfg_.uuid)
+            send_lan_beacon(MSG_LAN_ANNOUNCE, cfg_.uuid, &from);
+        return;
+    }
+    if (uuid.empty() || uuid == cfg_.uuid) return;
+    LanCacheEnt ent;
+    ent.addr = from;
+    ent.addr.sin_port = b.lan_port;
+    ent.seen_ms = plat_now_ms();
+    lan_cache_[uuid] = ent;
+    fprintf(stderr, "[P2PClient] LAN found %s at %s:%u\n",
+            uuid.c_str(), sockaddr_ip(ent.addr).c_str(),
+            (unsigned)ntohs(b.lan_port));
+    auto it = conns_.find(uuid);
+    if (it != conns_.end() && it->second.state != ConnState::Idle)
+        apply_lan_peer(uuid, from, b.lan_port);
+}
+
+void P2PClient::apply_lan_peer(const std::string& uuid, const sockaddr_in& from,
+                               uint16_t media_port_nbo) {
+    auto it = conns_.find(uuid);
+    if (it == conns_.end()) return;
+    Conn& c = it->second;
+    c.punch.direct_lan = from;
+    c.punch.direct_lan.sin_port = media_port_nbo;
+    c.punch.have_lan = true;
+    addr_to_peer_[addr_key(c.punch.direct_lan)] = uuid;
 }
 
 // ---------------------------------------------------------------------------
@@ -1264,6 +1398,7 @@ void P2PClient::close_conn(Conn& c) {
         }
         fs_keys_.erase(c.peer_uuid);
     }
+    pending_remote_sdp_.erase(c.peer_uuid);
     sessions_.erase(c.peer_uuid);
     conns_.erase(c.peer_uuid);
     if (on_disconnected) on_disconnected(c.peer_uuid);

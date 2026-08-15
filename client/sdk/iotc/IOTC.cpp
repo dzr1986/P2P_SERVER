@@ -333,4 +333,22 @@ int IOTC_Session_GetLinkStats(int sid, IOTCLinkStats* st) {
     return IOTC_ER_NoERROR;
 }
 
+int IOTC_Search_Device(IOTCLanDevice* out, int cap, int timeout_ms) {
+    if (!g) return IOTC_ER_NotInitialized;
+    if (!out || cap <= 0) return IOTC_ER_InvalidArg;
+    if (timeout_ms > 0)
+        std::this_thread::sleep_for(std::chrono::milliseconds(timeout_ms));
+    const auto peers = g->client.lan_peers();
+    int n = 0;
+    for (const auto& p : peers) {
+        if (n >= cap) break;
+        memset(&out[n], 0, sizeof(out[n]));
+        strncpy(out[n].uuid, p.uuid.c_str(), sizeof(out[n].uuid) - 1);
+        strncpy(out[n].ip, p.ip.c_str(), sizeof(out[n].ip) - 1);
+        out[n].port = p.port;
+        n++;
+    }
+    return n;
+}
+
 } // extern "C"

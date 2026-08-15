@@ -33,7 +33,8 @@ STUN Binding → srflx              NatServer 应答 RFC 8489 Binding
                                   + 自研 MSG_NAT_DETECT（双 socket 判锥型）
 ICE 候选收集 / 连通性检查          libjuice（host + srflx）
 TURN relay                        P2PProxy RELAY_DATA（配额 QuotaMB）
-ICE 角色：offerer=controlling     发起方先 gather；被邀方先 set_remote 再 gather
+ICE 角色：offerer=controlling     CONNECT_OK 后发起方 gather；被邀方先 set_remote
+LAN Search                        组播 239.255.77.89:17890（MSG_LAN_*）
 ```
 
 ### 2.1 角色（RFC 8445 §6.1.1）
@@ -42,11 +43,17 @@ WebRTC：**发 Offer 的一端 controlling**，负责提名候选对。两端都
 会触发 *role conflict*（libjuice 打日志 `ICE role conflict (both controlling)`），
 靠 tie-breaker 恢复，但在本机回环上会偶发直连超时。
 
-本仓库约定：
+本仓库约定（与 WebRTC Offer/Answer 对齐）：
 
-- `connect()` / CONNECT 发起方：`ensure_ice_agent(c, true)` → 先 `gather` → controlling
+- `connect()`：**只建 agent，不 gather**。等 `CONNECT_OK`（对端已收到 INVITE）
+  再 `start_ice_gather` → controlling。鉴权/Token 被拒时不会先把 SDP 发给对端。
 - CONNECT_INVITE 被邀方：只建 agent，**先 `juice_set_remote_description` 再 gather**
   → libjuice 在 `AGENT_MODE_UNKNOWN` 时把本端定为 controlled
+- `IceSdpMsg` 带 `src_uuid`：SDP 若早于 INVITE 到达，按源 UID 暂存，邀方创建后再应用
+
+生产上还有一条易踩的坑：**信令未成功就收集候选**。CONNECT 被 `NEED_AUTH` /
+`BAD_TOKEN` 拒绝时对端没有会话，过期 SDP 会污染下一次连线（同一设备连续被
+多个客户端试连时尤其明显）。本仓库把 gather 绑在 CONNECT_OK 上就是为了避免这个。
 
 ### 2.2 STUN（RFC 8489）
 
@@ -92,13 +99,33 @@ WebRTC 的 ICE restart / 持续探测：网络从蜂窝切 Wi-Fi 后应重新打
 
 ---
 
-## 4. 仍建议补的能力（按收益）
+## 4. 局域网发现（已落地，对标 TUTK LAN Search）
 
-1. **LAN UDP 广播发现**（计划书 LAN Search）：同网段免服务器，&lt;300ms
-2. **ICE restart**：`juice` 当前不支持换 ufrag；网络切换可重建 agent
-3. **TURN-over-443**：穿透企业防火墙
-4. **简化 GCC**：用 `LinkStats.srtt/rttvar/丢包` 做 delay-based 码率，替代固定建议
-5. **真实 `tc netem` 1080p**：卡顿率 / P99 延迟验收（P3）
+同网段 IPC 预览不应绕公网 STUN。行业做法是 **mDNS / SSDP / 私有组播** 先发现，
+命中则 host 候选直连（&lt;300ms），未命中再走 ICE+STUN。
+
+本仓库：
+
+| 项 | 实现 |
+|----|------|
+| 组播组 | `239.255.77.89:17890`（TTL=1，环回开启，同机多进程可互发现） |
+| QUERY | `MSG_LAN_QUERY`：按 UID 询问，空 UID=任意 |
+| ANNOUNCE | `MSG_LAN_ANNOUNCE`：本机 UID + 主 socket 端口，周期 2s，缓存 15s |
+| API | `P2PClient::lan_peers/lan_lookup`、`IOTC_Search_Device` |
+| 与 ICE 配合 | 命中后写入 `have_lan`，SDP 额外经局域网单播一份（NatServer 慢也不堵） |
+
+模式仍是 **LAN > P2P > Relay**。`-relay` / `force_relay` 不走 LAN 媒体，避免测试被直连“抢走”。
+
+---
+
+## 5. 仍建议补的能力（按收益）
+
+1. **ICE restart**：`juice` 当前不支持换 ufrag；网络切换可重建 agent
+2. **TURN-over-443**：穿透企业防火墙
+3. **完整 GCC / TWCC**：`AbrEstimate.h` 已是 delay-based 分档；下一步用 RTT 趋势做 AIMD
+4. **真实 `tc netem` 1080p**：卡顿率 / P99 延迟验收（P3）
+5. **Token nonce 防重放表**：连线 Token 已验签，尚未记已用 nonce
 
 参考文献：RFC 8445 / 8489 / 8656；pion/ice 角色冲突处理；
-WebRTC 生产经验（15–30% TURN、区域化中继、443/TLS）。
+WebRTC 生产经验（15–30% TURN、区域化中继、443/TLS）；
+TUTK LAN Search / SSDP 同网段发现。

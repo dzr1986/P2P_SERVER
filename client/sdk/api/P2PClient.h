@@ -53,6 +53,13 @@ public:
         bool auto_relay = true;                // 打洞失败自动降级中继
         bool force_relay = false;              // 跳过打洞，强制走中继（测试/合规场景）
         std::string connect_token_hex;         // 默认连线 Token（104 hex；也可在 connect() 传入）
+        bool lan_discover = true;              // 局域网组播发现（对标 TUTK LAN Search）
+    };
+
+    struct LanPeer {
+        std::string uuid;
+        std::string ip;
+        uint16_t    port = 0;
     };
 
     // ---- 事件回调（在工作线程内触发，回调中勿阻塞/重入 stop） ----
@@ -82,6 +89,10 @@ public:
 
     // 链路统计（RTT/丢包/重传/FEC），供上层自适应码率；对端会话不存在返回 false
     bool link_stats(const std::string& peer_uuid, Session::LinkStats& out);
+
+    // 局域网发现缓存（15s 内听到的 ANNOUNCE）；供 IOTC_Search_Device
+    std::vector<LanPeer> lan_peers();
+    bool lan_lookup(const std::string& uuid, LanPeer& out);
 
     uint8_t  nat_type() const { return nat_type_; }
     uint16_t local_port() const { return sock_.local_port(); }
@@ -168,6 +179,7 @@ private:
     void tick_conn_relay(Conn& c, uint64_t now);   // 中继子状态机
     void tick_conn_fsm(Conn& c, uint64_t now);     // 连接主状态机（中继建链判定）
     void tick_sessions(uint64_t now);        // 会话周期驱动
+    void tick_lan(uint64_t now);             // 局域网组播宣告 / 缓存过期
     void handle_packet(const uint8_t* buf, size_t len, const sockaddr_in& from);
     void handle_proto(uint8_t msg_id, const uint8_t* p, size_t plen,
                       const sockaddr_in& from);
@@ -191,9 +203,14 @@ private:
     // #19 阶段 B 收尾：经 NatServer 发送本地 ICE SDP / 接收对端 SDP
     void send_ice_sdp(const std::string& peer, const std::string& local_sdp);
     void on_ice_sdp(const uint8_t* p, size_t plen);
-    void ensure_ice_agent(Conn& c, bool as_offerer);  // offerer 先 gather（controlling）
+    void ensure_ice_agent(Conn& c, bool as_offerer);  // offerer=true 才 gather（controlling）
     void start_ice_gather(Conn& c);
     void apply_remote_ice_sdp(Conn& c, const std::string& remote_sdp);
+    void send_lan_beacon(uint8_t msg_id, const std::string& uuid, const sockaddr_in* to);
+    void on_lan_beacon(uint8_t msg_id, const uint8_t* p, size_t plen,
+                       const sockaddr_in& from);
+    void apply_lan_peer(const std::string& uuid, const sockaddr_in& from,
+                        uint16_t media_port_nbo);
     void do_punch(Conn& c);
     // #19 libjuice ICE 回调（静态转发至 Conn 上下文）
     static void on_juice_state(juice_agent_t* agent, juice_state_t state, void* user_ptr);
@@ -299,8 +316,18 @@ private:
     std::map<uint64_t, std::string> addr_to_peer_;   // ip<<16|port -> peer uuid
     uint16_t next_session_id_ = 1;
     bool ready_fired_ = false;
-    // ICE_SDP 可能早于 CONNECT_INVITE 到达（uuid 字段是 dst）；暂存待邀方创建后再应用
-    std::string pending_remote_sdp_;
+    // ICE_SDP 可能早于 CONNECT_INVITE：按 src uuid 暂存，邀方创建后再应用
+    std::unordered_map<std::string, std::string> pending_remote_sdp_;
+
+    // 局域网发现
+    UdpSocket lan_sock_;
+    bool lan_enabled_ = false;
+    uint64_t next_lan_announce_ms_ = 0;
+    struct LanCacheEnt {
+        sockaddr_in addr{};
+        uint64_t seen_ms = 0;
+    };
+    std::unordered_map<std::string, LanCacheEnt> lan_cache_;
 
     uint8_t recv_buf_[MAX_PKT];
 };

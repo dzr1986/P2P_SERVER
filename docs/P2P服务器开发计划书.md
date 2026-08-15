@@ -50,7 +50,7 @@ TUTK Kalay 平台的核心价值：设备烧录一个 **UID** 即可被全球任
 | RDTAPIs | 可靠字节流 Read/Write | `RDTAPIs` 分片发送 + leftover 部分读取 | 已落地（大文件压测待补） |
 | P2PTunnelAPIs | 把 TCP 协议（RTSP/HTTP/SSH）隧道化 | `P2PTunnel_Serve/Map` + `TunnelCodec` | 已落地（RTSP/ffmpeg 演示待补） |
 | avSendIOCtrl | 控制指令通道 | `avSendIOCtrl/avRecvIOCtrl`（通道 0 可靠） | 已落地 |
-| LAN Search | 局域网免服务器发现 | CONNECT 携带 lan 地址尝试直连 | UDP 广播发现待做 |
+| LAN Search | 局域网免服务器发现 | 组播 `239.255.77.89:17890` + `IOTC_Search_Device` | 免服务器纯 LAN 建链（无 NatServer）待补 |
 | Device Wakeup | 低功耗设备唤醒 | `p2p_wakeserver` + `MSG_WAKE_*` | 三平台 SDK 接入与 <6s 出图待补 |
 | AuthKey / Token 鉴权 | 报到与连线鉴权 | 每 UID AuthKey + `EnableConnectToken` + X25519 FS | Token nonce 防重放表未做 |
 
@@ -150,17 +150,17 @@ int  Tunnel_Map(int sid, uint16_t local_tcp_port, uint16_t remote_tcp_port);
 
 ```
 Client                         NatServer                       Device
-  │ 1. LAN 广播探测(新增) ─────局域网────────────────────────────► │
-  │    命中 → LAN 直连(免服务器)                                   │
+  │ 1. LAN 组播 QUERY/ANNOUNCE ──局域网 239.255.77.89:17890 ─────► │
+  │    命中 → 写入 have_lan，SDP 可走局域网单播                    │
   │ 2. CONNECT_REQ(uid,token) ──►│ 验 token/在线表                 │
   │ ◄── CONNECT_ACK(公网/私网/NAT类型/Relay候选) │── INVITE ──────► │
-  │ 3. ICE 打洞（libjuice，已有）◄═══════ P2P 直连 ═══════════════► │
+  │ 3. CONNECT_OK 后发起方 gather（controlling）◄══ ICE/P2P ══════► │
   │ 4. 超时/对称NAT → Relay 注册(HMAC，已有) → RELAY_DATA 中继      │
-  │ 5. 中继期间打洞持续后台重试，成功即无缝升级回 P2P（新增）          │
+  │ 5. 中继期间打洞持续后台重试，成功即无缝升级回 P2P                │
 ```
 
-模式偏好与 TUTK 一致：LAN > P2P > Relay；连接建立后 `link_stats()`（已有）
-持续反馈质量，驱动通道层码率自适应与模式切换。
+模式偏好与 TUTK 一致：LAN > P2P > Relay；连接建立后 `link_stats()` +
+`abr_suggest_kbps()`（delay-based 分档）驱动通道层码率自适应。
 
 ### 4.4 AV 通道（流媒体面，直接受益于第二轮优化）
 
@@ -239,7 +239,7 @@ Client                         NatServer                       Device
   - `IOTC.h/.cpp`：进程级单例、SID 句柄表、每通道接收队列、阻塞 Read、
     `IOTC_Session_GetLinkStats`；锁序约定避免与 P2PClient 回调死锁
   - `AVAPIs` + `AvCodec.h`：帧分片/重组、resend 开关、too-late-drop、IOCtrl、
-    `avGetLinkStats` / `avSuggestedBitrateKbps`
+    `avGetLinkStats` / `avSuggestedBitrateKbps`（`common/AbrEstimate.h` delay-based）
   - `iotc_demo`：设备/客户端四通道并发回声验收
   - 验证：`tests/av_frame_test.cpp`；`test.sh` [10] 端到端
 

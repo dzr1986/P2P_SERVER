@@ -92,7 +92,14 @@ enum MsgId : uint8_t {
     MSG_WAKE_TRIGGER          = 0x41,  // 请求唤醒设备:   WakeTrigger   -> WakeResult
     MSG_WAKE_RESULT           = 0x42,  // 保活/触发应答:  WakeResult
     MSG_WAKE_POKE             = 0x43,  // 唤醒包（服务器 -> 设备上次公网地址）
+    // ---- 局域网发现（对标 TUTK LAN Search，不经 NatServer）----
+    MSG_LAN_QUERY             = 0x50,  // 查询同网段 UID: LanBeacon
+    MSG_LAN_ANNOUNCE          = 0x51,  // 宣告本机 UID/端口: LanBeacon
 };
+
+// 局域网组播发现（管理范围 239.255/16，TTL=1 不出网段）
+constexpr const char* LAN_MCAST_IP   = "239.255.77.89";
+constexpr uint16_t    LAN_MCAST_PORT = 17890;
 
 // -------------------------------------------------------------------------
 // NAT 类型（客户端自检 + 服务端记录）
@@ -448,11 +455,18 @@ enum WakeStatus : uint8_t {
 
 
 // #19 ICE SDP 中转消息（变长）
-// sdp 为 UTF-8 编码的 ICE local description，sdp_len 为网络序
+// dst 供 NatServer 路由；src 供接收端落到对应 Conn（避免 SDP 早于 INVITE 时无法认领）
 struct IceSdpMsg {
-    char    uuid[MAX_UUID_LEN + 1];  // 目标 peer uuid
+    char     dst_uuid[MAX_UUID_LEN + 1];
+    char     src_uuid[MAX_UUID_LEN + 1];
     uint16_t sdp_len;                // 网络序：sdp 字节数
-    char    sdp[1];                  // 变长，实际长度由 sdp_len 指定
+    char     sdp[1];                 // 变长，实际长度由 sdp_len 指定
+};
+
+// 局域网发现信标（QUERY / ANNOUNCE 共用）
+struct LanBeacon {
+    char     uuid[MAX_UUID_LEN + 1]; // QUERY: 要找的 UID（空=任意）；ANNOUNCE: 本机 UID
+    uint16_t lan_port;               // 网络序：主信令/媒体 socket 端口
 };
 } // namespace p2p
 

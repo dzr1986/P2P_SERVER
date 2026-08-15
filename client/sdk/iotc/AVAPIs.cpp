@@ -4,6 +4,7 @@
 #include "AvCodec.h"
 #include "IOTC.h"
 #include "client/sdk/plat/Plat.h"
+#include "common/AbrEstimate.h"
 
 #include <cstring>
 #include <mutex>
@@ -259,13 +260,7 @@ int avGetDropStats(int av, uint64_t* dropped_p, uint64_t* sent) {
 int avSuggestedBitrateKbps(int av) {
     AVLinkStats st;
     if (avGetLinkStats(av, &st) != AV_ER_NoERROR) return AV_ER_ChannelNoExist;
-    int kbps = 4000;
-    if (st.srtt_ms > 400) kbps = 800;
-    else if (st.srtt_ms > 200) kbps = 2000;
-    if (st.cwnd > 0 && st.cwnd < 8) kbps = kbps * (int)st.cwnd / 8;
-    if (st.rx_lost > 0) kbps = kbps * 3 / 4;
-    if (kbps < 200) kbps = 200;
-    return kbps;
+    return p2p::abr_suggest_kbps(st.srtt_ms, st.rttvar_ms, st.cwnd, st.rx_lost);
 }
 
 } // extern "C"

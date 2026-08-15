@@ -69,10 +69,11 @@ p2p_server_byding/
          └────────────┘
 ```
 
-1. 设备/App 以 **UUID** 向 NatServer 心跳注册，NatServer 记录其观察到的公网地址
-2. 需要连接时，发起方发 `CONNECT_REQ`，NatServer 回 `CONNECT_ACK`（含目标公网地址）并 `CONNECT_INVITE` 通知目标方
-3. 双方同时向对方公网地址发包（**UDP 打洞**），打通后直接 P2P 通信
-4. 打洞失败（对称 NAT 等）→ 双方注册到 **P2PProxy**，改走中继
+1. 同网段先组播 **LAN Search**（`239.255.77.89:17890`），命中则记下局域网地址
+2. 设备/App 以 **UUID** 向 NatServer 心跳注册，NatServer 记录其观察到的公网地址
+3. 需要连接时，发起方发 `CONNECT_REQ`，NatServer 回 `CONNECT_ACK` 并 `CONNECT_INVITE` 通知目标方
+4. `CONNECT_OK` 后发起方 ICE gather（controlling），被邀方先 `set_remote` 再 gather；打通后 P2P
+5. 打洞失败（对称 NAT 等）→ 双方注册到 **P2PProxy**，改走中继；中继后仍后台打洞，成功则回切
 
 ## 报文协议
 
@@ -117,6 +118,10 @@ magic = 0x584E ("XN")，length = payload 字节数（不含头）
 | 0x19 | ADMIN_STATS_REQ/RSP | 客户端->NatServer | 管理统计查询/应答（AdminStatsRsp） |
 | 0x1D | ADMIN_BLACKLIST_REQ | 客户端->NatServer | 黑名单管理：op+key+HMAC(AdminSecret,op+key)，应答 0x1E |
 | 0x1E | ADMIN_BLACKLIST_RSP | NatServer->客户端 | 结果+总数+明细（AdminBlacklistRsp） |
+| 0x1F | ICE_SDP | 经 NatServer 或局域网 | ICE local description（dst/src UID + SDP） |
+| 0x40–0x43 | WAKE_* | wakeserver | 低功耗保活 / 触发 / POKE |
+| 0x50 | LAN_QUERY | 局域网组播 | 按 UID 询问同网段设备 |
+| 0x51 | LAN_ANNOUNCE | 局域网组播 | 宣告本机 UID + 主 socket 端口 |
 | 0x30 | SYNC_PEER_ENTRY | NatServer<->NatServer | 注册表同步：单条对等节点增/更（SyncPeerEntry） |
 | 0x31 | SYNC_PEER_DEL | NatServer<->NatServer | 注册表同步：对等节点删除（SyncPeerDel） |
 | 0x32 | SYNC_SNAPSHOT_REQ | NatServer->NatServer | 全量快照请求（SyncSnapshotReq 时间戳，应答为多条 0x30） |
@@ -130,7 +135,7 @@ magic = 0x584E ("XN")，length = payload 字节数（不含头）
 
 `PeerData`：`"PDAT" + type + seq + src_uuid + msg`，type 0=ping 1=pong 2=punch。
 
-完整结构体定义见 `server/common/ProtoDef.h`（均为 1 字节对齐，数值字段网络字节序）。
+完整结构体定义见 `common/ProtoDef.h`（均为 1 字节对齐，数值字段网络字节序）。
 
 ## 构建与运行
 

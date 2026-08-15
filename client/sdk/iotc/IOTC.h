@@ -97,6 +97,15 @@ typedef struct {
 } IOTCLinkStats;
 int  IOTC_Session_GetLinkStats(int sid, IOTCLinkStats* st);
 
+// 局域网发现（对标 TUTK IOTC_Search_Device）：等待 timeout_ms 收集 ANNOUNCE
+// 返回写入条数(>=0) 或错误码
+typedef struct {
+    char     uuid[33];
+    char     ip[16];
+    uint16_t port;
+} IOTCLanDevice;
+int  IOTC_Search_Device(IOTCLanDevice* out, int cap, int timeout_ms);
+
 } // extern "C"
 
 #endif // P2P_SDK_IOTC_IOTC_H
