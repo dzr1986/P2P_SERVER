@@ -61,6 +61,10 @@ public:
         bool proxy_tcp_tls = true;             // TCP 面默认 TLS（对标 DERP HTTPS/443）
         bool proxy_tls_insecure = true;        // 自签/内网不校验证书；生产应 false
         bool port_map = true;                  // PCP/NAT-PMP/UPnP 主动开孔（失败忽略）
+        bool birthday_punch = false;           // 生日扫描，默认关；N≤256、有间隔、熔断
+        uint16_t birthday_n = 64;              // 扫描目的口上限（硬顶 256）
+        uint32_t birthday_interval_ms = 40;    // 每批间隔
+        bool lazy_p2p = false;                 // 中继已通则不后台打洞，直到有业务发送
     };
 
     struct LanPeer {
@@ -116,6 +120,9 @@ public:
     uint64_t tunnel_enc_rx() const { return tunnel_enc_rx_.load(); }
     uint64_t tunnel_fs_ok() const { return tunnel_fs_ok_.load(); }
     bool derp_ready() const { return derp_registered_.load(); }
+    uint64_t path_direct_v4() const { return path_direct_v4_.load(); }
+    uint64_t path_direct_v6() const { return path_direct_v6_.load(); }
+    uint64_t path_relay() const { return path_relay_.load(); }
 
 private:
     // 打洞子状态机（负责直连路径探测与超时）
@@ -142,6 +149,9 @@ private:
         uint8_t  ice_sdp_rtx_n = 0;          // 连线中 SDP 重传次数
         std::string local_sdp;               // #19 本端 ICE SDP（gather 后填充）
         std::string remote_sdp;              // #19 对端 ICE SDP（信令交换）
+        uint16_t extra_ports_added = 0;      // 已注入 juice 的预测/生日目的口数
+        bool extra_ports_tripped = false;    // 熔断：达上限或两轮无进展
+        uint64_t extra_ports_next_ms = 0;
     };
 
     // 中继子状态机（负责 relay 注册与保活）
@@ -166,6 +176,8 @@ private:
         RelayState relay;
         ConnState state = ConnState::Idle;
         bool via_relay = false;         // Connected 时的路径类型（true=中继）
+        bool want_direct = false;       // lazy_p2p：有业务发送后才后台打洞
+        uint8_t peer_nattype = NAT_UNKNOWN;
         std::string connect_token_hex;  // 本连接出示的连线 Token（可空）
         uint32_t backoff_attempt = 0;   // #18 连接级退避尝试计数（CONNECT 重发/中继注册）
         P2PClient* self = nullptr;      // #19 反向指针，供 libjuice 回调触发 on_connected
@@ -197,7 +209,9 @@ private:
     void tick_auth(uint64_t now);            // 鉴权状态机（challenge/login 重试）
     void tick_nat_detect(uint64_t now);      // NAT 检测推进
     void tick_relay(uint64_t now);           // 中继注册重试
-    void tick_portmap(uint64_t now);         // 家宽 UPnP/NAT-PMP 开孔（每 tick 最多一孔）
+    void tick_portmap(uint64_t now);         // 家宽 UPnP/NAT-PMP 开孔 + 续约
+    void tick_extra_ice_ports(Conn& c, uint64_t now); // NAT4E 预测 / 生日候选
+    void note_path_stats(Conn& c, bool relay);
     void tick_connections(uint64_t now);     // 连接状态机（打洞/超时/降级中继/回切 P2P）
     void tick_conn_punch(Conn& c, uint64_t now);   // 打洞子状态机
     void tick_conn_relay(Conn& c, uint64_t now);   // 中继子状态机
@@ -316,6 +330,9 @@ private:
     std::atomic<uint64_t> tunnel_enc_rx_{0};
     std::atomic<uint64_t> tunnel_fs_ok_{0};
     std::atomic<uint64_t> ice_restarts_{0};
+    std::atomic<uint64_t> path_direct_v4_{0};
+    std::atomic<uint64_t> path_direct_v6_{0};
+    std::atomic<uint64_t> path_relay_{0};
 
     struct HsState {
         uint8_t priv[32]{};
@@ -361,8 +378,12 @@ private:
     uint64_t next_derp_try_ms_ = 0;
     uint32_t derp_backoff_ms_ = 400;
 
+    struct PortMapLease {
+        PortMapResult r;
+        uint64_t renew_at_ms = 0;
+    };
     std::vector<uint16_t> portmap_pending_;
-    std::unordered_map<uint16_t, PortMapResult> portmap_ok_;
+    std::unordered_map<uint16_t, PortMapLease> portmap_ok_;
     uint64_t next_portmap_ms_ = 0;
 
     // 会话与连接

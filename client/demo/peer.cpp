@@ -29,7 +29,8 @@ int main(int argc, char** argv) {
     if (argc < 4) {
         fprintf(stderr, "usage: %s <NatServerIP> <NatServerPort> <UUID> [peerUUID] "
                         "[ProxyIP] [ProxyPort] [-s secret] [-k authkey_hex] [-t token_hex] "
-                        "[-relay] [-tcp PORT] [-tls|-notls] [-restart] [-lan|-nolan]\n",
+                        "[-relay] [-tcp PORT] [-tls|-notls] [-restart] [-lan|-nolan] "
+                        "[-birthday] [-lazy]\n",
                 argv[0]);
         return 1;
     }
@@ -38,6 +39,8 @@ int main(int argc, char** argv) {
     std::string auth_key_hex;          // 每 UID AuthKey（uidgen 签发，设备侧凭据）
     std::string connect_token_hex;     // 连线 Token（tokengen 签发，EnableConnectToken 时必带）
     bool force_relay = false;
+    bool birthday = false;
+    bool lazy_p2p = false;
     bool do_restart = false;
     bool lan_discover = true;
     bool lan_flag = false;
@@ -48,6 +51,8 @@ int main(int argc, char** argv) {
         else if (strcmp(argv[i], "-k") == 0 && i + 1 < argc) auth_key_hex = argv[++i];
         else if (strcmp(argv[i], "-t") == 0 && i + 1 < argc) connect_token_hex = argv[++i];
         else if (strcmp(argv[i], "-relay") == 0) force_relay = true;
+        else if (strcmp(argv[i], "-birthday") == 0) birthday = true;
+        else if (strcmp(argv[i], "-lazy") == 0) lazy_p2p = true;
         else if (strcmp(argv[i], "-tcp") == 0 && i + 1 < argc)
             proxy_tcp_port = (uint16_t)atoi(argv[++i]);
         else if (strcmp(argv[i], "-tls") == 0) proxy_tcp_tls = true;
@@ -100,6 +105,8 @@ int main(int argc, char** argv) {
     cfg.nat_servers.push_back({nat_ip, nat_port});
     cfg.proxy_servers = proxies;
     cfg.force_relay = force_relay;
+    cfg.birthday_punch = birthday;
+    cfg.lazy_p2p = lazy_p2p;
     cfg.proxy_tcp_port = proxy_tcp_port;
     cfg.proxy_tcp_tls = proxy_tcp_tls;
     cfg.proxy_tls_insecure = true;
@@ -173,6 +180,7 @@ int main(int argc, char** argv) {
     uint8_t last_nat = NAT_UNKNOWN;
     uint64_t last_etx = 0, last_erx = 0;
     uint64_t last_restarts = 0;
+    uint64_t last_v4 = 0, last_v6 = 0, last_relay = 0;
     int restart_wait = 0;
     bool restart_sent = false;
     while (!g_quit.load()) {
@@ -205,6 +213,15 @@ int main(int argc, char** argv) {
         if (rs != last_restarts) {
             last_restarts = rs;
             printf("[peer] ICE restarted count=%llu\n", (unsigned long long)rs);
+            fflush(stdout);
+        }
+        uint64_t v4 = client.path_direct_v4(), v6 = client.path_direct_v6();
+        uint64_t rl = client.path_relay();
+        if (v4 != last_v4 || v6 != last_v6 || rl != last_relay) {
+            last_v4 = v4; last_v6 = v6; last_relay = rl;
+            printf("[peer] path v4=%llu v6=%llu relay=%llu\n",
+                   (unsigned long long)v4, (unsigned long long)v6,
+                   (unsigned long long)rl);
             fflush(stdout);
         }
         p2p::plat_sleep_ms(200);

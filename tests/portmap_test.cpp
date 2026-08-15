@@ -95,6 +95,11 @@ int main() {
     (void)portmap_default_gateway(&gw); // 有无网关都不算失败
     CHECK(true, "default gateway probe (optional)");
 
+    CHECK(portmap_renew_delay_ms(300) == 200000, "renew 300s → 200s");
+    CHECK(portmap_renew_delay_ms(3600) == 2400000, "renew 3600s → 2400s");
+    CHECK(portmap_renew_delay_ms(0) == 200000, "renew 0 → default 300s");
+    CHECK(portmap_renew_delay_ms(3) == 2000, "renew 3s → 2s");
+
     if (g_fail) {
         printf("portmap_test FAIL=%d\n", g_fail);
         return 1;

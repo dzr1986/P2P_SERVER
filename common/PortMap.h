@@ -52,6 +52,15 @@ bool upnp_pick_control_url(const std::string& xml, const std::string& base,
 // juice / SDP host 候选里抽出 UDP 端口（跳过 127.0.0.1）
 void portmap_host_ports_from_sdp(const char* sdp, std::vector<uint16_t>& ports);
 
+// 续约时刻：租约 2/3 处（EasyTier ~300s 租 / 240s 续）。lifetime=0 按 300s。
+inline uint32_t portmap_renew_delay_ms(uint32_t lifetime_sec) {
+    if (lifetime_sec == 0) lifetime_sec = 300;
+    uint32_t sec = lifetime_sec * 2 / 3;
+    if (sec < 30 && lifetime_sec > 5) sec = lifetime_sec > 30 ? 30 : (lifetime_sec - 1);
+    if (sec < 1) sec = 1;
+    return sec * 1000u;
+}
+
 } // namespace p2p
 
 #endif // P2P_COMMON_PORT_MAP_H

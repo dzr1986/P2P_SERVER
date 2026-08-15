@@ -172,6 +172,20 @@ int main() {
     CHECK(strcmp(nat_filter_str(NAT_FLT_PORT), "port") == 0, "filter str");
     CHECK(strcmp(punch_strategy_str(PunchStrategy::Relay), "relay") == 0,
           "strategy str");
+    CHECK(four_type_to_mapping(NAT_FULL_CONE) == NAT_MAP_EIM, "full-cone → EIM");
+    CHECK(four_type_to_mapping(NAT_SYMMETRIC) == NAT_MAP_EDM, "symmetric → EDM");
+    CHECK(!path_addr_is_ipv6("1.2.3.4:3478"), "v4 addr");
+    CHECK(!path_addr_is_ipv6("127.0.0.1:9"), "v4 loopback");
+    CHECK(path_addr_is_ipv6("[2001:db8::1]:3478"), "v6 bracket");
+    CHECK(path_addr_is_ipv6("2001:db8::1:3478"), "v6 raw");
+    CHECK(!path_addr_is_ipv6(""), "empty addr");
+    uint16_t bp[8];
+    size_t bn = birthday_dest_ports(50000, 2, 5, bp, 8);
+    CHECK(bn == 5 && bp[0] == 50000 && bp[1] == 50002 && bp[2] == 49998,
+          "birthday ports ±step");
+    uint16_t cap[4];
+    CHECK(birthday_dest_ports(100, 1, 300, cap, 4) == 4, "birthday n/cap clamp");
+    CHECK(birthday_dest_ports(0, 1, 8, bp, 8) == 0, "birthday base=0 skip");
 
     if (g_fail) {
         printf("nat_detect_test FAILED (%d)\n", g_fail);

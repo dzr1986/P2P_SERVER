@@ -70,6 +70,17 @@ bool P2PClient::start(const Config& cfg) {
         const char* dis = getenv("P2P_DISABLE_PORTMAP");
         if (dis && dis[0] == '1') cfg_.port_map = false;
     }
+    if (const char* b = getenv("P2P_BIRTHDAY")) {
+        if (b[0] == '1') cfg_.birthday_punch = true;
+        else if (b[0] == '0') cfg_.birthday_punch = false;
+    }
+    if (const char* lz = getenv("P2P_LAZY_P2P")) {
+        if (lz[0] == '1') cfg_.lazy_p2p = true;
+        else if (lz[0] == '0') cfg_.lazy_p2p = false;
+    }
+    path_direct_v4_.store(0);
+    path_direct_v6_.store(0);
+    path_relay_.store(0);
     if (cfg_.port_map) {
         const uint16_t lp = sock_.local_port();
         if (lp) portmap_pending_.push_back(lp);
@@ -200,6 +211,10 @@ void P2PClient::connect(const std::string& peer_uuid, const std::string& token_h
     c.punch.ice_sdp_rtx_n = 0;
     c.punch.local_sdp.clear();
     c.punch.remote_sdp.clear();
+    c.punch.extra_ports_added = 0;
+    c.punch.extra_ports_tripped = false;
+    c.punch.extra_ports_next_ms = 0;
+    c.want_direct = false;
     c.relay.relay_ok = false;
     c.punch.punch_deadline = plat_now_ms() + cfg_.connect_timeout_ms;
     c.punch.next_punch = 0;
@@ -239,6 +254,9 @@ void P2PClient::reset_ice_flags(Conn& c) {
     c.punch.local_sdp.clear();
     c.punch.remote_sdp.clear();
     c.punch.direct_ok = false;
+    c.punch.extra_ports_added = 0;
+    c.punch.extra_ports_tripped = false;
+    c.punch.extra_ports_next_ms = 0;
 }
 
 void P2PClient::begin_ice_restart(Conn& c, bool as_offerer) {
@@ -275,6 +293,7 @@ int P2PClient::send(const std::string& peer_uuid, uint8_t channel,
     std::lock_guard<std::recursive_mutex> lk(mu_);
     Conn* c = conn_of(peer_uuid);
     if (!c || !c->connected()) return -1;
+    c->want_direct = true;   // lazy_p2p：有业务后再后台打洞
     return session_for(peer_uuid)->send(channel, data, len, reliable);
 }
 
@@ -468,20 +487,43 @@ void P2PClient::tick_relay(uint64_t now) {
 }
 
 void P2PClient::tick_portmap(uint64_t now) {
-    if (!cfg_.port_map || portmap_pending_.empty() || now < next_portmap_ms_) return;
-    const uint16_t port = portmap_pending_.front();
-    portmap_pending_.erase(portmap_pending_.begin());
-    if (portmap_ok_.count(port)) return;
-    PortMapResult r;
-    if (portmap_any(port, 3600, r)) {
-        portmap_ok_[port] = r;
-        printf("[P2PClient] portmap %s %u->%u lifetime=%us\n",
-               r.backend, (unsigned)r.internal_port, (unsigned)r.external_port,
-               (unsigned)r.lifetime_sec);
-        fflush(stdout);
+    if (!cfg_.port_map || now < next_portmap_ms_) return;
+    if (!portmap_pending_.empty()) {
+        const uint16_t port = portmap_pending_.front();
+        portmap_pending_.erase(portmap_pending_.begin());
+        if (portmap_ok_.count(port)) return;
+        PortMapResult r;
+        if (portmap_any(port, 3600, r)) {
+            PortMapLease lease;
+            lease.r = r;
+            lease.renew_at_ms = now + portmap_renew_delay_ms(r.lifetime_sec);
+            portmap_ok_[port] = lease;
+            printf("[P2PClient] portmap %s %u->%u lifetime=%us renew_in=%us\n",
+                   r.backend, (unsigned)r.internal_port, (unsigned)r.external_port,
+                   (unsigned)r.lifetime_sec,
+                   (unsigned)(portmap_renew_delay_ms(r.lifetime_sec) / 1000));
+            fflush(stdout);
+            next_portmap_ms_ = now + 80;
+        } else {
+            next_portmap_ms_ = now + 400;
+        }
+        return;
+    }
+    for (auto& kv : portmap_ok_) {
+        if (kv.second.renew_at_ms == 0 || now < kv.second.renew_at_ms) continue;
+        PortMapResult r;
+        if (portmap_any(kv.first, 3600, r)) {
+            kv.second.r = r;
+            kv.second.renew_at_ms = now + portmap_renew_delay_ms(r.lifetime_sec);
+            printf("[P2PClient] portmap renew %s %u->%u lifetime=%us\n",
+                   r.backend, (unsigned)r.internal_port, (unsigned)r.external_port,
+                   (unsigned)r.lifetime_sec);
+            fflush(stdout);
+        } else {
+            kv.second.renew_at_ms = now + 5000;
+        }
         next_portmap_ms_ = now + 80;
-    } else {
-        next_portmap_ms_ = now + 400;
+        return;
     }
 }
 
@@ -501,7 +543,8 @@ void P2PClient::tick_connections(uint64_t now) {
             if (!(c = conn_of(peer))) continue;
             tick_conn_fsm(*c, now);
         } else if (c->state == ConnState::Connected && c->via_relay && !cfg_.force_relay) {
-            tick_conn_punch(*c, now);
+            if (!cfg_.lazy_p2p || c->want_direct)
+                tick_conn_punch(*c, now);
         }
     }
 }
@@ -514,6 +557,7 @@ void P2PClient::tick_conn_punch(Conn& c, uint64_t now) {
         do_punch(c);
         c.punch.next_punch = now + cfg_.punch_interval_ms;
     }
+    tick_extra_ice_ports(c, now);
     if (upgrade) return;  // 中继已通，后台打洞失败不关连接
     // force_relay 时 have_direct=false 是预期行为，不视为“服务器无响应”
     if (!cfg_.force_relay && !c.punch.have_direct &&
@@ -575,6 +619,7 @@ void P2PClient::set_connected(Conn& c, bool relay) {
     if (c.state == ConnState::Connected) {
         if (c.via_relay && !relay) {
             c.via_relay = false;
+            note_path_stats(c, false);
             if (on_connected) on_connected(c.peer_uuid, false);
         } else if (!relay && c.punch.ice_restarting) {
             c.punch.ice_restarting = false;
@@ -586,6 +631,7 @@ void P2PClient::set_connected(Conn& c, bool relay) {
     }
     c.state = ConnState::Connected;
     c.via_relay = relay;
+    note_path_stats(c, relay);
     // 握手放到 tick_handshake，避免在 libjuice 状态回调里 juice_send
     if (on_connected) on_connected(c.peer_uuid, relay);
 }
@@ -1032,6 +1078,7 @@ void P2PClient::on_connect_ack(const uint8_t* p, size_t plen) {
         c.punch.have_direct = true;
         c.punch.next_punch = plat_now_ms() + 100;
 
+        c.peer_nattype = ack.dst_nattype;
         sockaddr_from(ack.dst_pub_ip, ntohs(ack.dst_pub_port), c.punch.direct);
         addr_to_peer_[addr_key(c.punch.direct)] = peer;
         // 私网目标同样尝试（同一局域网场景）
@@ -1092,6 +1139,7 @@ void P2PClient::on_connect_invite(const uint8_t* p, size_t plen) {
         c.punch.have_direct = true;
         c.punch.next_punch = plat_now_ms() + 100;
         c.punch.punch_deadline = plat_now_ms() + cfg_.connect_timeout_ms;
+        c.peer_nattype = inv.src_nattype;
 
         sockaddr_from(inv.src_pub_ip, ntohs(inv.src_pub_port), c.punch.direct);
         addr_to_peer_[addr_key(c.punch.direct)] = peer;
@@ -1353,6 +1401,86 @@ void P2PClient::on_juice_recv(juice_agent_t* agent, const char* data, size_t siz
     }
     // libjuice 已解 ICE，data 为应用负载，直接送入隧道帧处理
     self->on_tunnel_frame(reinterpret_cast<const uint8_t*>(data), size, c->peer_uuid);
+}
+
+void P2PClient::note_path_stats(Conn& c, bool relay) {
+    if (relay) {
+        path_relay_.fetch_add(1);
+        return;
+    }
+    char loc[64] = {};
+    char rem[64] = {};
+    bool v6 = false;
+    if (c.punch.juice &&
+        juice_get_selected_addresses(c.punch.juice, loc, sizeof(loc),
+                                     rem, sizeof(rem)) == JUICE_ERR_SUCCESS) {
+        v6 = path_addr_is_ipv6(loc) || path_addr_is_ipv6(rem);
+    }
+    if (v6) path_direct_v6_.fetch_add(1);
+    else path_direct_v4_.fetch_add(1);
+    fprintf(stderr, "[P2PClient] path %s peer=%s loc=%s rem=%s v4=%llu v6=%llu relay=%llu\n",
+            v6 ? "direct-v6" : "direct-v4", c.peer_uuid.c_str(), loc, rem,
+            (unsigned long long)path_direct_v4_.load(),
+            (unsigned long long)path_direct_v6_.load(),
+            (unsigned long long)path_relay_.load());
+}
+
+void P2PClient::tick_extra_ice_ports(Conn& c, uint64_t now) {
+    if (cfg_.force_relay || !c.punch.juice || !c.punch.have_direct) return;
+    if (c.punch.direct_ok || c.punch.extra_ports_tripped) return;
+    if (now < c.punch.extra_ports_next_ms) return;
+
+    const uint8_t peer_map = four_type_to_mapping(c.peer_nattype);
+    const PunchStrategy st = punch_strategy(
+        nat_mapping_ ? nat_mapping_ : four_type_to_mapping(nat_type_),
+        peer_map, nat_port_step_, 0, cfg_.birthday_punch);
+
+    uint16_t n = 0;
+    int16_t step = nat_port_step_;
+    if (st == PunchStrategy::Predict) {
+        n = 5;
+        if (step == 0) step = 1;
+    } else if (st == PunchStrategy::Birthday) {
+        n = cfg_.birthday_n;
+        if (n == 0 || n > 256) n = 64;
+        if (step == 0) step = 1;
+    } else {
+        return;
+    }
+
+    uint16_t ports[256];
+    const uint16_t base = ntohs(c.punch.direct.sin_port);
+    const size_t got = birthday_dest_ports(base, step, n, ports, 256);
+    if (got == 0) return;
+
+    char ip[INET_ADDRSTRLEN] = {};
+    if (!inet_ntop(AF_INET, &c.punch.direct.sin_addr, ip, sizeof(ip)) || !ip[0])
+        return;
+
+    const size_t batch = (st == PunchStrategy::Birthday) ? 8 : got;
+    size_t added = 0;
+    while (c.punch.extra_ports_added < got && added < batch) {
+        const uint16_t p = ports[c.punch.extra_ports_added];
+        c.punch.extra_ports_added++;
+        if (p == base) continue;  // ICE 已有主目的口
+        char line[256];
+        std::snprintf(line, sizeof(line),
+                      "a=candidate:p8e%u 1 UDP 16777215 %s %u typ srflx",
+                      (unsigned)c.punch.extra_ports_added, ip, (unsigned)p);
+        juice_add_remote_candidate(c.punch.juice, line);
+        added++;
+    }
+    if (added) {
+        fprintf(stderr, "[P2PClient] extra ICE ports +%zu (%s) peer=%s total=%u/%zu\n",
+                added, punch_strategy_str(st), c.peer_uuid.c_str(),
+                (unsigned)c.punch.extra_ports_added, got);
+    }
+    if (c.punch.extra_ports_added >= got) {
+        c.punch.extra_ports_tripped = true;  // 达上限即停，防 IDS
+    } else {
+        c.punch.extra_ports_next_ms = now + (st == PunchStrategy::Birthday
+                                             ? cfg_.birthday_interval_ms : 80);
+    }
 }
 
 void P2PClient::do_punch(Conn& c) {

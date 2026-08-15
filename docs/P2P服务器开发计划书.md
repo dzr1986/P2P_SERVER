@@ -347,26 +347,29 @@ libp2p DCUtR ~70%、TUTK 号称 ~92%。本仓库有中心信令，**应显著高
 - 范围：
   1. **PCP / NAT-PMP / UPnP IGD**（学 EasyTier）【核心已落地】：`common/PortMap.*`，
      先 IGD 再 NAT-PMP 再 PCP；ICE host 候选端口入队、worker 里逐个开孔。
-     `P2P_DISABLE_PORTMAP=1` 可关。失败是常态。续约/现网家宽验收待补。
+     `P2P_DISABLE_PORTMAP=1` 可关。失败是常态。租约 2/3 处续约已落地；现网家宽验收待补。
   2. **RFC 4787 二维 NAT 探测**【核心已落地】：`NatDetect` 输出 `mapping=EIM|ADM|EDM` +
      `filter=none|addr|port`，四型只作对外说法；第三探测口（`NatSock3Port` / `probe_port`）
      识别 **NAT4E 步长**。策略表见 `common/NatMatrix.h`（EDM×EDM 中继；有 step 则预测）。
-     ADM 需第二公网 IP，单机双/三口无法区分，暂记 EIM。生日打洞仍默认关、未接入 ICE。
-  3. **生日打洞（可选，默认关）**：EIM×EDM 时 N≤256、有间隔、失败即停，防 IDS
-     （EasyTier 有 `--disable-sym-hole-punching` 同类开关）。EDM×EDM 直接中继。
+     ADM 需第二公网 IP，单机双/三口无法区分，暂记 EIM。
+  3. **生日打洞（可选，默认关）**【开关已落地】：`birthday_punch` / `-birthday` / `P2P_BIRTHDAY=1`。
+     EIM×EDM 时向 juice 注入预测/扫描目的口，N≤256、每批 8 个、间隔 40ms，达上限即停。
+     `force_relay` 仍不打洞。EDM×EDM 默认中继（不开生日）。NAT4E 有 step 时走预测（5 口）。
   4. **DERP 风格 TCP/TLS 443 中继面**【核心已落地】：`p2p_proxy … [TcpPort]` 兼听；
      有证书走 PEM，否则临时自签（`P2P_PROXY_TLS=0` 可关 TLS）。客户端 `-tcp PORT -tls`，
      或 CONNECT 携带 `proxy_tcp_port`。先经 TCP/TLS 通，并行打洞，`direct_ok` 切直连。
-     `force_relay` 仍不打洞。现网 443 + 正式证书待补。
+     `force_relay` 仍不打洞。现网 443 用 `P2P_PROXY_TLS_CERT/KEY`（见 `start.sh`）；未给则自签。
   5. **TCP 打洞（可选）**：与 UDP ICE 并行；DCUtR 显示同步好时 TCP≈UDP。企业网仍以 TLS 中继兜底。
-  6. **IPv6 优先**：有公网 v6 走 host；NAT66 当 NAT 统计，不假设「有 v6 就能通」。
+  6. **IPv6 优先**【分统计已落地】：`path_direct_v4/v6` + `path_relay`；有公网 v6 走 host；
+     NAT66 计入 v6，不假设「有 v6 就能通」。
   7. **NAT 矩阵**【表+单测已落地】：`punch_strategy()` × `tests/nat_detect_test`；
      `tools/nat_matrix.sh` 打印组合。docker + iptables 现网分类型对照仍待补（`--iptables-demo`）。
-  8. **懒打洞（可选，对齐 P7）**：无预览流量不后台打洞（EasyTier `--lazy-p2p`），省电 IPC 用。
+  8. **懒打洞（可选，对齐 P7）**【开关已落地】：`lazy_p2p` / `-lazy` / `P2P_LAZY_P2P=1`。
+     中继已通且无业务发送时不后台打洞；`send()` 置 `want_direct` 后再升直连。
 - 依赖：P0 ICE/Proxy 已就绪；不改 `force_relay`「不打洞」语义（测试 [2]/[11] 依赖）。
 - 交付物：PCP/UPnP 客户端探测与续约、二维 NAT + NAT4E 字段、可选生日/TCP 打洞开关、
   v4/v6 直连率指标、矩阵脚本。TCP/TLS DERP 面、二维探测字段、策略表已落地（见上）。
-  生日/TCP 打洞开关与现网 iptables 矩阵仍待补。
+  生日/懒打洞开关、开孔续约、v4/v6 分统计已落地。TCP 打洞与现网 iptables 矩阵仍待补。
 - 验收：锥型组合直连 ≥85%；企业「只放 443/TCP」场景能在 <8s 出图（经 TLS 中继）；
   生日扫描默认关，打开时有端口上限与熔断。
 - **未含（本阶段不做）**：libp2p DHT、Iroh/QUIC 重写底座、系统级 VPN。

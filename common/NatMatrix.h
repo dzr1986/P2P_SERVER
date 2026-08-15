@@ -47,6 +47,46 @@ inline const char* punch_strategy_str(PunchStrategy s) {
 
 // 两端映射 → 策略。filter 不影响「能否映射」，只影响对端要从哪个五元组回包，
 // 标准 ICE 已覆盖锥型过滤；此处只按 mapping + NAT4E step 决策。
+inline uint8_t four_type_to_mapping(uint8_t nattype) {
+    switch (nattype) {
+    case NAT_FULL_CONE:
+    case NAT_PORT_RESTRICTED: return NAT_MAP_EIM;
+    case NAT_SYMMETRIC:       return NAT_MAP_EDM;
+    default:                  return NAT_MAP_UNKNOWN;
+    }
+}
+
+// juice / "ip:port" / "[v6]:port" → 是否 IPv6（NAT66 也算 v6 路径，不假设必通）
+inline bool path_addr_is_ipv6(const char* s) {
+    if (!s || !s[0]) return false;
+    if (s[0] == '[') return true;
+    for (const char* p = s; *p && *p != ':'; ++p) {
+        if (*p == '.') return false;
+    }
+    // 无点且含冒号：v6 或 ":port" 残缺；两个及以上冒号才是 v6
+    int colons = 0;
+    for (const char* p = s; *p; ++p) if (*p == ':') colons++;
+    return colons >= 2;
+}
+
+// 生日/预测目的端口：base, ±step, ±2step… n 上限 256。step=0 则用 1。
+inline size_t birthday_dest_ports(uint16_t base, int16_t step, uint16_t n,
+                                  uint16_t* out, size_t cap) {
+    if (!out || cap == 0 || n == 0 || base == 0) return 0;
+    if (n > 256) n = 256;
+    if (step == 0) step = 1;
+    size_t w = 0;
+    auto push = [&](int p) {
+        if (p > 0 && p <= 65535 && w < n && w < cap) out[w++] = (uint16_t)p;
+    };
+    push((int)base);
+    for (int k = 1; w < n && w < cap; k++) {
+        push((int)base + (int)step * k);
+        push((int)base - (int)step * k);
+    }
+    return w;
+}
+
 inline PunchStrategy punch_strategy(uint8_t map_a, uint8_t map_b,
                                     int16_t step_a, int16_t step_b,
                                     bool birthday_enabled = false) {

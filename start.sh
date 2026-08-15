@@ -8,8 +8,12 @@ cd "$(dirname "$0")"
 
 NAT_PORT=16001
 PROXY_PORT=16002
-# 可选：P2P_PROXY_ALT_PORT=443 P2P_PROXY_TCP_PORT=443
-#       P2P_PROXY_TLS_CERT=/path/fullchain.pem P2P_PROXY_TLS_KEY=/path/privkey.pem
+# 现网 443 + 正式证书（不要用临时自签）：
+#   P2P_PROXY_ALT_PORT=443 P2P_PROXY_TCP_PORT=443
+#   P2P_PROXY_TLS_CERT=/etc/letsencrypt/live/<host>/fullchain.pem
+#   P2P_PROXY_TLS_KEY=/etc/letsencrypt/live/<host>/privkey.pem
+# 未给证书时 Proxy 会自签 CN=p2p-derp（仅内网/CI）。P2P_PROXY_TLS=0 退回明文 TCP。
+# 客户端生产应 IOTC_SetProxyTcp + proxy_tls_insecure=false。
 PROXY_ALT="${P2P_PROXY_ALT_PORT:-0}"
 PROXY_TCP="${P2P_PROXY_TCP_PORT:-0}"
 
