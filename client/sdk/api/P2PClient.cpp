@@ -1045,6 +1045,11 @@ void P2PClient::on_connect_ack(const uint8_t* p, size_t plen) {
         }
         c.punch.punch_deadline = plat_now_ms() + cfg_.connect_timeout_ms;
         ensure_ice_agent(c, true);   // CONNECT 已成功：发起方 gather → controlling
+        auto pit = pending_remote_sdp_.find(peer);
+        if (pit != pending_remote_sdp_.end()) {
+            apply_remote_ice_sdp(c, pit->second);
+            pending_remote_sdp_.erase(pit);
+        }
         auto lit = lan_cache_.find(peer);
         if (lit != lan_cache_.end()) {
             apply_lan_peer(peer, lit->second.addr, lit->second.addr.sin_port);
@@ -1387,9 +1392,12 @@ void P2PClient::tick_ice(uint64_t now) {
     for (auto& kv : conns_) {
         Conn& c = *kv.second;
         if (!c.punch.juice) continue;
-        if (!c.connecting() && !c.punch.ice_restarting) continue;
-        // 完整 SDP 重传：跨服/多收包线程下 UDP 信令偶发丢第二包，controlling 会只剩错误 host
-        if (!c.punch.direct_ok && !c.punch.local_sdp.empty() &&
+        if (!c.connecting() && !c.punch.ice_restarting &&
+            !(c.state == ConnState::Connected && c.punch.ice_sdp_rtx_n < 8))
+            continue;
+        // 完整 SDP 重传：对端若先 CONNECTED 会停发，本端丢包会永远 connecting。
+        // 两侧都重传到满 8 次（约 1.6s），不因本端已直连而停。
+        if (!c.punch.local_sdp.empty() &&
             c.punch.ice_sdp_rtx_n < 8 &&
             (c.punch.ice_sdp_rtx_ms == 0 || now - c.punch.ice_sdp_rtx_ms >= 200)) {
             send_ice_sdp(c.peer_uuid, c.punch.local_sdp);
