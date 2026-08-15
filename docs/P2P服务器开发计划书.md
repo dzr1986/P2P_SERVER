@@ -281,7 +281,7 @@ Client                         NatServer                       Device
     180s 自动换新临时密钥；`tunnel_fs_ok()` 供验收
   - `P2PProxy`：每 UID 累计转发字节 + `QuotaMB` 超限丢包（`p2p_proxy port max [workers] [QuotaMB]`）
   - 验证：`crypto_test` X25519/FS 派生；`test.sh` [5] `fs-hs=` 端到端
-- **未含**：连线 Token 挂 CONNECT 门（P1 遗留）
+- **未含**：无（连线 Token 已在 P1 补齐）
 
 ### P6 服务端集群与调度【核心已落地，规模压测待补】
 - 范围：多区域部署模型（区域内同步已有，跨区按 UID REGION 调度）；
