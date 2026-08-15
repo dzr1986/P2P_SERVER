@@ -41,6 +41,8 @@ struct IotcCtx {
     uint16_t server_port = 0;
     std::string proxy_ip;
     uint16_t proxy_port = 0;
+    uint16_t proxy_tcp_port = 0;
+    bool proxy_tcp_tls = true;
     bool force_relay = false;
     std::string connect_token_hex;
     P2PClient client;
@@ -148,6 +150,16 @@ int IOTC_SetProxy(const char* proxy_ip, uint16_t proxy_port) {
     return IOTC_ER_NoERROR;
 }
 
+int IOTC_SetProxyTcp(const char* proxy_ip, uint16_t tcp_port, int tls) {
+    if (!g) return IOTC_ER_NotInitialized;
+    if (!proxy_ip || tcp_port == 0) return IOTC_ER_InvalidArg;
+    std::lock_guard<std::mutex> lk(g->mu);
+    if (g->proxy_ip.empty()) g->proxy_ip = proxy_ip;
+    g->proxy_tcp_port = tcp_port;
+    g->proxy_tcp_tls = (tls != 0);
+    return IOTC_ER_NoERROR;
+}
+
 void IOTC_ForceRelay(int enable) {
     if (!g) return;
     std::lock_guard<std::mutex> lk(g->mu);
@@ -176,6 +188,9 @@ int IOTC_Login(const char* uid, const char* secret, const char* auth_key_hex,
     cfg.nat_servers.push_back({g->server_ip, g->server_port});
     if (!g->proxy_ip.empty() && g->proxy_port != 0)
         cfg.proxy_servers.push_back({g->proxy_ip, g->proxy_port});
+    cfg.proxy_tcp_port = g->proxy_tcp_port;
+    cfg.proxy_tcp_tls = g->proxy_tcp_tls;
+    cfg.proxy_tls_insecure = true;
     cfg.force_relay = g->force_relay;
     {
         const char* e = std::getenv("P2P_DISABLE_LAN");

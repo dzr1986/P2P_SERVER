@@ -36,7 +36,8 @@ namespace p2p {
 //   ProxyRegions=ip:R,ip:R          Proxy 入口区域标注（缺省继承 Region）
 //   WakeServer=ip:port              低功耗唤醒服务（CONNECT 目标离线时触发 POKE）
 //   EnableConnectToken=0|1          CONNECT 必须携带连线 Token（需 AuthSecret）
-//   ProxyAltPort=N                  中继兼听端口（生产 443；0=不向客户端宣告）
+//   ProxyAltPort=N                  中继 UDP 兼听端口（生产 443；0=不向客户端宣告）
+//   ProxyTcpPort=N                  DERP TCP/TLS 面（生产 443；0=不宣告）
 // ---------------------------------------------------------------------------
 struct CfgData {
     std::vector<std::string> nat_ips;
@@ -68,7 +69,8 @@ struct CfgData {
     uint32_t    flood_pkt_threshold = 200;
     uint32_t    blacklist_seconds = 60;
     uint16_t    nat_sock2_port = 0;    // 0 -> 主端口+1
-    uint16_t    proxy_alt_port = 0;    // TURN-over-443 兼听端口（0=不宣告）
+    uint16_t    proxy_alt_port = 0;    // TURN-over-443 UDP 兼听端口（0=不宣告）
+    uint16_t    proxy_tcp_port = 0;    // DERP TCP/TLS 面（0=不宣告）
 
     std::string cfg_path;
     bool        loaded = false;

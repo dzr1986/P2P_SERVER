@@ -3,10 +3,12 @@
 
 #include "Net.h"
 #include "ProtoDef.h"
+#include "TlsIo.h"
 
 #include <arpa/inet.h>
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <shared_mutex>
 #include <string>
@@ -33,7 +35,8 @@ public:
     P2PProxy& operator=(const P2PProxy&) = delete;
 
     int  init(uint16_t port, uint16_t max_proxy, int workers,
-              uint64_t quota_bytes = 0, uint16_t alt_port = 0);
+              uint64_t quota_bytes = 0, uint16_t alt_port = 0,
+              uint16_t tcp_port = 0);
     void run();                     // 阻塞：启动各线程后循环等待
     void request_stop() { running_ = false; }
 
@@ -79,13 +82,35 @@ private:
 
     int  send(const sockaddr_in& to, uint8_t msg_id,
               const void* payload, size_t plen);
+
+    // DERP 式 TCP/TLS 面：同一套 XN 帧，按 uuid 转发到 TCP 会话或 UDP 地址
+    struct TcpClient {
+        TcpFd fd;
+        TlsConn tls;
+        bool use_tls = false;
+        std::string uuid;
+        sockaddr_in peer{};
+        std::vector<uint8_t> rbuf;
+        std::atomic<bool> alive{true};
+    };
+    void tcp_accept_loop();
+    void tcp_session_loop(std::shared_ptr<TcpClient> cli);
+    void handle_tcp(std::shared_ptr<TcpClient> cli, uint8_t msg_id,
+                    uint8_t* p, size_t plen);
+    void do_register_tcp(const std::string& uuid, std::shared_ptr<TcpClient> cli,
+                         const uint8_t* hmac);
+    int  send_tcp(TcpClient& cli, uint8_t msg_id, const void* payload, size_t plen);
+    bool forward_relay(const std::string& dst_uuid, uint8_t* p, size_t plen,
+                       const std::string& src_uuid);
+
     size_t registered_count() const {
         std::shared_lock<std::shared_mutex> lk(reg_mu_);
         return uuid2addr_.size();
     }
 
     uint16_t port_ = 0;
-    uint16_t alt_port_ = 0;         // TURN-over-443 兼听（0=关闭；测试可用高位端口）
+    uint16_t alt_port_ = 0;         // TURN-over-443 UDP 兼听（0=关闭；测试可用高位端口）
+    uint16_t tcp_port_ = 0;         // DERP 式 TCP/TLS 面（0=关闭；生产 443）
     uint16_t max_proxy_ = 0;
     int      workers_ = 4;
     std::vector<UdpFd> socks_;      // RAII：析构自动关闭
@@ -94,6 +119,12 @@ private:
     std::unordered_map<std::string, UuidEntry> uuid2addr_;      // uuid -> 地址
     std::unordered_map<uint64_t, std::string>  addr2uuid_;      // 地址 -> uuid
     PathShard path_shards_[kPathShards];
+
+    TlsCtx tls_ctx_;
+    bool   tls_enabled_ = false;
+    TcpFd  tcp_listen_;
+    std::mutex tcp_mu_;
+    std::unordered_map<std::string, std::shared_ptr<TcpClient>> uuid2tcp_;
 
     std::atomic<bool> running_{false};
     std::atomic<uint64_t> relay_pkts_{0};

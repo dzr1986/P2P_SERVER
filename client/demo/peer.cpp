@@ -28,7 +28,7 @@ int main(int argc, char** argv) {
     if (argc < 4) {
         fprintf(stderr, "usage: %s <NatServerIP> <NatServerPort> <UUID> [peerUUID] "
                         "[ProxyIP] [ProxyPort] [-s secret] [-k authkey_hex] [-t token_hex] "
-                        "[-relay] [-restart] [-lan|-nolan]\n",
+                        "[-relay] [-tcp PORT] [-tls|-notls] [-restart] [-lan|-nolan]\n",
                 argv[0]);
         return 1;
     }
@@ -40,11 +40,17 @@ int main(int argc, char** argv) {
     bool do_restart = false;
     bool lan_discover = true;
     bool lan_flag = false;
+    uint16_t proxy_tcp_port = 0;
+    bool proxy_tcp_tls = true;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) secret = argv[++i];
         else if (strcmp(argv[i], "-k") == 0 && i + 1 < argc) auth_key_hex = argv[++i];
         else if (strcmp(argv[i], "-t") == 0 && i + 1 < argc) connect_token_hex = argv[++i];
         else if (strcmp(argv[i], "-relay") == 0) force_relay = true;
+        else if (strcmp(argv[i], "-tcp") == 0 && i + 1 < argc)
+            proxy_tcp_port = (uint16_t)atoi(argv[++i]);
+        else if (strcmp(argv[i], "-tls") == 0) proxy_tcp_tls = true;
+        else if (strcmp(argv[i], "-notls") == 0) proxy_tcp_tls = false;
         else if (strcmp(argv[i], "-restart") == 0) do_restart = true;
         else if (strcmp(argv[i], "-nolan") == 0) { lan_discover = false; lan_flag = true; }
         else if (strcmp(argv[i], "-lan") == 0) { lan_discover = true; lan_flag = true; }
@@ -93,6 +99,9 @@ int main(int argc, char** argv) {
     cfg.nat_servers.push_back({nat_ip, nat_port});
     cfg.proxy_servers = proxies;
     cfg.force_relay = force_relay;
+    cfg.proxy_tcp_port = proxy_tcp_port;
+    cfg.proxy_tcp_tls = proxy_tcp_tls;
+    cfg.proxy_tls_insecure = true;
     if (!lan_flag) {
         const char* e = getenv("P2P_DISABLE_LAN");
         if (e && e[0] == '1') lan_discover = false;

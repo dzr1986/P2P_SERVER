@@ -1,6 +1,7 @@
 #include "client/sdk/api/P2PClient.h"
 #include "common/IceSdp.h"
 #include "common/ConnectToken.h"
+#include "common/Packet.h"
 
 #include <cstdio>
 #include <cstring>
@@ -91,6 +92,14 @@ bool P2PClient::start(const Config& cfg) {
 
     proxies_ = cfg.proxy_servers;        // 启动即可用命令行/配置中的中继
     next_relay_reg_ = proxies_.empty() ? 0 : plat_now_ms();
+    derp_registered_.store(false);
+    derp_rbuf_.clear();
+    derp_use_tls_ = cfg.proxy_tcp_tls;
+    if (cfg.proxy_tcp_port != 0) {
+        std::string ip = !cfg.proxy_servers.empty() ? cfg.proxy_servers[0].ip
+                         : (!cfg.nat_servers.empty() ? cfg.nat_servers[0].ip : "");
+        if (!ip.empty()) note_proxy_tcp(ip, cfg.proxy_tcp_port);
+    }
     running_.store(true);
     pending_remote_sdp_.clear();
     lan_cache_.clear();
@@ -118,7 +127,14 @@ void P2PClient::stop() {
         if (sockaddr_from(proxies_[0].ip, proxies_[0].port, to))
             send_proto(MSG_PROXY_UNREGISTER_REQ, &req, sizeof(req), to);
     }
+    if (derp_registered_.load() || derp_fd_.valid()) {
+        ProxyRegReq req;
+        memset(&req, 0, sizeof(req));
+        strncpy(req.uuid, cfg_.uuid.c_str(), MAX_UUID_LEN);
+        derp_send(MSG_PROXY_UNREGISTER_REQ, &req, sizeof(req));
+    }
     if (thread_.joinable()) thread_.join();
+    derp_close();
     sock_.close();
     lan_sock_.close();
     lan_enabled_ = false;
@@ -307,11 +323,17 @@ void P2PClient::worker_loop() {
                 }
             }
         }
+        if (derp_fd_.valid()) {
+            FD_SET(derp_fd_.fd(), &rfds);
+            if (derp_fd_.fd() + 1 > maxfd) maxfd = derp_fd_.fd() + 1;
+        }
         timeval tv; tv.tv_sec = 0; tv.tv_usec = 50000;
         int r = select(maxfd, &rfds, nullptr, nullptr, &tv);
         now = plat_now_ms();
         if (r > 0) {
             std::lock_guard<std::recursive_mutex> lk(mu_);
+            if (derp_fd_.valid() && FD_ISSET(derp_fd_.fd(), &rfds))
+                derp_on_readable();
             if (FD_ISSET(sock_.fd(), &rfds)) {
                 sockaddr_in from;
                 int n = sock_.recv_from(recv_buf_, sizeof(recv_buf_), from);
@@ -410,6 +432,8 @@ void P2PClient::tick_relay(uint64_t now) {
         relay_register();
         next_relay_reg_ = now + cfg_.relay_register_ms;
     }
+    if (!derp_registered_.load() && derp_addr_.port != 0 && !derp_fd_.valid())
+        derp_try_connect();
 }
 
 // 连接状态机（打洞/超时/降级中继；Connected+中继时后台继续打洞以便回切 P2P）
@@ -455,11 +479,13 @@ void P2PClient::tick_conn_punch(Conn& c, uint64_t now) {
 void P2PClient::tick_conn_relay(Conn& c, uint64_t now) {
     // ICE 仍在检查时不要按 6s 拆 agent：juice_destroy 曾与回调抢 mu_ 死锁，
     // 且 IOTC_Connect 等待 15s，过早 close 会让直连永远完不成。
-    if (c.punch.juice && !c.punch.direct_ok && !cfg_.force_relay &&
+    const bool derp_up = derp_registered_.load();
+    // TCP/TLS 已通：立刻走中继出图，ICE 继续在后台（DERP 先通再切）
+    if (c.punch.juice && !c.punch.direct_ok && !cfg_.force_relay && !derp_up &&
         now < c.punch.punch_deadline + cfg_.connect_timeout_ms) {
         return;
     }
-    const bool need_relay = cfg_.force_relay ||
+    const bool need_relay = cfg_.force_relay || derp_up ||
         (c.punch.have_direct && now >= c.punch.punch_deadline && !c.punch.direct_ok);
     if (need_relay) {
         // 打洞超时或强制中继：走中继
@@ -986,6 +1012,12 @@ void P2PClient::on_connect_ack(const uint8_t* p, size_t plen) {
         proxies_ = cfg_.proxy_servers;
         next_relay_reg_ = plat_now_ms();
     }
+    const uint16_t tcp_port = ntohs(ack.proxy_tcp_port);
+    if (tcp_port) {
+        std::string ip = !cands.empty() ? cands[0].ip
+                         : (!proxies_.empty() ? proxies_[0].ip : "");
+        if (!ip.empty()) note_proxy_tcp(ip, tcp_port);
+    }
 }
 
 void P2PClient::on_connect_invite(const uint8_t* p, size_t plen) {
@@ -1031,6 +1063,12 @@ void P2PClient::on_connect_invite(const uint8_t* p, size_t plen) {
     } else if (proxies_.empty() && !cfg_.proxy_servers.empty()) {
         proxies_ = cfg_.proxy_servers;
         next_relay_reg_ = plat_now_ms();
+    }
+    const uint16_t tcp_port = ntohs(inv.proxy_tcp_port);
+    if (tcp_port) {
+        std::string ip = !cands.empty() ? cands[0].ip
+                         : (!proxies_.empty() ? proxies_[0].ip : "");
+        if (!ip.empty()) note_proxy_tcp(ip, tcp_port);
     }
 }
 
@@ -1389,6 +1427,101 @@ void P2PClient::apply_lan_peer(const std::string& uuid, const sockaddr_in& from,
 // ---------------------------------------------------------------------------
 // 中继
 // ---------------------------------------------------------------------------
+void P2PClient::note_proxy_tcp(const std::string& ip, uint16_t port) {
+    if (ip.empty() || port == 0) return;
+    if (derp_addr_.port == 0) {
+        derp_addr_.ip = ip;
+        derp_addr_.port = port;
+    }
+    if (!derp_fd_.valid()) derp_try_connect();
+}
+
+bool P2PClient::derp_try_connect() {
+    if (derp_fd_.valid() || derp_addr_.port == 0 || derp_addr_.ip.empty())
+        return derp_fd_.valid();
+    TcpFd fd;
+    if (!fd.open()) return false;
+    fd.set_nodelay();
+    fd.set_timeout_ms(2000);
+    if (!fd.connect_to(derp_addr_.ip.c_str(), derp_addr_.port)) {
+        fprintf(stderr, "[P2PClient] DERP tcp connect %s:%u failed\n",
+                derp_addr_.ip.c_str(), (unsigned)derp_addr_.port);
+        return false;
+    }
+    if (cfg_.proxy_tcp_tls) {
+        if (!tls_make_client_ctx(derp_tls_ctx_, cfg_.proxy_tls_insecure) ||
+            !derp_tls_.connect(derp_tls_ctx_.ctx, fd.fd())) {
+            fprintf(stderr, "[P2PClient] DERP tls handshake failed\n");
+            return false;
+        }
+        derp_use_tls_ = true;
+    } else {
+        derp_use_tls_ = false;
+    }
+    fd.set_nonblock();
+    derp_fd_ = std::move(fd);
+    derp_rbuf_.clear();
+    fprintf(stderr, "[P2PClient] DERP tcp ready %s:%u tls=%d\n",
+            derp_addr_.ip.c_str(), (unsigned)derp_addr_.port, derp_use_tls_ ? 1 : 0);
+
+    static const uint8_t kProxyAuthKey[] = "p2p-proxy-auth-2024";
+    ProxyRegReq req;
+    memset(&req, 0, sizeof(req));
+    strncpy(req.uuid, cfg_.uuid.c_str(), MAX_UUID_LEN);
+    hmac_sha256(kProxyAuthKey, sizeof(kProxyAuthKey) - 1,
+                reinterpret_cast<const uint8_t*>(cfg_.uuid.data()), cfg_.uuid.size(),
+                req.hmac);
+    derp_send(MSG_PROXY_REGISTER_REQ, &req, sizeof(req));
+    return true;
+}
+
+void P2PClient::derp_close() {
+    derp_registered_.store(false);
+    derp_tls_.close();
+    derp_fd_.close();
+    derp_rbuf_.clear();
+}
+
+bool P2PClient::derp_send(uint8_t msg_id, const void* payload, size_t plen) {
+    if (!derp_fd_.valid()) return false;
+    uint8_t buf[MAX_PKT];
+    const size_t total = build_msg(buf, sizeof(buf), msg_id, payload, plen);
+    if (total == 0) return false;
+    if (derp_use_tls_) return derp_tls_.write(buf, total) == (ssize_t)total;
+    return derp_fd_.send_all(buf, total) == (ssize_t)total;
+}
+
+void P2PClient::derp_on_readable() {
+    if (!derp_fd_.valid()) return;
+    uint8_t tmp[MAX_PKT];
+    ssize_t n = 0;
+    if (derp_use_tls_) n = derp_tls_.read(tmp, sizeof(tmp));
+    else n = derp_fd_.recv_some(tmp, sizeof(tmp));
+    if (n < 0) {
+        fprintf(stderr, "[P2PClient] DERP tcp closed\n");
+        derp_close();
+        return;
+    }
+    if (n == 0) return;
+    derp_rbuf_.insert(derp_rbuf_.end(), tmp, tmp + n);
+    for (;;) {
+        uint8_t msg_id = 0;
+        std::vector<uint8_t> payload;
+        int c = xn_pop_frame(derp_rbuf_, msg_id, payload);
+        if (c == 0) break;
+        if (c < 0) { derp_close(); break; }
+        if (msg_id == MSG_PROXY_REGISTER_RSP) {
+            on_proxy_register_rsp(payload.data(), payload.size());
+            if (!payload.empty() && payload[0] == 0) {
+                derp_registered_.store(true);
+                fprintf(stderr, "[P2PClient] DERP tcp registered\n");
+            }
+        } else if (msg_id == MSG_PROXY_RELAY_DATA) {
+            on_proxy_relay_data(payload.data(), payload.size());
+        }
+    }
+}
+
 void P2PClient::relay_register() {
     if (proxies_.empty()) return;
     // 与 proxy 端共享的注册鉴权密钥（HMAC-SHA256(key, uuid)，防伪造注册）
@@ -1409,7 +1542,7 @@ void P2PClient::relay_register() {
 void P2PClient::send_tunnel_via(Conn& c, const uint8_t* frame, size_t len) {
     uint64_t now = plat_now_ms();
     bool direct_proven = c.punch.direct_ok && c.punch.have_direct;
-    bool relay_ready = c.relay.relay_ok ||
+    bool relay_ready = c.relay.relay_ok || derp_registered_.load() ||
                        (relay_registered_ && !proxies_.empty() &&
                         (cfg_.force_relay || now >= c.punch.punch_deadline));
 
@@ -1447,21 +1580,28 @@ void P2PClient::send_tunnel_via(Conn& c, const uint8_t* frame, size_t len) {
         }
         return;
     }
-    if (relay_ready && relay_registered_ && !proxies_.empty()) {
-        // 中继兜底
-        uint8_t buf[MAX_PKT];
-        size_t need = 8 + sizeof(RelayFrame) + txlen;
-        if (need > sizeof(buf)) return;
-        codec_write_head(buf, MSG_PROXY_RELAY_DATA,
-                         (uint32_t)(sizeof(RelayFrame) + txlen));
-        RelayFrame* rf = (RelayFrame*)(buf + 8);
-        memset(rf, 0, sizeof(RelayFrame));
-        strncpy(rf->src_uuid, cfg_.uuid.c_str(), MAX_UUID_LEN);
-        strncpy(rf->dst_uuid, c.peer_uuid.c_str(), MAX_UUID_LEN);
-        memcpy(buf + 8 + sizeof(RelayFrame), tx, txlen);
-        sockaddr_in to;
-        if (sockaddr_from(proxies_[0].ip, proxies_[0].port, to))
-            sock_.send_to(buf, need, to);
+    if (relay_ready && (derp_registered_.load() ||
+                        (relay_registered_ && !proxies_.empty()))) {
+        uint8_t body[MAX_PKT];
+        if (sizeof(RelayFrame) + txlen > sizeof(body)) return;
+        RelayFrame rf{};
+        strncpy(rf.src_uuid, cfg_.uuid.c_str(), MAX_UUID_LEN);
+        strncpy(rf.dst_uuid, c.peer_uuid.c_str(), MAX_UUID_LEN);
+        memcpy(body, &rf, sizeof(rf));
+        memcpy(body + sizeof(rf), tx, txlen);
+        const size_t blen = sizeof(rf) + txlen;
+        if (derp_registered_.load() && derp_send(MSG_PROXY_RELAY_DATA, body, blen))
+            return;
+        if (relay_registered_ && !proxies_.empty()) {
+            uint8_t buf[MAX_PKT];
+            size_t need = 8 + blen;
+            if (need > sizeof(buf)) return;
+            codec_write_head(buf, MSG_PROXY_RELAY_DATA, (uint32_t)blen);
+            memcpy(buf + 8, body, blen);
+            sockaddr_in to;
+            if (sockaddr_from(proxies_[0].ip, proxies_[0].port, to))
+                sock_.send_to(buf, need, to);
+        }
         return;
     }
 }

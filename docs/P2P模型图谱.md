@@ -140,7 +140,9 @@ TCP/443 连最近 DERP → 立刻有一条可用通路（延迟高、能用）
 - 「先通再优」比「先优再兜底」体验好一个数量级。
 - Tailscale 是 **系统级 WireGuard VPN**；本仓库是 **应用内一条会话**。只学编排。
 
-本仓库已有：UDP Proxy + `AltPort`（443）。**缺的是 TCP/TLS 中继面**。
+本仓库已有：UDP Proxy + `AltPort`（443）+ **TCP/TLS DERP 面**（`TcpPort` / `ProxyTcpPort`）。
+客户端在 CONNECT 后（或 `-tcp`）立刻建 TLS 会话并注册，媒体可马上走中继；
+ICE 并行打洞，`direct_ok` 后 `send_tunnel_via` 切 `juice_send`，再回调 `on_connected(relay=false)`。
 
 ### 4.3 Iroh 模型（应用内嵌 QUIC，不是系统 VPN）
 

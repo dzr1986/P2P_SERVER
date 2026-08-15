@@ -9,6 +9,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <fcntl.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -144,6 +145,15 @@ public:
         return setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0;
     }
 
+    bool bind_any(uint16_t port) {
+        if (fd_ < 0) return false;
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        addr.sin_port = htons(port);
+        return ::bind(fd_, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0;
+    }
+
     bool bind_loopback(uint16_t port) {
         if (fd_ < 0) return false;
         sockaddr_in addr{};
@@ -151,6 +161,22 @@ public:
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         addr.sin_port = htons(port);
         return ::bind(fd_, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == 0;
+    }
+
+    bool set_nonblock() {
+        if (fd_ < 0) return false;
+        int fl = fcntl(fd_, F_GETFL, 0);
+        if (fl < 0) return false;
+        return fcntl(fd_, F_SETFL, fl | O_NONBLOCK) == 0;
+    }
+
+    bool set_timeout_ms(int ms) {
+        if (fd_ < 0) return false;
+        timeval tv{};
+        tv.tv_sec = ms / 1000;
+        tv.tv_usec = (ms % 1000) * 1000;
+        if (setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) return false;
+        return setsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) == 0;
     }
 
     bool listen(int backlog = 16) {

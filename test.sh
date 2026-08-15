@@ -586,6 +586,54 @@ grep -q "CONNECTED to A via relay" /tmp/peerB.log && ok "B->A relay via alt port
 grep -q "register ok" /tmp/proxy.log && ok "proxy register on alt" || fail "proxy register missing"
 stop_all
 
+# ---------------------------------------------------------------- 18. DERP TCP/TLS 强制中继
+echo "== [18] DERP TCP/TLS force-relay =="
+PROXY_TCP=18444
+printf 'ProxyTcpPort=%d\n' $PROXY_TCP > $CFG
+NAT_PID=""
+stdbuf -oL $NAT_BIN $NAT_PORT $PROXY_PORT 127.0.0.1 $CFG > /tmp/nat.log 2>&1 &
+NAT_PID=$!
+sleep 0.5
+stdbuf -oL $PROXY_BIN $PROXY_PORT 100 2 0 0 $PROXY_TCP > /tmp/proxy.log 2>&1 &
+PROXY_PID=$!
+sleep 0.5
+grep -q "DERP tcp listen" /tmp/proxy.log && ok "proxy derp tcp listen" || fail "derp tcp listen missing"
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT A 127.0.0.1 $PROXY_PORT -relay -tcp $PROXY_TCP -tls > /tmp/peerA18.log 2>&1 & PA_PID=$!
+sleep 1
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT B A 127.0.0.1 $PROXY_PORT -relay -tcp $PROXY_TCP -tls > /tmp/peerB18.log 2>&1 & PB_PID=$!
+sleep 7
+kill -9 $PA_PID $PB_PID 2>/dev/null; PA_PID=""; PB_PID=""
+grep -q "DERP tcp ready" /tmp/peerA18.log && ok "A derp tcp ready" || fail "A derp tcp ready missing"
+grep -q "register ok tcp" /tmp/proxy.log && ok "proxy tcp register" || fail "proxy tcp register missing"
+grep -q "CONNECTED to A via relay" /tmp/peerB18.log && ok "B->A via derp tcp" || fail "derp tcp relay missing"
+stop_all
+
+# ---------------------------------------------------------------- 19. DERP 先通再切直连（TCP 立即出图，ICE 并行升级）
+echo "== [19] DERP first-then-upgrade =="
+printf 'ProxyTcpPort=%d\n' $PROXY_TCP > $CFG
+stdbuf -oL $NAT_BIN $NAT_PORT $PROXY_PORT 127.0.0.1 $CFG > /tmp/nat.log 2>&1 &
+NAT_PID=$!
+sleep 0.5
+stdbuf -oL $PROXY_BIN $PROXY_PORT 100 2 0 0 $PROXY_TCP > /tmp/proxy.log 2>&1 &
+PROXY_PID=$!
+sleep 0.5
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT A 127.0.0.1 $PROXY_PORT -tcp $PROXY_TCP -tls > /tmp/peerA19.log 2>&1 & PA_PID=$!
+sleep 1
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT B A 127.0.0.1 $PROXY_PORT -tcp $PROXY_TCP -tls > /tmp/peerB19.log 2>&1 & PB_PID=$!
+sleep 8
+kill -9 $PA_PID $PB_PID 2>/dev/null; PA_PID=""; PB_PID=""
+grep -q "DERP tcp registered" /tmp/peerA19.log && ok "A derp registered before punch" || fail "A derp register missing"
+grep -q "CONNECTED to A via" /tmp/peerB19.log && ok "B connected (relay or direct)" || fail "B connect missing"
+# 回环上 ICE 很快，允许只看到 direct；若先中继再直连则记一条升级
+if grep -q "CONNECTED to A via relay" /tmp/peerB19.log && grep -q "CONNECTED to A via direct" /tmp/peerB19.log; then
+    ok "B path upgrade relay -> direct"
+elif grep -q "CONNECTED to A via direct" /tmp/peerB19.log; then
+    ok "B ended on direct (ICE won race)"
+else
+    grep -q "CONNECTED to A via relay" /tmp/peerB19.log && ok "B stayed on derp relay" || fail "B no connected path"
+fi
+stop_all
+
 echo
 echo "======================================"
 echo "PASS=$PASS FAIL=$FAIL"

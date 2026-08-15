@@ -134,6 +134,7 @@ static void parse_value(CfgData& out, const std::string& key, const std::string&
         {"ProxyRegions",   [](CfgData& c, const std::string& v) { parse_ip_regions(v, c.proxy_regions); }},
         {"WakeServer",     [](CfgData& c, const std::string& v) { c.wake_server = v; }},
         {"ProxyAltPort",   [](CfgData& c, const std::string& v) { set_int_in_range(c.proxy_alt_port, v, 1, 65535); }},
+        {"ProxyTcpPort",   [](CfgData& c, const std::string& v) { set_int_in_range(c.proxy_tcp_port, v, 1, 65535); }},
     };
     auto it = kSetters.find(key);
     if (it != kSetters.end()) it->second(out, val);

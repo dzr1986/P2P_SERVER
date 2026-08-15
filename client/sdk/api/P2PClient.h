@@ -17,7 +17,9 @@
 
 #include "common/Crypto.h"
 #include "common/Handshake.h"
+#include "common/Net.h"
 #include "common/ProtoDef.h"
+#include "common/TlsIo.h"
 #include "common/Uid.h"
 #include "client/sdk/plat/Plat.h"
 #include "client/sdk/proto/Codec.h"
@@ -54,6 +56,9 @@ public:
         bool force_relay = false;              // 跳过打洞，强制走中继（测试/合规场景）
         std::string connect_token_hex;         // 默认连线 Token（104 hex；也可在 connect() 传入）
         bool lan_discover = true;              // 局域网组播发现（对标 TUTK LAN Search）
+        uint16_t proxy_tcp_port = 0;           // DERP TCP/TLS 面（0=不连；可由 CONNECT 填）
+        bool proxy_tcp_tls = true;             // TCP 面默认 TLS（对标 DERP HTTPS/443）
+        bool proxy_tls_insecure = true;        // 自签/内网不校验证书；生产应 false
     };
 
     struct LanPeer {
@@ -105,6 +110,7 @@ public:
     uint64_t tunnel_enc_tx() const { return tunnel_enc_tx_.load(); }
     uint64_t tunnel_enc_rx() const { return tunnel_enc_rx_.load(); }
     uint64_t tunnel_fs_ok() const { return tunnel_fs_ok_.load(); }
+    bool derp_ready() const { return derp_registered_.load(); }
 
 private:
     // 打洞子状态机（负责直连路径探测与超时）
@@ -240,6 +246,11 @@ private:
     void relay_register();
     void relay_unregister_all();
     void send_tunnel_via(Conn& c, const uint8_t* frame, size_t len);
+    bool derp_try_connect();
+    void derp_close();
+    bool derp_send(uint8_t msg_id, const void* payload, size_t plen);
+    void derp_on_readable();
+    void note_proxy_tcp(const std::string& ip, uint16_t port);
     void on_tunnel_frame(const uint8_t* frame, size_t len,
                          const std::string& peer_uuid);
     Session* session_for(const std::string& peer);
@@ -329,6 +340,15 @@ private:
     std::vector<ServerAddr> proxies_;
     uint64_t next_relay_reg_ = 0;
     bool     relay_registered_ = false;
+
+    // DERP TCP/TLS：先通再切直连
+    ServerAddr derp_addr_;
+    TcpFd      derp_fd_;
+    TlsCtx     derp_tls_ctx_;
+    TlsConn    derp_tls_;
+    bool       derp_use_tls_ = false;
+    std::atomic<bool> derp_registered_{false};
+    std::vector<uint8_t> derp_rbuf_;
 
     // 会话与连接
     std::recursive_mutex mu_;

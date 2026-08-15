@@ -6,7 +6,7 @@
 CC      := g++
 CFLAGS  := -O2 -Wall -Wextra -std=c++17 -pthread -DJUICE_STATIC -I. -Icommon -Iserver/natserver/src -Iserver/proxyserver/src -Ithird_party/libjuice/include
 LIBJUICE := third_party/libjuice/build/libjuice.a
-LDFLAGS := $(LIBJUICE) -pthread
+LDFLAGS := $(LIBJUICE) -pthread -lssl -lcrypto
 
 BIN_NAT   := server/natserver/bin/p2p_natserver
 BIN_PROXY := server/proxyserver/bin/p2p_proxy
@@ -26,7 +26,7 @@ BIN_TWCCTEST := tests/bin/twcc_test
 BIN_IOTCDEMO := client/bin/iotc_demo
 BIN_WAKE    := server/wakeserver/bin/p2p_wakeserver
 
-COMMON_SRCS := common/Crypto.cpp common/Uid.cpp common/X25519.cpp common/ConnectToken.cpp
+COMMON_SRCS := common/Crypto.cpp common/Uid.cpp common/X25519.cpp common/ConnectToken.cpp common/TlsIo.cpp
 IOTC_SRCS := client/sdk/iotc/IOTC.cpp \
              client/sdk/iotc/AVAPIs.cpp \
              client/sdk/iotc/RDTAPIs.cpp \

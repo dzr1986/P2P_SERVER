@@ -14,7 +14,9 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <sys/socket.h>
 #include <unistd.h>
+#include <vector>
 
 namespace p2p {
 
@@ -31,9 +33,10 @@ constexpr size_t  kProxyAuthKeyLen = sizeof(kProxyAuthKey) - 1;
 } // namespace
 
 int P2PProxy::init(uint16_t port, uint16_t max_proxy, int workers,
-                   uint64_t quota_bytes, uint16_t alt_port) {
+                   uint64_t quota_bytes, uint16_t alt_port, uint16_t tcp_port) {
     port_ = port;
     alt_port_ = (alt_port && alt_port != port) ? alt_port : 0;
+    tcp_port_ = (tcp_port && tcp_port != port) ? tcp_port : 0;
     max_proxy_ = max_proxy;
     workers_ = (workers >= 1 && workers <= 64) ? workers : 4;
     quota_bytes_ = quota_bytes;
@@ -54,8 +57,30 @@ int P2PProxy::init(uint16_t port, uint16_t max_proxy, int workers,
         }
     }
 
-    LOGI("Proxy", "start proxy server with Port[%d] altPort[%d] maxProxy[%d] workers[%d] quota=%llu",
-         port_, alt_port_, max_proxy_, workers_, (unsigned long long)quota_bytes_);
+    if (tcp_port_) {
+        if (!tcp_listen_.open() || !tcp_listen_.set_reuse() ||
+            !tcp_listen_.bind_any(tcp_port_) || !tcp_listen_.listen(128)) {
+            perror("[Proxy] tcp listen");
+            return -1;
+        }
+        tcp_listen_.set_nodelay();
+        const char* cert = getenv("P2P_PROXY_TLS_CERT");
+        const char* key  = getenv("P2P_PROXY_TLS_KEY");
+        // 未给证书也启 TLS（临时自签），可用 P2P_PROXY_TLS=0 退回明文 TCP
+        const char* tls_off = getenv("P2P_PROXY_TLS");
+        const bool want_tls = !(tls_off && tls_off[0] == '0');
+        if (want_tls) {
+            if (!tls_make_server_ctx(tls_ctx_, cert, key)) {
+                LOGW("Proxy", "TLS ctx failed, DERP tcp will be plaintext");
+            } else {
+                tls_enabled_ = true;
+            }
+        }
+    }
+
+    LOGI("Proxy", "start proxy server with Port[%d] altPort[%d] tcpPort[%d] tls=%d maxProxy[%d] workers[%d] quota=%llu",
+         port_, alt_port_, tcp_port_, tls_enabled_ ? 1 : 0, max_proxy_, workers_,
+         (unsigned long long)quota_bytes_);
     return 0;
 }
 
@@ -264,22 +289,29 @@ void P2PProxy::on_relay_data(uint8_t* p, size_t plen, const sockaddr_in& from) {
 
     sockaddr_in dst{};
     uint64_t dst_key = 0;
+    bool have_udp_dst = false;
     {
         std::shared_lock<std::shared_mutex> lk(reg_mu_);
-        auto dit = uuid2addr_.find(frame->dst_uuid);
-        if (dit == uuid2addr_.end()) {
-            LOGD("Proxy", "relay drop, dst[%s] not registered", frame->dst_uuid);
-            return;
-        }
-        // 源端校验：未注册或来源地址不符（伪造）一律丢弃
         auto sit = uuid2addr_.find(frame->src_uuid);
         if (sit == uuid2addr_.end() || !sockaddr_eq(sit->second.addr, from)) {
             LOGD("Proxy", "relay drop, src[%s] not registered or spoofed",
                  frame->src_uuid);
             return;
         }
-        dst = dit->second.addr;
-        dst_key = addr_to_u64(dst);
+        auto dit = uuid2addr_.find(frame->dst_uuid);
+        if (dit != uuid2addr_.end()) {
+            dst = dit->second.addr;
+            dst_key = addr_to_u64(dst);
+            have_udp_dst = true;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> tlk(tcp_mu_);
+        const bool have_tcp_dst = uuid2tcp_.count(frame->dst_uuid) > 0;
+        if (!have_udp_dst && !have_tcp_dst) {
+            LOGD("Proxy", "relay drop, dst[%s] not registered", frame->dst_uuid);
+            return;
+        }
     }
     if (quota_bytes_ > 0) {
         std::lock_guard<std::mutex> qlk(quota_mu_);
@@ -293,12 +325,18 @@ void P2PProxy::on_relay_data(uint8_t* p, size_t plen, const sockaddr_in& from) {
         }
         used += plen;
     }
-    const uint64_t src_key = addr_to_u64(from);
-    touch_path(src_key, dst_key, dst, frame->dst_uuid);
-    touch_path(dst_key, src_key, from, frame->src_uuid);
-
-    // 原样转发整包（RelayFrame + TunnelFrame + 负载），已在锁外
-    send(dst, MSG_PROXY_RELAY_DATA, p, plen);
+    if (have_udp_dst) {
+        const uint64_t src_key = addr_to_u64(from);
+        touch_path(src_key, dst_key, dst, frame->dst_uuid);
+        touch_path(dst_key, src_key, from, frame->src_uuid);
+    }
+    // 优先 TCP/TLS（DERP）；没有再走 UDP
+    if (forward_relay(frame->dst_uuid, p, plen, frame->src_uuid)) {
+        relay_pkts_.fetch_add(1);
+        relay_bytes_.fetch_add(plen);
+        return;
+    }
+    if (have_udp_dst) send(dst, MSG_PROXY_RELAY_DATA, p, plen);
     relay_pkts_.fetch_add(1);
     relay_bytes_.fetch_add(plen);
 }
@@ -322,6 +360,204 @@ void P2PProxy::on_punch_helper(uint8_t* p, size_t plen, const sockaddr_in& from)
         }
     }
     send(from, MSG_PROXY_REGISTER_RSP, &rsp, sizeof(rsp));
+}
+
+int P2PProxy::send_tcp(TcpClient& cli, uint8_t msg_id,
+                       const void* payload, size_t plen) {
+    uint8_t buf[MAX_PKT];
+    const size_t total = build_msg(buf, sizeof(buf), msg_id, payload, plen);
+    if (total == 0 || !cli.alive.load()) return -1;
+    if (cli.use_tls) {
+        return (int)cli.tls.write(buf, total);
+    }
+    return (int)cli.fd.send_all(buf, total);
+}
+
+bool P2PProxy::forward_relay(const std::string& dst_uuid, uint8_t* p, size_t plen,
+                             const std::string& /*src_uuid*/) {
+    std::shared_ptr<TcpClient> dst;
+    {
+        std::lock_guard<std::mutex> lk(tcp_mu_);
+        auto it = uuid2tcp_.find(dst_uuid);
+        if (it == uuid2tcp_.end() || !it->second || !it->second->alive.load())
+            return false;
+        dst = it->second;
+    }
+    return send_tcp(*dst, MSG_PROXY_RELAY_DATA, p, plen) > 0;
+}
+
+void P2PProxy::do_register_tcp(const std::string& uuid, std::shared_ptr<TcpClient> cli,
+                              const uint8_t* hmac) {
+    ProxyRegRsp rsp{};
+    auto reply = [&] { send_tcp(*cli, MSG_PROXY_REGISTER_RSP, &rsp, sizeof(rsp)); };
+
+    if (uuid.empty() || !cli) {
+        rsp.result = 2;
+        reply();
+        return;
+    }
+    if (hmac == nullptr) {
+        rsp.result = 3;
+        reply();
+        return;
+    }
+    uint8_t expect[32];
+    hmac_sha256(kProxyAuthKey, kProxyAuthKeyLen,
+                reinterpret_cast<const uint8_t*>(uuid.data()), uuid.size(), expect);
+    if (!p2p_const_time_eq(expect, hmac, 32)) {
+        rsp.result = 3;
+        reply();
+        LOGW("Proxy", "tcp register rejected, bad hmac uuid[%s]", uuid.c_str());
+        return;
+    }
+
+    {
+        std::unique_lock<std::shared_mutex> lk(reg_mu_);
+        if (uuid2addr_.size() >= max_proxy_ &&
+            uuid2addr_.find(uuid) == uuid2addr_.end()) {
+            std::lock_guard<std::mutex> tlk(tcp_mu_);
+            if (uuid2tcp_.find(uuid) == uuid2tcp_.end()) {
+                rsp.result = 1;
+                reply();
+                LOGW("Proxy", "full, discard tcp registration uuid[%s]", uuid.c_str());
+                return;
+            }
+        }
+    }
+
+    cli->uuid = uuid;
+    {
+        std::lock_guard<std::mutex> tlk(tcp_mu_);
+        uuid2tcp_[uuid] = cli;
+    }
+    rsp.result = 0;
+    inet_ntop(AF_INET, &cli->peer.sin_addr, rsp.pub_ip, MAX_IP_LEN);
+    rsp.pub_port = cli->peer.sin_port;
+    reply();
+    LOGI("Proxy", "register ok tcp uuid[%s] addr[%s] tls=%d",
+         uuid.c_str(), addr_to_str(cli->peer).c_str(), cli->use_tls ? 1 : 0);
+}
+
+void P2PProxy::handle_tcp(std::shared_ptr<TcpClient> cli, uint8_t msg_id,
+                         uint8_t* p, size_t plen) {
+    if (!cli) return;
+    switch (msg_id) {
+    case MSG_PROXY_REGISTER_REQ: {
+        PacketReader r(p, plen);
+        ProxyRegReq req{};
+        if (!r.read_struct(req)) return;
+        do_register_tcp(wire_str(req.uuid), cli, req.hmac);
+        break;
+    }
+    case MSG_PROXY_UNREGISTER_REQ: {
+        PacketReader r(p, plen);
+        ProxyRegReq req{};
+        if (!r.read_struct(req)) return;
+        const std::string uuid = wire_str(req.uuid);
+        std::lock_guard<std::mutex> tlk(tcp_mu_);
+        auto it = uuid2tcp_.find(uuid);
+        if (it != uuid2tcp_.end() && it->second == cli) uuid2tcp_.erase(it);
+        LOGI("Proxy", "unregister tcp uuid[%s]", uuid.c_str());
+        break;
+    }
+    case MSG_PROXY_RELAY_DATA: {
+        if (plen < sizeof(RelayFrame)) return;
+        auto* frame = reinterpret_cast<RelayFrame*>(p);
+        frame->src_uuid[MAX_UUID_LEN] = 0;
+        frame->dst_uuid[MAX_UUID_LEN] = 0;
+        if (cli->uuid.empty() || cli->uuid != frame->src_uuid) {
+            LOGD("Proxy", "tcp relay drop, src mismatch sess[%s] frame[%s]",
+                 cli->uuid.c_str(), frame->src_uuid);
+            return;
+        }
+        if (quota_bytes_ > 0) {
+            std::lock_guard<std::mutex> qlk(quota_mu_);
+            uint64_t& used = quota_used_[frame->src_uuid];
+            if (used >= quota_bytes_) {
+                relay_drop_quota_.fetch_add(1);
+                return;
+            }
+            used += plen;
+        }
+        if (forward_relay(frame->dst_uuid, p, plen, frame->src_uuid)) {
+            relay_pkts_.fetch_add(1);
+            relay_bytes_.fetch_add(plen);
+            return;
+        }
+        sockaddr_in dst{};
+        bool have_udp = false;
+        {
+            std::shared_lock<std::shared_mutex> lk(reg_mu_);
+            auto dit = uuid2addr_.find(frame->dst_uuid);
+            if (dit != uuid2addr_.end()) {
+                dst = dit->second.addr;
+                have_udp = true;
+            }
+        }
+        if (have_udp) send(dst, MSG_PROXY_RELAY_DATA, p, plen);
+        relay_pkts_.fetch_add(1);
+        relay_bytes_.fetch_add(plen);
+        break;
+    }
+    case MSG_PROXY_PUNCH_HELPER:
+        on_punch_helper(p, plen, cli->peer);
+        break;
+    default:
+        break;
+    }
+}
+
+void P2PProxy::tcp_session_loop(std::shared_ptr<TcpClient> cli) {
+    if (!cli) return;
+    uint8_t tmp[MAX_PKT];
+    while (running_.load() && cli->alive.load()) {
+        ssize_t n = 0;
+        if (cli->use_tls) n = cli->tls.read(tmp, sizeof(tmp));
+        else n = cli->fd.recv_some(tmp, sizeof(tmp));
+        if (n <= 0) break;
+        cli->rbuf.insert(cli->rbuf.end(), tmp, tmp + n);
+        for (;;) {
+            uint8_t msg_id = 0;
+            std::vector<uint8_t> payload;
+            int c = xn_pop_frame(cli->rbuf, msg_id, payload);
+            if (c == 0) break;
+            if (c < 0) { cli->alive.store(false); break; }
+            handle_tcp(cli, msg_id, payload.data(), payload.size());
+        }
+    }
+    cli->alive.store(false);
+    if (!cli->uuid.empty()) {
+        std::lock_guard<std::mutex> tlk(tcp_mu_);
+        auto it = uuid2tcp_.find(cli->uuid);
+        if (it != uuid2tcp_.end() && it->second == cli) uuid2tcp_.erase(it);
+    }
+    LOGI("Proxy", "DERP tcp session closed uuid[%s]", cli->uuid.c_str());
+}
+
+void P2PProxy::tcp_accept_loop() {
+    LOGI("Proxy", "DERP tcp listen %d tls=%d", tcp_port_, tls_enabled_ ? 1 : 0);
+    while (running_.load()) {
+        TcpFd nfd = tcp_listen_.accept_one();
+        if (!nfd.valid()) {
+            if (!running_.load()) break;
+            continue;
+        }
+        nfd.set_nodelay();
+        auto cli = std::make_shared<TcpClient>();
+        sockaddr_in peer{};
+        socklen_t sl = sizeof(peer);
+        getpeername(nfd.fd(), reinterpret_cast<sockaddr*>(&peer), &sl);
+        cli->peer = peer;
+        if (tls_enabled_) {
+            if (!cli->tls.accept(tls_ctx_.ctx, nfd.fd())) {
+                LOGW("Proxy", "DERP tls accept failed from [%s]", addr_to_str(peer).c_str());
+                continue;
+            }
+            cli->use_tls = true;
+        }
+        cli->fd = std::move(nfd);
+        std::thread(&P2PProxy::tcp_session_loop, this, cli).detach();
+    }
 }
 
 void P2PProxy::on_avail_query(const sockaddr_in& from) {
@@ -406,11 +642,16 @@ void P2PProxy::run() {
     for (auto& s : socks_)
         recv_threads.emplace_back(&P2PProxy::recv_loop, this, std::cref(s));
     std::thread timer(&P2PProxy::timer_loop, this);
+    std::thread tcp_thr;
+    if (tcp_port_ && tcp_listen_.valid())
+        tcp_thr = std::thread(&P2PProxy::tcp_accept_loop, this);
 
-    LOGI("Proxy", "running with %zu recv sockets", socks_.size());
+    LOGI("Proxy", "running with %zu recv sockets tcp=%d", socks_.size(), tcp_port_);
     while (running_) sleep(1);
 
     running_ = false;
+    if (tcp_listen_.valid()) tcp_listen_.shutdown_rw();
+    if (tcp_thr.joinable()) tcp_thr.join();
     timer.join();
     // 唤醒阻塞的 recvfrom：向每个 socket 发一个探测包
     sockaddr_in self{};
@@ -436,7 +677,7 @@ void P2PProxy::run() {
 // 独立 main：生成单例并启动
 int main(int argc, char** argv) {
     if (argc < 3) {
-        printf("Usage: %s <Port> <MaxProxyNum> [Workers] [QuotaMB] [AltPort]\n", argv[0]);
+        printf("Usage: %s <Port> <MaxProxyNum> [Workers] [QuotaMB] [AltPort] [TcpPort]\n", argv[0]);
         return 1;
     }
     int workers = argc >= 4 ? atoi(argv[3]) : 4;
@@ -448,8 +689,11 @@ int main(int argc, char** argv) {
     uint16_t alt = 0;
     if (argc >= 6) alt = (uint16_t)atoi(argv[5]);
     else if (const char* e = getenv("P2P_PROXY_ALT_PORT")) alt = (uint16_t)atoi(e);
+    uint16_t tcp = 0;
+    if (argc >= 7) tcp = (uint16_t)atoi(argv[6]);
+    else if (const char* e = getenv("P2P_PROXY_TCP_PORT")) tcp = (uint16_t)atoi(e);
     static p2p::P2PProxy proxy;
-    if (proxy.init((uint16_t)atoi(argv[1]), (uint16_t)atoi(argv[2]), workers, quota, alt) != 0)
+    if (proxy.init((uint16_t)atoi(argv[1]), (uint16_t)atoi(argv[2]), workers, quota, alt, tcp) != 0)
         return 1;
     proxy.run();
     return 0;

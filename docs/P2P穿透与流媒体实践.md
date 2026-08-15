@@ -167,6 +167,7 @@ NatServer `ProxyAltPort` 把兼听端口作为额外 CONNECT 候选；客户端�
 
 1. **ICE restart**：已落地（重建 agent + `juice_prev` 扛媒体；见 §2.4）
 2. **TURN-over-443**：已落地（Proxy 兼听 + `ProxyAltPort` 宣告；见 §2.5）
+2b. **DERP TCP/TLS**：已落地（`TcpPort` / `ProxyTcpPort`，先通再切；`test.sh` [18][19]）
 3. **Kalman + TWCC**：已落地（`TwccEstimate.h` + `TT_TWCC`；`avSuggestedBitrateKbps` 混合）
 4. **真实 `tc netem` 1080p**：卡顿率 / P99 延迟验收（P3，CI 无 netem 权限时仍用用户态切片丢失）
 5. **Token nonce 防重放**：`TokenNonceCache` 已记已用 nonce，过期前重放返回 `CONNECT_BAD_TOKEN`

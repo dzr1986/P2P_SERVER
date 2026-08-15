@@ -170,8 +170,8 @@ Client                         NatServer                       Device
   │    跨服：本机无 dst 时 ICE_SDP 经 sync 对端转发（防同步竞态）     │
   │    换网：restart_ice 重建 agent，旧路径扛媒体直到新 ICE 就绪     │
   │ 4. 超时/对称NAT → Relay 注册(HMAC，已有) → RELAY_DATA 中继      │
-  │    企业网：Proxy 兼听 UDP/443（ProxyAltPort），客户端注册全部候选 │
-  │    P8 目标：TCP/TLS 443 中继面（DERP 风格），先通再切直连         │
+  │    企业网：Proxy 兼听 UDP/443（ProxyAltPort）+ TCP/TLS（ProxyTcpPort）│
+  │    DERP：TCP/TLS 先注册出图，ICE 并行，direct_ok 无缝切直连         │
   │ 5. 中继期间打洞持续后台重试，成功即无缝升级回 P2P                │
 ```
 
@@ -351,15 +351,17 @@ libp2p DCUtR ~70%、TUTK 号称 ~92%。本仓库有中心信令，**应显著高
      识别 **NAT4E（端口递增/递减）** 则走预测，不先扫端口。
   3. **生日打洞（可选，默认关）**：EIM×EDM 时 N≤256、有间隔、失败即停，防 IDS
      （EasyTier 有 `--disable-sym-hole-punching` 同类开关）。EDM×EDM 直接中继。
-  4. **DERP 风格 TCP/TLS 443 中继面**：UDP/443（已有 AltPort）挡不住只放行 HTTPS 的企业墙
-     （Nebula 的已知弱点）。先经 TCP/443 通，并行打洞，成功无缝切直连。学编排，不做成系统 VPN。
+  4. **DERP 风格 TCP/TLS 443 中继面**【核心已落地】：`p2p_proxy … [TcpPort]` 兼听；
+     有证书走 PEM，否则临时自签（`P2P_PROXY_TLS=0` 可关 TLS）。客户端 `-tcp PORT -tls`，
+     或 CONNECT 携带 `proxy_tcp_port`。先经 TCP/TLS 通，并行打洞，`direct_ok` 切直连。
+     `force_relay` 仍不打洞。现网 443 + 正式证书待补。
   5. **TCP 打洞（可选）**：与 UDP ICE 并行；DCUtR 显示同步好时 TCP≈UDP。企业网仍以 TLS 中继兜底。
   6. **IPv6 优先**：有公网 v6 走 host；NAT66 当 NAT 统计，不假设「有 v6 就能通」。
   7. **NAT 矩阵**：docker + iptables 模拟全锥/端口受限/对称 × 两端；对照 DCUtR 分类型数字。
   8. **懒打洞（可选，对齐 P7）**：无预览流量不后台打洞（EasyTier `--lazy-p2p`），省电 IPC 用。
 - 依赖：P0 ICE/Proxy 已就绪；不改 `force_relay`「不打洞」语义（测试 [2]/[11] 依赖）。
 - 交付物：PCP/UPnP 客户端探测与续约、二维 NAT + NAT4E 字段、可选生日/TCP 打洞开关、
-  Proxy TCP/TLS 面雏形、v4/v6 直连率指标、矩阵脚本。
+  v4/v6 直连率指标、矩阵脚本。TCP/TLS DERP 面已落地（见上）。
 - 验收：锥型组合直连 ≥85%；企业「只放 443/TCP」场景能在 <8s 出图（经 TLS 中继）；
   生日扫描默认关，打开时有端口上限与熔断。
 - **未含（本阶段不做）**：libp2p DHT、Iroh/QUIC 重写底座、系统级 VPN。
@@ -420,7 +422,7 @@ P0(done) ─► P1(done) ─┬─► P5(done) ─► P6(done*) ─► 现网灰
 | 风险 | 影响 | 对策 |
 |------|------|------|
 | 国内 CGNAT / 对称 NAT 占比高 | 中继带宽成本上升；「≥85% 直连」被误解为含对称对 | 锥型与对称分母分开统计；中继按 ~30% 容量规划；P8 PCP/UPnP 优先于生日扫描；EDM×EDM 直接中继 |
-| 企业防火墙只放行 TCP/443 | 纯 UDP ICE 黑屏 | P8 TCP/TLS 443 中继面（DERP 编排：先通再切）；已有 UDP/443 不够 |
+| 企业防火墙只放行 TCP/443 | 纯 UDP ICE 黑屏 | DERP TCP/TLS 面已落地（先通再切）；现网绑 443 + 正式证书待补 |
 | 多看客走 mesh P2P | 设备 CPU/上行爆、卡顿 | P9 旁路网关；设备只出一份码流 |
 | 生日打洞触发 IDS/运营商风控 | 设备被封端口或投诉 | 默认关；N 上限、间隔、熔断；不可作为默认路径 |
 | 嵌入式设备资源受限（RAM<1MB） | SDK 集成受阻 | 裁剪版 SDK（去 ICE/减缓冲），`Plat.h` 隔离已就绪 |

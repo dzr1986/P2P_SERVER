@@ -172,6 +172,7 @@ struct ConnectAck {
     uint8_t  dst_nattype;     // 目标 NAT 类型
     uint8_t  proxy_count;     // 可用代理候选数（0~3）
     ProxyCandidate proxies[3];
+    uint16_t proxy_tcp_port;  // 网络序：DERP TCP/TLS 面（0=无）
 };
 
 // 通知目标方：携带发起方公网/私网地址、NAT 类型与多组兜底代理
@@ -184,6 +185,7 @@ struct ConnectInvite {
     uint8_t  src_nattype;     // 发起方 NAT 类型
     uint8_t  proxy_count;     // 可用代理候选数
     ProxyCandidate proxies[3];
+    uint16_t proxy_tcp_port;  // 网络序：DERP TCP/TLS 面（0=无）
 };
 
 // 设备列表查询

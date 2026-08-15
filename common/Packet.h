@@ -16,6 +16,7 @@
 #include <cstring>
 #include <string>
 #include <type_traits>
+#include <vector>
 
 namespace p2p {
 
@@ -101,6 +102,24 @@ inline std::string wire_str(const char (&field)[N]) {
 
 // 构造完整 XN 报文（MsgHead + payload）到 buf，返回总长；容量不足返回 0
 // 统一服务端各处手写 MsgHead 的模式（客户端 SDK 用 proto/Codec.h 等价实现）
+// 从 TCP 流缓冲弹出一帧完整 XN 报文。
+// 返回：>0 已消费字节并填好 msg_id/payload；0 数据不够；-1 非法帧（调用方应断开）。
+inline int xn_pop_frame(std::vector<uint8_t>& buf, uint8_t& msg_id,
+                        std::vector<uint8_t>& payload) {
+    if (buf.size() < sizeof(MsgHead)) return 0;
+    MsgHead h{};
+    memcpy(&h, buf.data(), sizeof(MsgHead));
+    if (ntohs(h.magic) != NAT_MAGIC || h.version != PROTO_VER) return -1;
+    const uint32_t plen = ntohl(h.length);
+    if (plen > (uint32_t)MAX_PKT) return -1;
+    const size_t need = sizeof(MsgHead) + plen;
+    if (buf.size() < need) return 0;
+    msg_id = h.msg_id;
+    payload.assign(buf.begin() + sizeof(MsgHead), buf.begin() + (ptrdiff_t)need);
+    buf.erase(buf.begin(), buf.begin() + (ptrdiff_t)need);
+    return (int)need;
+}
+
 inline size_t build_msg(uint8_t* buf, size_t cap, uint8_t msg_id,
                         const void* payload, size_t plen) {
     PacketWriter w(buf, cap);

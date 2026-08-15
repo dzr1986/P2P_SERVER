@@ -14,14 +14,14 @@
 CC      := g++
 CFLAGS  := -O2 -Wall -Wextra -std=c++17 -pthread -DJUICE_STATIC
 CFLAGS  += -I. -I.. -I../common -I../third_party/libjuice/include
-LDFLAGS := ../third_party/libjuice/build/libjuice.a -pthread
+LDFLAGS := ../third_party/libjuice/build/libjuice.a -pthread -lssl -lcrypto
 
 BIN_PEER := bin/peer
 
 PEER_SRCS := demo/peer.cpp \
              sdk/api/P2PClient.cpp
 
-COMMON_SRCS := ../common/Crypto.cpp
+COMMON_SRCS := ../common/Crypto.cpp ../common/TlsIo.cpp
 
 HEADERS := sdk/api/P2PClient.h \
            sdk/plat/Plat.h \

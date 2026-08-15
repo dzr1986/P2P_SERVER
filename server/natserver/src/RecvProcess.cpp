@@ -227,6 +227,8 @@ void NatServer::on_msg_connect_req(const uint8_t* p, size_t plen,
     ack.dst_lan_port = dst.lan_addr.sin_port;
     ack.dst_nattype = dst.nattype;
     pick_proxy(ack.proxies, ack.proxy_count, uid_region(req.src_uuid));
+    if (cfg && cfg->proxy_tcp_port)
+        ack.proxy_tcp_port = htons(cfg->proxy_tcp_port);
     send_msg(from, MSG_CONNECT_ACK, &ack, sizeof(ack));
     LOGI("NatServer", "ack===>to initiator [%s], dst pub[%s:%d] nattype[%d] proxy[%d]",
          req.src_uuid, ack.dst_pub_ip, ntohs(ack.dst_pub_port), dst.nattype,
@@ -249,6 +251,8 @@ void NatServer::on_msg_connect_req(const uint8_t* p, size_t plen,
         inv.src_nattype = NAT_UNKNOWN;
     }
     pick_proxy(inv.proxies, inv.proxy_count, uid_region(req.dst_uuid));
+    if (cfg && cfg->proxy_tcp_port)
+        inv.proxy_tcp_port = htons(cfg->proxy_tcp_port);
     send_msg(dst.pub_addr, MSG_CONNECT_INVITE, &inv, sizeof(inv));
     LOGI("NatServer", "invite===>to dst UUID[%s] port:[%d] nattype[%d]",
          req.dst_uuid, ntohs(dst.pub_addr.sin_port), inv.src_nattype);
