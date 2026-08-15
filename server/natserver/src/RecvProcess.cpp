@@ -5,6 +5,7 @@
 #include "Crypto.h"
 #include "Log.h"
 #include "Packet.h"
+#include "Uid.h"
 #include "Util.h"
 
 #include <arpa/inet.h>
@@ -92,8 +93,11 @@ void NatServer::on_msg_heartbeat_enc(const uint8_t* p, size_t plen,
     uint8_t body[MAX_PKT];
     memcpy(body, p + 33 + 8, cipher_len);
     if (!cfg->auth_secret.empty()) {
-        p2p_stream_xor((const uint8_t*)cfg->auth_secret.data(),
-                       cfg->auth_secret.size(), uuid, iv, body, cipher_len);
+        // P1：流密钥用每 UID 派生密钥（与 send_heartbeat_rsp 对称）
+        uint8_t uid_key[AUTH_KEY_LEN];
+        uid_derive_auth_key((const uint8_t*)cfg->auth_secret.data(),
+                            cfg->auth_secret.size(), uuid, uid_key);
+        p2p_stream_xor(uid_key, AUTH_KEY_LEN, uuid, iv, body, cipher_len);
     }
     // 还原完整 UuidReq（解密后整段即 UuidReq；外层明文 uuid 覆盖防路由篡改）
     UuidReq req{};
@@ -348,6 +352,7 @@ void NatServer::on_msg_auth_challenge(const uint8_t* p, size_t plen,
     rsp.nonce_ttl = htons(30);
 
     if (abuse_.is_uuid_blacklisted(req.uuid)) { rsp.result = 1; }
+    else if (cfg->uid_strict && !uid_valid(req.uuid)) { rsp.result = 2; }   // P1：UID 格式门
     else if (cfg->enable_license && !license_.allowed(req.uuid)) { rsp.result = 2; }
     else if (!issue_auth_nonce(req.uuid, rsp.nonce)) { rsp.result = 3; }
     else { rsp.result = 0; }

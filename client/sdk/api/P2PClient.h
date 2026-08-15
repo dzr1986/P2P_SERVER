@@ -17,6 +17,7 @@
 
 #include "common/Crypto.h"
 #include "common/ProtoDef.h"
+#include "common/Uid.h"
 #include "client/sdk/plat/Plat.h"
 #include "client/sdk/proto/Codec.h"
 #include "client/sdk/transport/NatDetect.h"
@@ -34,8 +35,10 @@ public:
     };
 
     struct Config {
-        std::string uuid;                      // 本机 UUID（<=32 字符）
-        std::string secret;                    // 鉴权密钥（空=不鉴权）
+        std::string uuid;                      // 本机 UUID（<=32 字符；UidStrict 服务端须为 20 字符结构化 UID）
+        std::string secret;                    // 主密钥（运维/演示用；空=见 auth_key_hex）
+        std::string auth_key_hex;              // 每 UID 独立 AuthKey（64 hex，uidgen 签发；
+                                               //   设备侧推荐只烧录此项，不知晓主密钥）
         std::vector<ServerAddr> nat_servers;   // NAT 服务器（取首个）
         std::vector<ServerAddr> proxy_servers; // 兜底代理（可空，用 ack/invite 的）
         uint32_t heartbeat_ms       = 20000;
@@ -227,6 +230,8 @@ private:
     BackOff heartbeat_backoff_;      // #18 心跳失败指数退避
 
     // 鉴权状态
+    bool   has_cred_ = false;        // 持有鉴权凭据（secret 或 auth_key 任一）
+    uint8_t auth_key_[32] = {0};     // 每 UID 独立 AuthKey（P1：配置或从 secret 派生）
     bool   authed_ = true;
     bool   heartbeat_enc_ = false;   // 鉴权后心跳走加密通道（MSG_HEARTBEAT_REQ_ENC）
     bool   auth_denied_ = false;     // 永久性拒绝（白名单/黑名单/MAC），不再重试

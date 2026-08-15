@@ -206,12 +206,23 @@ Client                         NatServer                       Device
 连接底座与两轮优化：打洞/中继/鉴权/加密/跨服同步/ICE/自适应 RTO/快速重传/拥塞窗口/FEC/LinkStats。
 端到端测试 44 项全过（`test.sh`）。
 
-### P1 UID 体系与设备身份
+### P1 UID 体系与设备身份【已落地（核心部分）】
 - 范围：20B 结构化 UID 编解码与 CRC 校验；`tools/uidgen` 签发工具；
   每 UID AuthKey 报到鉴权（PeerManage/LicenseMgr 扩展）；连线 Token 验签；
   设备/客户端角色区分（dev_type 已有字段，语义落地）。
 - 交付物：uidgen 工具、协议文档更新、服务端验签实现、单测。
 - 验收：伪造 UID/过期 Token/错误 AuthKey 全部被拒；旧 uuid 兼容并存；`test.sh` 增加鉴权用例。
+- **落地情况**：
+  - `common/Uid.h/.cpp`：20 字符 Base32 UID（PREFIX4+REGION1+RANDOM12+CRC3，SHA-256 截断 CRC）、
+    `uid_generate/uid_valid/uid_derive_auth_key`（域分隔 HMAC 派生）
+  - `tools/uidgen`：批量签发，输出 `UID AuthKey_hex`；主密钥即服务端 `AuthSecret`
+  - 服务端：`UidStrict=1` 时心跳/挑战双门拒绝非结构化 UID；登录验签与加密心跳流密钥
+    全部改为**每 UID 派生密钥**（单设备泄露不影响全网，设备间无法互解心跳）
+  - 客户端 SDK：`Config.auth_key_hex`（设备侧只烧录 AuthKey，不知晓主密钥）；
+    demo `-k` 选项；旧 `-s` 主密钥模式自动派生，兼容并存
+  - 验证：`tests/uid_test.cpp` 17 项断言；`test.sh` [9] 端到端（合法 UID -k 鉴权成功、
+    伪造 UID 双门被拒）；全量 **PASS=50 FAIL=0**
+  - 未含（后续补）：连线 Token 验签（挂 CONNECT 门）、dev_type 角色语义细化
 
 ### P2 会话与通道 API 层（SDK 核心重构）
 - 范围：SID 句柄表（上限 128）与 IOTC 通道（0~31）生命周期管理；

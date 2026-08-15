@@ -47,8 +47,20 @@ bool P2PClient::start(const Config& cfg) {
         if (jagent) juice_destroy(jagent);
     }
 
+    // P1：鉴权凭据 = 每 UID AuthKey（优先取配置的 hex，否则从主密钥派生）
+    memset(auth_key_, 0, sizeof(auth_key_));
+    has_cred_ = false;
+    if (!cfg.auth_key_hex.empty()) {
+        if (!auth_key_from_hex(cfg.auth_key_hex, auth_key_)) return false;
+        has_cred_ = true;
+    } else if (!secret_.empty()) {
+        uid_derive_auth_key((const uint8_t*)secret_.data(), secret_.size(),
+                            cfg_.uuid.c_str(), auth_key_);
+        has_cred_ = true;
+    }
+
     nat_type_ = NAT_UNKNOWN;
-    authed_ = secret_.empty();       // 无密钥视为免鉴权
+    authed_ = !has_cred_;            // 无凭据视为免鉴权
     heartbeat_enc_ = false;
     auth_denied_ = false;
     auth_inflight_ = false;
@@ -148,7 +160,7 @@ bool P2PClient::link_stats(const std::string& peer_uuid, Session::LinkStats& out
 void P2PClient::worker_loop() {
     uint64_t now = plat_now_ms();
     next_heartbeat_ms_ = now + 100;
-    if (!secret_.empty()) {
+    if (has_cred_) {
         do_auth_challenge();          // 优先完成鉴权再注册
         next_heartbeat_ms_ = now + 500;
     }
@@ -233,7 +245,7 @@ void P2PClient::tick_heartbeat(uint64_t now) {
 
 // 鉴权状态机（challenge 重试）
 void P2PClient::tick_auth(uint64_t now) {
-    if (!authed_ && !secret_.empty() && !auth_inflight_ && !auth_denied_ &&
+    if (!authed_ && has_cred_ && !auth_inflight_ && !auth_denied_ &&
         now >= next_auth_try_) {
         do_auth_challenge();
     }
@@ -424,7 +436,8 @@ void P2PClient::do_heartbeat() {
         }
         memcpy(payload + 33, iv, sizeof(iv));
         memcpy(payload + 41, &req, sizeof(UuidReq));
-        p2p_stream_xor((const uint8_t*)secret_.data(), secret_.size(),
+        // P1：流密钥用每 UID AuthKey（与服务端派生对称）
+        p2p_stream_xor(auth_key_, sizeof(auth_key_),
                        (const char*)payload, iv, payload + 41, sizeof(UuidReq));
         send_proto(MSG_HEARTBEAT_REQ_ENC, payload, sizeof(payload));
         return;
@@ -439,8 +452,7 @@ void P2PClient::on_heartbeat_rsp_enc(const uint8_t* p, size_t plen) {
     size_t clen = plen - 41;
     uint8_t body[sizeof(ExtInfoRsp)];
     memcpy(body, p + 41, clen);
-    p2p_stream_xor((const uint8_t*)secret_.data(), secret_.size(),
-                   (const char*)p, iv, body, clen);
+    p2p_stream_xor(auth_key_, sizeof(auth_key_), (const char*)p, iv, body, clen);
     on_heartbeat_rsp(body, clen);
 }
 
@@ -448,7 +460,7 @@ void P2PClient::on_heartbeat_rsp(const uint8_t* p, size_t plen) {
     if (plen < 2) return;
     uint8_t result = p[0];
     if (result == 1) {                    // 需鉴权
-        if (secret_.empty()) {
+        if (!has_cred_) {
             if (on_error) on_error("server requires auth but no secret configured");
         } else if (!auth_inflight_ && !auth_denied_) {
             do_auth_challenge();
@@ -466,7 +478,7 @@ void P2PClient::on_heartbeat_rsp(const uint8_t* p, size_t plen) {
     pub_port_ = (uint16_t)((p[17] << 8) | p[18]);
     alt_port_ = (uint16_t)((p[37] << 8) | p[38]);   // nat_sock2_port @37
 
-    if (!authed_ && !secret_.empty() && !auth_inflight_ && !auth_denied_) {
+    if (!authed_ && has_cred_ && !auth_inflight_ && !auth_denied_) {
         do_auth_challenge();               // 服务器未强制鉴权，但仍补做
         return;
     }
@@ -514,7 +526,8 @@ void P2PClient::on_auth_challenge_rsp(const uint8_t* p, size_t plen) {
 }
 
 void P2PClient::do_auth_login() {
-    // mac = HMAC-SHA256(secret, uuid(33B, 补零) || nonce(16B))
+    // P1：mac = HMAC-SHA256(AuthKey, uuid(33B, 补零) || nonce(16B))
+    //   AuthKey 为每 UID 独立密钥（uidgen 签发或由主密钥派生）
     uint8_t msg[16 + MAX_UUID_LEN + 1];
     memset(msg, 0, sizeof(msg));
     memcpy(msg, cfg_.uuid.c_str(), cfg_.uuid.size());
@@ -524,8 +537,7 @@ void P2PClient::do_auth_login() {
     memset(&req, 0, sizeof(req));
     strncpy(req.uuid, cfg_.uuid.c_str(), MAX_UUID_LEN);
     memcpy(req.nonce, auth_nonce_, 16);
-    hmac_sha256((const uint8_t*)secret_.data(), secret_.size(),
-                msg, sizeof(msg), req.mac);
+    hmac_sha256(auth_key_, sizeof(auth_key_), msg, sizeof(msg), req.mac);
     send_proto(MSG_AUTH_LOGIN_REQ, &req, sizeof(req));
 }
 
@@ -633,7 +645,7 @@ void P2PClient::on_connect_ack(const uint8_t* p, size_t plen) {
     std::string peer(ack.dst_uuid, strnlen(ack.dst_uuid, MAX_UUID_LEN));
 
     if (ack.result == 3) {                 // 需鉴权
-        if (!secret_.empty() && !auth_inflight_ && !auth_denied_) do_auth_challenge();
+        if (has_cred_ && !auth_inflight_ && !auth_denied_) do_auth_challenge();
         return;
     }
     auto& c = conns_[peer];

@@ -58,6 +58,7 @@ echo "build ok"
 echo "== [0] unit tests =="
 ./tests/bin/crypto_test > /tmp/crypto_test.log 2>&1 && ok "crypto unit tests" || fail "crypto unit tests"
 ./tests/bin/session_test > /tmp/session_test.log 2>&1 && ok "session unit tests" || fail "session unit tests"
+./tests/bin/uid_test > /tmp/uid_test.log 2>&1 && ok "uid unit tests" || fail "uid unit tests"
 
 # ---------------------------------------------------------------- 1. 直连
 echo "== [1] direct P2P (no auth) =="
@@ -258,6 +259,29 @@ python3 /tmp/p2p_forge.py $NAT_PORT2 HACKER1
 sleep 1
 grep -q "sync entry MAC invalid" /tmp/nat2.log && ok "forged sync entry rejected" || fail "forged sync entry not rejected"
 stop_all
+
+# ---------------------------------------------------------------- 9. UID 体系（UidStrict + 每 UID AuthKey）
+echo "== [9] structured UID (UidStrict=1 + per-UID AuthKey) =="
+MASTER=master-secret-2026
+UIDLINE=$(./tools/bin/uidgen CAMA C 1 $MASTER)
+DEV_UID=$(echo "$UIDLINE" | awk '{print $1}')
+DEV_KEY=$(echo "$UIDLINE" | awk '{print $2}')
+[ ${#DEV_UID} -eq 20 ] && [ ${#DEV_KEY} -eq 64 ] && ok "uidgen output (uid=$DEV_UID)" || fail "uidgen output malformed"
+
+printf 'NatServer1=127.0.0.1\nProxy1_1=127.0.0.1\nAuthSecret=%s\nEnableAuth=1\nUidStrict=1\n' $MASTER > $CFG
+start_servers "$CFG"
+# 合法 UID + uidgen 签发的 AuthKey（设备侧不知晓主密钥，仅持 -k）
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT "$DEV_UID" -k "$DEV_KEY" > /tmp/peerU.log 2>&1 & PA_PID=$!
+sleep 2
+# 非法 UID（非结构化）应被拒绝
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT BADUID -s $MASTER > /tmp/peerV.log 2>&1 & PB_PID=$!
+sleep 2
+kill -9 $PA_PID $PB_PID 2>/dev/null; PA_PID=""; PB_PID=""
+grep -q "AUTH_LOGIN uuid\[$DEV_UID\] OK" /tmp/nat.log && ok "valid UID auth via per-UID key" || fail "valid UID auth missing"
+grep -q "ready pub=" /tmp/peerU.log && ok "valid UID registered" || fail "valid UID not registered"
+grep -qE "uuid not in whitelist|rejected" /tmp/peerV.log && ok "invalid UID rejected" || fail "invalid UID not rejected"
+if grep -q "AUTH_LOGIN uuid\[BADUID\] OK" /tmp/nat.log; then fail "invalid UID wrongly authed"; else ok "invalid UID never authed"; fi
+stop_servers
 
 echo
 echo "======================================"

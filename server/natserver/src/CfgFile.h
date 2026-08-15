@@ -29,6 +29,7 @@ namespace p2p {
 //   AdminSecret=xxx                 管理接口（黑名单增删）授权密钥（空=关闭管理接口）
 //   BlacklistFile=<path>            IP/UUID 黑名单持久化文件
 //   BlacklistPass=<pass>            黑名单文件加密口令（空=明文存取）
+//   UidStrict=0|1                   仅接受结构化 UID（20 字符 Base32+CRC，见 common/Uid.h）
 // ---------------------------------------------------------------------------
 struct CfgData {
     std::vector<std::string> nat_ips;
@@ -36,6 +37,7 @@ struct CfgData {
 
     std::string auth_secret;
     bool        enable_auth = false;
+    bool        uid_strict = false;     // 仅接受结构化 UID（P1：UID 体系）
     bool        enable_license = false;
     std::vector<std::string> allowed_uuids;
     std::string license_file;

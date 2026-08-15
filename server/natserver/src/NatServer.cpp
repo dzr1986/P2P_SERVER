@@ -5,6 +5,7 @@
 #include "Crypto.h"
 #include "Log.h"
 #include "Packet.h"
+#include "Uid.h"
 #include "Util.h"
 
 #include <arpa/inet.h>
@@ -239,14 +240,17 @@ bool NatServer::verify_auth_login(const std::string& uuid, const uint8_t nonce[1
     }
     if (!p2p_const_time_eq(n.data(), nonce, 16)) return false;
 
-    // expected = HMAC-SHA256(secret, uuid || nonce)
+    // P1：每 UID 独立密钥（AuthKey = HMAC(master, uid)），单设备泄露不影响全网
+    // expected = HMAC-SHA256(AuthKey, uuid || nonce)
+    uint8_t uid_key[AUTH_KEY_LEN];
+    uid_derive_auth_key((const uint8_t*)cfg->auth_secret.data(),
+                        cfg->auth_secret.size(), uuid.c_str(), uid_key);
     uint8_t msg[16 + MAX_UUID_LEN + 1];
     memset(msg, 0, sizeof(msg));
     memcpy(msg, uuid.c_str(), uuid.size());
     memcpy(msg + MAX_UUID_LEN + 1, nonce, 16);
     uint8_t expect[32];
-    hmac_sha256((const uint8_t*)cfg->auth_secret.data(), cfg->auth_secret.size(),
-                msg, 16 + MAX_UUID_LEN + 1, expect);
+    hmac_sha256(uid_key, AUTH_KEY_LEN, msg, 16 + MAX_UUID_LEN + 1, expect);
 
     if (!p2p_const_time_eq(expect, mac, 32)) return false;
 
@@ -271,7 +275,11 @@ void NatServer::send_heartbeat_rsp(const sockaddr_in& to, const char* uuid,
     memcpy(buf + 41, &rsp, sizeof(rsp));
     auto cfg = cfg_;
     if (!cfg->auth_secret.empty()) {
-        p2p_stream_xor((const uint8_t*)cfg->auth_secret.data(), cfg->auth_secret.size(),
+        // P1：流密钥用每 UID 派生密钥，设备间无法互解心跳
+        uint8_t uid_key[AUTH_KEY_LEN];
+        uid_derive_auth_key((const uint8_t*)cfg->auth_secret.data(),
+                            cfg->auth_secret.size(), uuid, uid_key);
+        p2p_stream_xor(uid_key, AUTH_KEY_LEN,
                        (const char*)buf, enc_iv, buf + 41, sizeof(rsp));
     }
     send_msg(to, MSG_HEARTBEAT_RSP_ENC, buf, sizeof(buf));
@@ -285,6 +293,13 @@ void NatServer::handle_heartbeat(const UuidReq& req, const std::string& extinfo,
     memset(&rsp, 0, sizeof(rsp));
     rsp.nat_sock2_port = htons(natcheck_.alt_port());
 
+    // P1：严格 UID 模式下拒绝非结构化 UID（格式/CRC 校验）
+    if (cfg->uid_strict && !uid_valid(req.uuid)) {
+        rsp.result = 2;
+        send_heartbeat_rsp(from, req.uuid, rsp, enc, enc_iv);
+        LOGW("NatServer", "heartbeat rejected, invalid UID=[%s]", req.uuid);
+        return;
+    }
     // 鉴权/黑名单/白名单门
     if (cfg->auth_enabled() && !peers_.authed(req.uuid)) {
         rsp.result = 1;   // 需鉴权
