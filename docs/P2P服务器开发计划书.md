@@ -185,7 +185,7 @@ Client                         NatServer                       Device
 | 层 | 现状 | 计划 |
 |----|------|------|
 | 报到鉴权 | 全局 secret 挑战应答、常量时间比较 | 每 UID 独立 AuthKey；失败限速与封禁（AntiAbuse 已有） |
-| 连线授权 | 无 | 连线 Token（有效期+nonce 防重放） |
+| 连线授权 | `EnableConnectToken` + `tokengen` | 已落地（可复用至过期；nonce 防重放表未做） |
 | 数据加密 | AEAD(AES-256-CTR+HMAC)、密钥自 PSK 派生 | X25519 ECDH 握手实现前向保密，AEAD 复用现有实现；预留 DTLS 选项 |
 | 服务器间 | 同步 HMAC 签名+时间戳防重放（已有） | 无大改 |
 | 中继 | 注册 HMAC + 源地址校验（已有） | 中继流量按 UID 计量，配额超限限速 |
@@ -222,7 +222,11 @@ Client                         NatServer                       Device
     demo `-k` 选项；旧 `-s` 主密钥模式自动派生，兼容并存
   - 验证：`tests/uid_test.cpp` 17 项断言；`test.sh` [9] 端到端（合法 UID -k 鉴权成功、
     伪造 UID 双门被拒）；全量 **PASS=50 FAIL=0**
-  - 未含（后续补）：连线 Token 验签（挂 CONNECT 门）、dev_type 角色语义细化
+  - 连线 Token：`common/ConnectToken.*` + `tools/tokengen`；
+    `EnableConnectToken=1` 时 CONNECT 必须尾随 Token（HMAC(dst AuthKey, src‖dst‖expire‖nonce)）；
+    过期/错 src/错 MAC 返回 `CONNECT_BAD_TOKEN`；旧客户端不带 Token 在开关关闭时兼容
+  - 验证：`tests/token_test.cpp`；`test.sh` [14]
+  - 未含：dev_type 角色语义细化
 
 ### P2 会话与通道 API 层（SDK 核心重构）【已落地】
 - 范围：SID 句柄表（上限 128）与 IOTC 通道（0~31）生命周期管理；

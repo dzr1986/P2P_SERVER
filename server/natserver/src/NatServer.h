@@ -141,6 +141,8 @@ private:
     void collect_proxy_avail(const sockaddr_in& from, const ProxyAvailRsp& rsp);
     void mark_proxy_stale();
     void notify_wake(const char* uuid);
+    bool verify_connect_token(const char* src_uuid, const char* dst_uuid,
+                              const uint8_t* trailer, size_t tlen) const;
     void pick_proxy(ProxyCandidate out[3], uint8_t& count, char prefer_region = 0);
     std::string status_json() const;
     std::string status_metrics() const;

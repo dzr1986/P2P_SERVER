@@ -41,6 +41,7 @@ struct IotcCtx {
     std::string proxy_ip;
     uint16_t proxy_port = 0;
     bool force_relay = false;
+    std::string connect_token_hex;
     P2PClient client;
     SessionSlot sess[IOTC_MAX_SESSIONS];
     std::unordered_map<std::string, int> peer2sid;
@@ -152,6 +153,13 @@ void IOTC_ForceRelay(int enable) {
     g->force_relay = (enable != 0);
 }
 
+int IOTC_SetConnectToken(const char* token_hex) {
+    if (!g) return IOTC_ER_NotInitialized;
+    std::lock_guard<std::mutex> lk(g->mu);
+    g->connect_token_hex = token_hex ? token_hex : "";
+    return IOTC_ER_NoERROR;
+}
+
 int IOTC_Login(const char* uid, const char* secret, const char* auth_key_hex,
                int timeout_ms) {
     if (!g) return IOTC_ER_NotInitialized;
@@ -194,7 +202,12 @@ int IOTC_Connect_ByUID(const char* peer_uid, int timeout_ms) {
             if (sid < 0) return sid;
         }
     }
-    g->client.connect(peer_uid);   // 锁外调用（见文件头锁序约定）
+    std::string token;
+    {
+        std::lock_guard<std::mutex> lk(g->mu);
+        token = g->connect_token_hex;
+    }
+    g->client.connect(peer_uid, token);   // 锁外调用（见文件头锁序约定）
 
     std::unique_lock<std::mutex> lk(g->mu);
     bool ok = g->cv.wait_for(lk, std::chrono::milliseconds(timeout_ms),

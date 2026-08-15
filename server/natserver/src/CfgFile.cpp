@@ -109,6 +109,7 @@ static void parse_value(CfgData& out, const std::string& key, const std::string&
         {"AuthSecret",     [](CfgData& c, const std::string& v) { c.auth_secret = v; }},
         {"EnableAuth",     [](CfgData& c, const std::string& v) { c.enable_auth = to_bool(v); }},
         {"UidStrict",      [](CfgData& c, const std::string& v) { c.uid_strict = to_bool(v); }},
+        {"EnableConnectToken", [](CfgData& c, const std::string& v) { c.enable_connect_token = to_bool(v); }},
         {"EnableLicense",  [](CfgData& c, const std::string& v) { c.enable_license = to_bool(v); }},
         {"LicenseFile",    [](CfgData& c, const std::string& v) { c.license_file = v; }},
         {"LicensePass",    [](CfgData& c, const std::string& v) { c.license_pass = v; }},

@@ -15,12 +15,14 @@ BIN_CRYPTOTEST := tests/bin/crypto_test
 BIN_SESSIONTEST := tests/bin/session_test
 BIN_UIDTEST := tests/bin/uid_test
 BIN_UIDGEN  := tools/bin/uidgen
+BIN_TOKENGEN := tools/bin/tokengen
+BIN_TOKENTEST := tests/bin/token_test
 BIN_AVTEST  := tests/bin/av_frame_test
 BIN_SCHEDTEST := tests/bin/sched_test
 BIN_IOTCDEMO := client/bin/iotc_demo
 BIN_WAKE    := server/wakeserver/bin/p2p_wakeserver
 
-COMMON_SRCS := common/Crypto.cpp common/Uid.cpp common/X25519.cpp
+COMMON_SRCS := common/Crypto.cpp common/Uid.cpp common/X25519.cpp common/ConnectToken.cpp
 IOTC_SRCS := client/sdk/iotc/IOTC.cpp \
              client/sdk/iotc/AVAPIs.cpp \
              client/sdk/iotc/RDTAPIs.cpp \
@@ -41,7 +43,7 @@ PROXY_SRCS := server/proxyserver/src/P2PProxy.cpp
 PEER_SRCS  := client/demo/peer.cpp \
               client/sdk/api/P2PClient.cpp
 
-all: $(LIBJUICE) $(BIN_NAT) $(BIN_PROXY) $(BIN_PEER) $(BIN_CRYPTOTEST) $(BIN_SESSIONTEST) $(BIN_UIDTEST) $(BIN_UIDGEN) $(BIN_AVTEST) $(BIN_SCHEDTEST) $(BIN_IOTCDEMO) $(BIN_WAKE)
+all: $(LIBJUICE) $(BIN_NAT) $(BIN_PROXY) $(BIN_PEER) $(BIN_CRYPTOTEST) $(BIN_SESSIONTEST) $(BIN_UIDTEST) $(BIN_UIDGEN) $(BIN_TOKENGEN) $(BIN_TOKENTEST) $(BIN_AVTEST) $(BIN_SCHEDTEST) $(BIN_IOTCDEMO) $(BIN_WAKE)
 
 $(LIBJUICE):
 	cmake -B third_party/libjuice/build -S third_party/libjuice -DCMAKE_BUILD_TYPE=Release
@@ -75,6 +77,14 @@ $(BIN_UIDTEST): tests/uid_test.cpp $(COMMON_SRCS) common/Uid.h $(LIBJUICE)
 $(BIN_UIDGEN): tools/uidgen/uidgen.cpp $(COMMON_SRCS) common/Uid.h $(LIBJUICE)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tools/uidgen/uidgen.cpp $(COMMON_SRCS) $(LDFLAGS)
+
+$(BIN_TOKENGEN): tools/tokengen/tokengen.cpp $(COMMON_SRCS) common/ConnectToken.h $(LIBJUICE)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -o $@ tools/tokengen/tokengen.cpp $(COMMON_SRCS) $(LDFLAGS)
+
+$(BIN_TOKENTEST): tests/token_test.cpp $(COMMON_SRCS) common/ConnectToken.h $(LIBJUICE)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -o $@ tests/token_test.cpp $(COMMON_SRCS) $(LDFLAGS)
 
 $(BIN_AVTEST): tests/av_frame_test.cpp client/sdk/iotc/AvCodec.h client/sdk/iotc/TunnelCodec.h
 	@mkdir -p $(dir $@)

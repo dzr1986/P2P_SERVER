@@ -140,10 +140,18 @@ struct ExtInfoRsp {
     uint16_t nat_sock2_port;  // 网络序：备用探测端口（NAT 检测用）
 };
 
-// 连接请求
+// 连接请求（可选尾随 ConnectToken，EnableConnectToken=1 时必带）
 struct ConnectReq {
     char src_uuid[MAX_UUID_LEN + 1];
     char dst_uuid[MAX_UUID_LEN + 1];
+};
+
+// 连线 Token（挂在 ConnectReq 之后）：授权 src 连接 dst
+//   mac = HMAC-SHA256(AuthKey_dst, "P2P-CONN-TOKEN:" || dst || src || expire || nonce)
+struct ConnectToken {
+    uint32_t expire;          // unix 秒，网络序
+    uint8_t  nonce[16];
+    uint8_t  mac[32];
 };
 
 // 应答发起方：携带目标公网/私网地址、NAT 类型与多组兜底代理
@@ -417,9 +425,11 @@ struct WakeResult {
 
 // 结果码
 enum ConnectResult : uint8_t {
-    CONNECT_OK        = 0,
-    CONNECT_OFFLINE   = 1,
-    CONNECT_NOT_FOUND = 2,
+    CONNECT_OK         = 0,
+    CONNECT_OFFLINE    = 1,
+    CONNECT_NOT_FOUND  = 2,
+    CONNECT_NEED_AUTH  = 3,   // 发起方尚未完成 AUTH_LOGIN
+    CONNECT_BAD_TOKEN  = 4,   // 连线 Token 缺失/过期/MAC 错误
 };
 
 enum AuthResult : uint8_t {

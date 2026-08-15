@@ -35,6 +35,7 @@ namespace p2p {
 //   NatRegions=ip:R,ip:R            NAT 入口区域标注（缺省继承 Region）
 //   ProxyRegions=ip:R,ip:R          Proxy 入口区域标注（缺省继承 Region）
 //   WakeServer=ip:port              低功耗唤醒服务（CONNECT 目标离线时触发 POKE）
+//   EnableConnectToken=0|1          CONNECT 必须携带连线 Token（需 AuthSecret）
 // ---------------------------------------------------------------------------
 struct CfgData {
     std::vector<std::string> nat_ips;
@@ -46,6 +47,7 @@ struct CfgData {
     std::string auth_secret;
     bool        enable_auth = false;
     bool        uid_strict = false;     // 仅接受结构化 UID（P1：UID 体系）
+    bool        enable_connect_token = false;  // CONNECT 必须出示连线 Token
     bool        enable_license = false;
     std::vector<std::string> allowed_uuids;
     std::string license_file;

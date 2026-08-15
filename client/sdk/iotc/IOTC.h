@@ -51,6 +51,8 @@ int  IOTC_Login(const char* uid, const char* secret, const char* auth_key_hex,
 // 可选：在 Login 前设置中继与强制中继（P4 中继验收 / 弱网兜底）
 int  IOTC_SetProxy(const char* proxy_ip, uint16_t proxy_port);
 void IOTC_ForceRelay(int enable);
+// 下次 IOTC_Connect_ByUID 出示的连线 Token（104 hex；NULL/空串=不带）
+int  IOTC_SetConnectToken(const char* token_hex);
 
 // 客户端：连接目标 UID，阻塞直至路径就绪（直连或中继），返回 SID(>=0) 或错误码
 int  IOTC_Connect_ByUID(const char* peer_uid, int timeout_ms);

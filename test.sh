@@ -11,6 +11,7 @@ PROXY_BIN=./server/proxyserver/bin/p2p_proxy
 PEER_BIN=./client/bin/peer
 IOTC_BIN=./client/bin/iotc_demo
 WAKE_BIN=./server/wakeserver/bin/p2p_wakeserver
+TOKENGEN=./tools/bin/tokengen
 CFG=/tmp/p2p_auth_test.cfg
 
 PASS=0
@@ -61,6 +62,7 @@ echo "== [0] unit tests =="
 ./tests/bin/crypto_test > /tmp/crypto_test.log 2>&1 && ok "crypto unit tests" || fail "crypto unit tests"
 ./tests/bin/session_test > /tmp/session_test.log 2>&1 && ok "session unit tests" || fail "session unit tests"
 ./tests/bin/uid_test > /tmp/uid_test.log 2>&1 && ok "uid unit tests" || fail "uid unit tests"
+./tests/bin/token_test > /tmp/token_test.log 2>&1 && ok "connect token unit tests" || fail "connect token unit tests"
 ./tests/bin/av_frame_test > /tmp/av_frame_test.log 2>&1 && ok "av/tunnel codec unit tests" || fail "av/tunnel codec unit tests"
 ./tests/bin/sched_test > /tmp/sched_test.log 2>&1 && ok "region scheduler unit tests" || fail "region scheduler unit tests"
 
@@ -453,6 +455,44 @@ grep -q "wake trigger uuid\[SLEEPDEV\]" /tmp/nat.log && ok "nat notify wakeserve
 grep -q "TRIGGER uuid\[SLEEPDEV\]" /tmp/wake.log && ok "wakeserver got nat trigger" || fail "wake nat trigger missing"
 stop_servers
 kill -9 $WAKE_PID 2>/dev/null; WAKE_PID=""
+
+# ---------------------------------------------------------------- 14. 连线 Token（EnableConnectToken）
+echo "== [14] connect token (EnableConnectToken=1) =="
+MASTER=master-secret-2026
+DEVLINE=$(./tools/bin/uidgen CAMA C 1 $MASTER)
+CLILINE=$(./tools/bin/uidgen CAMA C 1 $MASTER)
+DEV_UID=$(echo "$DEVLINE" | awk '{print $1}')
+DEV_KEY=$(echo "$DEVLINE" | awk '{print $2}')
+CLI_UID=$(echo "$CLILINE" | awk '{print $1}')
+CLI_KEY=$(echo "$CLILINE" | awk '{print $2}')
+TOK=$($TOKENGEN "$DEV_UID" "$CLI_UID" 300 $MASTER)
+EXPT=$($TOKENGEN "$DEV_UID" "$CLI_UID" 0 $MASTER)
+OTH=$(./tools/bin/uidgen CAMA A 1 $MASTER | awk '{print $1}')
+WRONGT=$($TOKENGEN "$DEV_UID" "$OTH" 300 $MASTER)
+[ ${#TOK} -eq 104 ] && ok "tokengen output (104 hex)" || fail "tokengen malformed ($TOK)"
+
+printf 'NatServer1=127.0.0.1\nProxy1_1=127.0.0.1\nAuthSecret=%s\nEnableAuth=1\nUidStrict=1\nEnableConnectToken=1\n' $MASTER > $CFG
+start_servers "$CFG"
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT "$DEV_UID" -k "$DEV_KEY" > /tmp/peerTokDev.log 2>&1 & PA_PID=$!
+sleep 2
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT "$CLI_UID" "$DEV_UID" -k "$CLI_KEY" > /tmp/peerTokNo.log 2>&1 & PB_PID=$!
+sleep 3
+kill -9 $PB_PID 2>/dev/null; PB_PID=""
+grep -q "bad or expired connect token" /tmp/peerTokNo.log && ok "missing token rejected" || fail "missing token not rejected"
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT "$CLI_UID" "$DEV_UID" -k "$CLI_KEY" -t "$EXPT" > /tmp/peerTokExp.log 2>&1 & PB_PID=$!
+sleep 3
+kill -9 $PB_PID 2>/dev/null; PB_PID=""
+grep -q "bad or expired connect token" /tmp/peerTokExp.log && ok "expired token rejected" || fail "expired token not rejected"
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT "$CLI_UID" "$DEV_UID" -k "$CLI_KEY" -t "$WRONGT" > /tmp/peerTokBad.log 2>&1 & PB_PID=$!
+sleep 3
+kill -9 $PB_PID 2>/dev/null; PB_PID=""
+grep -q "bad or expired connect token" /tmp/peerTokBad.log && ok "wrong-src token rejected" || fail "wrong-src token not rejected"
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT "$CLI_UID" "$DEV_UID" -k "$CLI_KEY" -t "$TOK" > /tmp/peerTokOk.log 2>&1 & PB_PID=$!
+sleep 6
+kill -9 $PA_PID $PB_PID 2>/dev/null; PA_PID=""; PB_PID=""
+grep -q "CONNECTED to $DEV_UID via direct" /tmp/peerTokOk.log && ok "valid token CONNECT" || fail "valid token connect missing"
+grep -q "CONNECT token rejected" /tmp/nat.log && ok "server logged token rejects" || fail "server token reject log missing"
+stop_servers
 
 echo
 echo "======================================"

@@ -26,17 +26,19 @@ static const char* nattype_str(uint8_t t) {
 int main(int argc, char** argv) {
     if (argc < 4) {
         fprintf(stderr, "usage: %s <NatServerIP> <NatServerPort> <UUID> [peerUUID] "
-                        "[ProxyIP] [ProxyPort] [-s secret] [-k authkey_hex] [-relay]\n",
+                        "[ProxyIP] [ProxyPort] [-s secret] [-k authkey_hex] [-t token_hex] [-relay]\n",
                 argv[0]);
         return 1;
     }
     std::vector<std::string> pos;      // 位置参数
     std::string secret;
     std::string auth_key_hex;          // 每 UID AuthKey（uidgen 签发，设备侧凭据）
+    std::string connect_token_hex;     // 连线 Token（tokengen 签发，EnableConnectToken 时必带）
     bool force_relay = false;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-s") == 0 && i + 1 < argc) secret = argv[++i];
         else if (strcmp(argv[i], "-k") == 0 && i + 1 < argc) auth_key_hex = argv[++i];
+        else if (strcmp(argv[i], "-t") == 0 && i + 1 < argc) connect_token_hex = argv[++i];
         else if (strcmp(argv[i], "-relay") == 0) force_relay = true;
         else pos.push_back(argv[i]);
     }
@@ -79,6 +81,7 @@ int main(int argc, char** argv) {
     cfg.uuid = uuid;
     cfg.secret = secret;
     cfg.auth_key_hex = auth_key_hex;
+    cfg.connect_token_hex = connect_token_hex;
     cfg.nat_servers.push_back({nat_ip, nat_port});
     cfg.proxy_servers = proxies;
     cfg.force_relay = force_relay;

@@ -52,6 +52,7 @@ public:
         bool nat_detect_enabled = true;
         bool auto_relay = true;                // 打洞失败自动降级中继
         bool force_relay = false;              // 跳过打洞，强制走中继（测试/合规场景）
+        std::string connect_token_hex;         // 默认连线 Token（104 hex；也可在 connect() 传入）
     };
 
     // ---- 事件回调（在工作线程内触发，回调中勿阻塞/重入 stop） ----
@@ -71,7 +72,8 @@ public:
     void stop();
 
     // 连接对端（异步：回调 on_connected 表示路径就绪）
-    void connect(const std::string& peer_uuid);
+    // token_hex 非空则覆盖 Config.connect_token_hex（EnableConnectToken 服务端必带）
+    void connect(const std::string& peer_uuid, const std::string& token_hex = {});
     void disconnect(const std::string& peer_uuid);
 
     // 发送（reliable=true 走可靠通道；false 直接不可靠投递）
@@ -129,6 +131,7 @@ private:
         RelayState relay;
         ConnState state = ConnState::Idle;
         bool via_relay = false;         // Connected 时的路径类型（true=中继）
+        std::string connect_token_hex;  // 本连接出示的连线 Token（可空）
         uint32_t backoff_attempt = 0;   // #18 连接级退避尝试计数（CONNECT 重发/中继注册）
         P2PClient* self = nullptr;      // #19 反向指针，供 libjuice 回调触发 on_connected
 
@@ -170,6 +173,7 @@ private:
     void send_proto(uint8_t msg_id, const void* payload, size_t plen,
                     const sockaddr_in& to);
     void send_proto(uint8_t msg_id, const void* payload, size_t plen); // -> NAT 服务器
+    void send_connect_req(const Conn& c);
     void do_heartbeat();
     void on_heartbeat_rsp(const uint8_t* p, size_t plen);
     void on_heartbeat_rsp_enc(const uint8_t* p, size_t plen);

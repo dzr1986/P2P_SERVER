@@ -1,4 +1,5 @@
 #include "client/sdk/api/P2PClient.h"
+#include "common/ConnectToken.h"
 
 #include <cstdio>
 #include <cstring>
@@ -104,7 +105,7 @@ void P2PClient::stop() {
 // ---------------------------------------------------------------------------
 // 外部接口
 // ---------------------------------------------------------------------------
-void P2PClient::connect(const std::string& peer_uuid) {
+void P2PClient::connect(const std::string& peer_uuid, const std::string& token_hex) {
     if (!running_.load() || peer_uuid.empty() || peer_uuid == cfg_.uuid) return;
     std::lock_guard<std::recursive_mutex> lk(mu_);
     auto& c = conns_[peer_uuid];
@@ -118,14 +119,11 @@ void P2PClient::connect(const std::string& peer_uuid) {
     c.punch.next_punch = 0;
     c.relay.next_relay_ping = 0;
     c.self = this; // #19 reverse ptr for ICE callback
+    c.connect_token_hex = !token_hex.empty() ? token_hex : cfg_.connect_token_hex;
 
-    ConnectReq req;
-    memset(&req, 0, sizeof(req));
-    strncpy(req.src_uuid, cfg_.uuid.c_str(), MAX_UUID_LEN);
-    strncpy(req.dst_uuid, peer_uuid.c_str(), MAX_UUID_LEN);
     // #19 创建 libjuice ICE agent 并启动候选收集
     ensure_ice_agent(c);
-    send_proto(MSG_CONNECT_REQ, &req, sizeof(req));
+    send_connect_req(c);
 }
 
 void P2PClient::disconnect(const std::string& peer_uuid) {
@@ -487,6 +485,26 @@ void P2PClient::send_proto(uint8_t msg_id, const void* payload, size_t plen) {
     send_proto(msg_id, payload, plen, nat_sock_);
 }
 
+void P2PClient::send_connect_req(const Conn& c) {
+    ConnectReq req;
+    memset(&req, 0, sizeof(req));
+    strncpy(req.src_uuid, cfg_.uuid.c_str(), MAX_UUID_LEN);
+    strncpy(req.dst_uuid, c.peer_uuid.c_str(), MAX_UUID_LEN);
+    if (c.connect_token_hex.empty()) {
+        send_proto(MSG_CONNECT_REQ, &req, sizeof(req));
+        return;
+    }
+    ConnectToken tok{};
+    if (!connect_token_from_hex(c.connect_token_hex, tok)) {
+        if (on_error) on_error("invalid connect token hex");
+        return;
+    }
+    uint8_t buf[sizeof(ConnectReq) + sizeof(ConnectToken)];
+    memcpy(buf, &req, sizeof(req));
+    memcpy(buf + sizeof(req), &tok, sizeof(tok));
+    send_proto(MSG_CONNECT_REQ, buf, sizeof(buf));
+}
+
 void P2PClient::handle_packet(const uint8_t* buf, size_t len,
                               const sockaddr_in& from) {
     WireHead h;
@@ -675,11 +693,7 @@ void P2PClient::on_auth_login_rsp(const uint8_t* p, size_t plen) {
         for (auto& kv : conns_) {
             Conn& c = kv.second;
             if (c.connecting() && !c.punch.have_direct && !c.relay.relay_ok) {
-                ConnectReq req;
-                memset(&req, 0, sizeof(req));
-                strncpy(req.src_uuid, cfg_.uuid.c_str(), MAX_UUID_LEN);
-                strncpy(req.dst_uuid, c.peer_uuid.c_str(), MAX_UUID_LEN);
-                send_proto(MSG_CONNECT_REQ, &req, sizeof(req));
+                send_connect_req(c);
                 // #18 CONNECT 重发指数退避（下次若仍无响应由 tick 驱动）
                 uint32_t d = cfg_.connect_timeout_ms;
                 for (uint32_t i = 0; i + 1 < c.backoff_attempt && d < 30000; i++) d *= 2;
@@ -765,14 +779,18 @@ void P2PClient::on_connect_ack(const uint8_t* p, size_t plen) {
     memcpy(&ack, p, sizeof(ConnectAck));
     std::string peer(ack.dst_uuid, strnlen(ack.dst_uuid, MAX_UUID_LEN));
 
-    if (ack.result == 3) {                 // 需鉴权
+    if (ack.result == CONNECT_NEED_AUTH) {
         if (has_cred_ && !auth_inflight_ && !auth_denied_) do_auth_challenge();
         return;
     }
     auto& c = conns_[peer];
     if (c.state == ConnState::Idle) { c.peer_uuid = peer; c.state = ConnState::Connecting; }
     if (ack.result != CONNECT_OK) {
-        if (on_error) on_error("connect " + peer + ": peer offline/not found");
+        if (ack.result == CONNECT_BAD_TOKEN) {
+            if (on_error) on_error("connect " + peer + ": bad or expired connect token");
+        } else if (on_error) {
+            on_error("connect " + peer + ": peer offline/not found");
+        }
         close_conn(c);
         return;
     }

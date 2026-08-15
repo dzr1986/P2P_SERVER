@@ -185,10 +185,22 @@ void NatServer::on_msg_connect_req(const uint8_t* p, size_t plen,
 
     // 鉴权门
     if (cfg->auth_enabled() && !peers_.authed(req.src_uuid)) {
-        ack.result = 3;   // 需鉴权
+        ack.result = CONNECT_NEED_AUTH;
         send_msg(from, MSG_CONNECT_ACK, &ack, sizeof(ack));
         inc_connect_fail();
         return;
+    }
+    if (cfg->enable_connect_token) {
+        const uint8_t* trailer = (plen > sizeof(ConnectReq)) ? p + sizeof(ConnectReq) : nullptr;
+        const size_t tlen = (plen > sizeof(ConnectReq)) ? plen - sizeof(ConnectReq) : 0;
+        if (!verify_connect_token(req.src_uuid, req.dst_uuid, trailer, tlen)) {
+            ack.result = CONNECT_BAD_TOKEN;
+            send_msg(from, MSG_CONNECT_ACK, &ack, sizeof(ack));
+            LOGW("NatServer", "CONNECT token rejected src[%s] dst[%s]",
+                 req.src_uuid, req.dst_uuid);
+            inc_connect_fail();
+            return;
+        }
     }
     if (cfg->enable_license && !license_.allowed(req.src_uuid)) {
         ack.result = CONNECT_NOT_FOUND;

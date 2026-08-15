@@ -5,6 +5,7 @@
 #include "Crypto.h"
 #include "Log.h"
 #include "Packet.h"
+#include "ConnectToken.h"
 #include "RegionSched.h"
 #include "Uid.h"
 #include "Util.h"
@@ -261,6 +262,20 @@ bool NatServer::verify_auth_login(const std::string& uuid, const uint8_t nonce[1
     peers_.set_auth_expire(uuid, (time_t)time(nullptr) + 3600);
     (void)expire;
     return true;
+}
+
+bool NatServer::verify_connect_token(const char* src_uuid, const char* dst_uuid,
+                                     const uint8_t* trailer, size_t tlen) const {
+    auto cfg = cfg_;
+    if (!cfg || !cfg->enable_connect_token) return true;
+    if (cfg->auth_secret.empty()) return false;
+    if (!trailer || tlen < sizeof(ConnectToken)) return false;
+    ConnectToken tok{};
+    memcpy(&tok, trailer, sizeof(tok));
+    uint8_t key[AUTH_KEY_LEN];
+    uid_derive_auth_key(reinterpret_cast<const uint8_t*>(cfg->auth_secret.data()),
+                        cfg->auth_secret.size(), dst_uuid, key);
+    return connect_token_verify(key, dst_uuid, src_uuid, tok, (uint32_t)time(nullptr));
 }
 
 // 心跳应答（明文 0x02 / 加密 0x1C）
