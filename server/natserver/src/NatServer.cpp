@@ -7,6 +7,7 @@
 #include "Packet.h"
 #include "ConnectToken.h"
 #include "RegionSched.h"
+#include "StunBind.h"
 #include "Uid.h"
 #include "Util.h"
 
@@ -396,7 +397,11 @@ void NatServer::recv_thread(int idx) {
                 if (abuse_.is_ip_blacklisted(from)) continue;
                 if (abuse_.check_flood(from)) continue;
 
-                // 快速路径：NAT 类型探测（双 socket 应答，不进队列）
+                // 快速路径：RFC 8489 STUN Binding（libjuice srflx）+ 自研 NAT 探测
+                if (stun_is_binding_request(buf, (size_t)r)) {
+                    stun_reply_binding(fd, buf, (size_t)r, from);
+                    continue;
+                }
                 if (natcheck_.try_fast_handle(buf, (size_t)r, from)) continue;
 
                 IncomingPacket pkt;

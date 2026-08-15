@@ -105,6 +105,7 @@ private:
         std::vector<UdpSocket> punch_socks;  // 多 socket 打洞池（并行探测，提升穿透率）
         int direct_sock_idx = -1;            // 直连确认时选用的打洞 socket 索引（-1=未确认）
         juice_agent_t* juice = nullptr;      // #19 libjuice ICE agent（替换自研打洞）
+        bool ice_gathered = false;           // 已 juice_gather：发起方先 gather=controlling
         std::string local_sdp;               // #19 本端 ICE SDP（gather 后填充）
         std::string remote_sdp;              // #19 对端 ICE SDP（信令交换）
     };
@@ -190,7 +191,8 @@ private:
     // #19 阶段 B 收尾：经 NatServer 发送本地 ICE SDP / 接收对端 SDP
     void send_ice_sdp(const std::string& peer, const std::string& local_sdp);
     void on_ice_sdp(const uint8_t* p, size_t plen);
-    void ensure_ice_agent(Conn& c);          // 发起方/被邀方统一创建 juice agent
+    void ensure_ice_agent(Conn& c, bool as_offerer);  // offerer 先 gather（controlling）
+    void start_ice_gather(Conn& c);
     void apply_remote_ice_sdp(Conn& c, const std::string& remote_sdp);
     void do_punch(Conn& c);
     // #19 libjuice ICE 回调（静态转发至 Conn 上下文）

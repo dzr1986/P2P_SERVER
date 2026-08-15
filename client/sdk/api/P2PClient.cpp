@@ -40,14 +40,6 @@ bool P2PClient::start(const Config& cfg) {
 
     if (!sock_.open(0, "0.0.0.0")) return false;
 
-    // #19 验证 libjuice 静态链接（最小调用，后续替换为真实 ICE 打洞逻辑）
-    {
-        juice_config_t jcfg {};
-        jcfg.concurrency_mode = JUICE_CONCURRENCY_MODE_POLL;
-        juice_agent_t* jagent = juice_create(&jcfg);
-        if (jagent) juice_destroy(jagent);
-    }
-
     // P1：鉴权凭据 = 每 UID AuthKey（优先取配置的 hex，否则从主密钥派生）
     memset(auth_key_, 0, sizeof(auth_key_));
     has_cred_ = false;
@@ -121,8 +113,8 @@ void P2PClient::connect(const std::string& peer_uuid, const std::string& token_h
     c.self = this; // #19 reverse ptr for ICE callback
     c.connect_token_hex = !token_hex.empty() ? token_hex : cfg_.connect_token_hex;
 
-    // #19 创建 libjuice ICE agent 并启动候选收集
-    ensure_ice_agent(c);
+    // 发起方先 gather：libjuice 将本端定为 controlling（RFC 8445 / WebRTC offerer）
+    ensure_ice_agent(c, true);
     send_connect_req(c);
 }
 
@@ -813,7 +805,7 @@ void P2PClient::on_connect_ack(const uint8_t* p, size_t plen) {
             }
         }
         c.punch.punch_deadline = plat_now_ms() + cfg_.connect_timeout_ms;
-        ensure_ice_agent(c);
+        ensure_ice_agent(c, true);
         ensure_punch_pool(c);
     }
 
@@ -850,8 +842,8 @@ void P2PClient::on_connect_invite(const uint8_t* p, size_t plen) {
 
         sockaddr_from(inv.src_pub_ip, ntohs(inv.src_pub_port), c.punch.direct);
         addr_to_peer_[addr_key(c.punch.direct)] = peer;
-        // 被邀方也创建 ICE agent，才能交换 SDP / 完成直连
-        ensure_ice_agent(c);
+        // 被邀方只建 agent、先等对端 SDP：set_remote 后再 gather → controlled
+        ensure_ice_agent(c, false);
         if (!pending_remote_sdp_.empty()) {
             apply_remote_ice_sdp(c, pending_remote_sdp_);
             pending_remote_sdp_.clear();
@@ -911,7 +903,7 @@ void P2PClient::on_juice_gathering_done(juice_agent_t* agent, void* user_ptr) {
         c->punch.local_sdp = sdp;
     self->send_ice_sdp(c->peer_uuid, c->punch.local_sdp);
 }
-void P2PClient::ensure_ice_agent(Conn& c) {
+void P2PClient::ensure_ice_agent(Conn& c, bool as_offerer) {
     if (c.punch.juice || cfg_.force_relay) return;
     juice_config_t jcfg {};
     jcfg.concurrency_mode = JUICE_CONCURRENCY_MODE_THREAD;
@@ -920,19 +912,27 @@ void P2PClient::ensure_ice_agent(Conn& c) {
     jcfg.cb_gathering_done = &P2PClient::on_juice_gathering_done;
     jcfg.cb_recv = &P2PClient::on_juice_recv;
     jcfg.user_ptr = &c;
-    c.punch.juice = juice_create(&jcfg);
-    if (c.punch.juice) {
-        char sdp[JUICE_MAX_SDP_STRING_LEN] = {0};
-        if (juice_get_local_description(c.punch.juice, sdp, sizeof(sdp)) == JUICE_ERR_SUCCESS)
-            c.punch.local_sdp = sdp;
-        juice_gather_candidates(c.punch.juice);
+    // NatServer 兼 STUN：juice 收集 server-reflexive，跨 NAT 不再只有 host 候选
+    if (!nat_server_.ip.empty()) {
+        jcfg.stun_server_host = nat_server_.ip.c_str();
+        jcfg.stun_server_port = nat_server_.port;
     }
+    c.punch.juice = juice_create(&jcfg);
+    if (c.punch.juice && as_offerer) start_ice_gather(c);
+}
+
+void P2PClient::start_ice_gather(Conn& c) {
+    if (!c.punch.juice || c.punch.ice_gathered || cfg_.force_relay) return;
+    c.punch.ice_gathered = true;
+    juice_gather_candidates(c.punch.juice);
 }
 
 void P2PClient::apply_remote_ice_sdp(Conn& c, const std::string& remote_sdp) {
     if (!c.punch.juice || remote_sdp.empty()) return;
     c.punch.remote_sdp = remote_sdp;
+    // 被邀方：先 set_remote（mode 仍 UNKNOWN → controlled），再 gather
     juice_set_remote_description(c.punch.juice, remote_sdp.c_str());
+    if (!c.punch.ice_gathered) start_ice_gather(c);
     juice_set_remote_gathering_done(c.punch.juice);
     fprintf(stderr, "[P2PClient] ICE_SDP applied for %s, remote gathering done\n",
             c.peer_uuid.c_str());

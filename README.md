@@ -17,6 +17,7 @@
 另外提供 **可复用的客户端 SDK**（`client/sdk/`，纯 C++17、单线程事件循环）：外部程序可
 直接链入 `P2PClient.cpp` 使用注册/鉴权/打洞/中继能力，演示程序 `client/demo/peer.cpp` 即为用法示例。
 SDK 分层设计与二次开发要点见 [`docs/开发指南.md`](docs/开发指南.md)。
+ICE/STUN/TURN 与流媒体通道对照见 [`docs/P2P穿透与流媒体实践.md`](docs/P2P穿透与流媒体实践.md)。
 
 ## 目录结构
 

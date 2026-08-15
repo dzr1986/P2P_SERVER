@@ -4,8 +4,9 @@
 > 对标 TUTK Kalay（IOTC/AV/RDT/P2PTunnel）的 P2P 物联网连接平台，
 > 首要场景为 IP 摄像机 / NVR 的远程实时视频与设备管理。
 >
-> 配套文档：[`代码优化分析报告.md`](../代码优化分析报告.md)（已完成的两轮优化）、
-> [`流媒体优化学习路线.md`](流媒体优化学习路线.md)（传输技术学习地图）。
+> 配套文档：[`代码优化分析报告.md`](../代码优化分析报告.md)、
+> [`流媒体优化学习路线.md`](流媒体优化学习路线.md)、
+> [`P2P穿透与流媒体实践.md`](P2P穿透与流媒体实践.md)（ICE/STUN/TURN 对照）。
 
 ---
 
@@ -41,8 +42,8 @@ TUTK Kalay 平台的核心价值：设备烧录一个 **UID** 即可被全球任
 | TUTK 概念 | 说明 | 本项目现状 | 差距 |
 |-----------|------|-----------|------|
 | UID（20 字节） | 平台签发的设备唯一 ID，设备以 UID 向 P2P 服务器报到 | `uuid`（≤32 字节自定义串） | 需定义 20B 结构化 UID + 签发/校验体系 |
-| P2P Server | 管理 UID 报到、协助连线、全球分布 | `NatServer`（心跳注册/CONNECT 协调/跨服同步） | 集群调度/就近接入待建 |
-| Relay Server | 打洞失败时转发数据 | `P2PProxy`（RELAY_DATA 转发 + HMAC 注册鉴权） | 带宽配额/计量待建 |
+| P2P Server | 管理 UID 报到、协助连线、全球分布 | `NatServer`（心跳/CONNECT/跨服同步/REGION 调度/STUN Binding） | 10 万心跳压测待补 |
+| Relay Server | 打洞失败时转发数据 | `P2PProxy`（RELAY_DATA + HMAC + QuotaMB） | TURN-over-443 / 现网带宽压测待补 |
 | IOTC Session (SID) | 设备↔客户端连接载体，上限 128 | `client/sdk/iotc/IOTC.*` SID 句柄表（上限 128） | 已落地 |
 | IOTC Channel（0~31） | 会话内逻辑通道 | `IOTC_Session_Read/Write`（0~31） | 已落地 |
 | AVAPIs (avIndex) | 音视频帧级传输，重传可配，上限 32 通道/连接 | `AVAPIs` + `AvCodec` 分片/重组/too-late-drop | 弱网 1080p 压测待补（P3 验收） |
@@ -51,7 +52,7 @@ TUTK Kalay 平台的核心价值：设备烧录一个 **UID** 即可被全球任
 | avSendIOCtrl | 控制指令通道 | `avSendIOCtrl/avRecvIOCtrl`（通道 0 可靠） | 已落地 |
 | LAN Search | 局域网免服务器发现 | CONNECT 携带 lan 地址尝试直连 | UDP 广播发现待做 |
 | Device Wakeup | 低功耗设备唤醒 | `p2p_wakeserver` + `MSG_WAKE_*` | 三平台 SDK 接入与 <6s 出图待补 |
-| AuthKey / Token 鉴权 | 报到与连线鉴权 | HMAC-SHA256 挑战应答（已有） | Token 模式 + 前向保密待做 |
+| AuthKey / Token 鉴权 | 报到与连线鉴权 | 每 UID AuthKey + `EnableConnectToken` + X25519 FS | Token nonce 防重放表未做 |
 
 **结论**：连接底座（报到/打洞/中继/加密/同步）已具备且经过两轮加固，
 主要差距集中在：UID 体系、SDK 通道 API 层（AV/RDT/Tunnel）、集群调度、低功耗唤醒。
@@ -88,12 +89,12 @@ TUTK Kalay 平台的核心价值：设备烧录一个 **UID** 即可被全球任
 
 | 组件 | 目录 | 状态 |
 |------|------|------|
-| NatServer | `server/natserver/` | 已有，需扩展 UID/调度 |
-| Relay | `server/proxyserver/` | 已有，需扩展配额计量 |
-| 设备/客户端 SDK 核 | `client/sdk/`（api/session/transport/proto/plat） | 已有，需扩展通道 API 层 |
-| 唤醒服务 | `server/wakeserver/` | 已落地（保活/触发/POKE 雏形） |
-| UID 签发工具 | `tools/uidgen/` | 已落地 |
-| 管理面 API | `server/natserver/src/StatusServer.cpp` 扩展 | 雏形（JSON 状态） |
+| NatServer | `server/natserver/` | UID/REGION 调度/STUN Binding/连线 Token 已落地 |
+| Relay | `server/proxyserver/` | HMAC 注册 + QuotaMB 已落地 |
+| 设备/客户端 SDK 核 | `client/sdk/`（api/session/transport/proto/plat/iotc） | IOTC/AV/RDT/Tunnel 已落地 |
+| 唤醒服务 | `server/wakeserver/` | 保活/触发/POKE 雏形 |
+| UID / Token 工具 | `tools/uidgen/` `tools/tokengen/` | 已落地 |
+| 管理面 API | `StatusServer` `GET /` + `GET /metrics` | Prometheus 已落地 |
 
 ---
 

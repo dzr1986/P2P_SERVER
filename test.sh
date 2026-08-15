@@ -65,6 +65,7 @@ echo "== [0] unit tests =="
 ./tests/bin/token_test > /tmp/token_test.log 2>&1 && ok "connect token unit tests" || fail "connect token unit tests"
 ./tests/bin/av_frame_test > /tmp/av_frame_test.log 2>&1 && ok "av/tunnel codec unit tests" || fail "av/tunnel codec unit tests"
 ./tests/bin/sched_test > /tmp/sched_test.log 2>&1 && ok "region scheduler unit tests" || fail "region scheduler unit tests"
+./tests/bin/stun_test > /tmp/stun_test.log 2>&1 && ok "STUN Binding unit tests" || fail "STUN Binding unit tests"
 
 # ---------------------------------------------------------------- 1. 直连
 echo "== [1] direct P2P (no auth) =="
@@ -331,6 +332,23 @@ export P2P_STATUS_PORT=$STATUS_PORT
 printf 'NatServer1=10.0.0.1\nNatServer2=10.0.0.2\nNatServer3=127.0.0.1\nProxy1_1=10.1.0.1\nProxy1_2=127.0.0.1\nRegion=C\nNatRegions=10.0.0.1:A,10.0.0.2:B,127.0.0.1:C\nProxyRegions=10.1.0.1:A,127.0.0.1:C\n' > $CFG
 start_servers "$CFG"
 sleep 0.3
+STUN=$(python3 - <<PY
+import socket, struct
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(2); s.bind(("127.0.0.1", 0))
+req = struct.pack("!HHI", 0x0001, 0, 0x2112A442) + b"\\x11" * 12
+s.sendto(req, ("127.0.0.1", $NAT_PORT))
+data, _ = s.recvfrom(64)
+typ, = struct.unpack("!H", data[:2])
+xport, = struct.unpack("!H", data[26:28])
+xaddr, = struct.unpack("!I", data[28:32])
+port = xport ^ 0x2112
+addr = xaddr ^ 0x2112A442
+ip = socket.inet_ntoa(struct.pack("!I", addr))
+print("STUN typ=0x%04x ip=%s port=%d" % (typ, ip, port))
+PY
+)
+echo "$STUN" | grep -q "typ=0x0101" && ok "NatServer STUN Binding success" || fail "STUN Binding ($STUN)"
 MET=$(python3 - <<PY
 import urllib.request
 print(urllib.request.urlopen("http://127.0.0.1:$STATUS_PORT/metrics", timeout=2).read().decode())
