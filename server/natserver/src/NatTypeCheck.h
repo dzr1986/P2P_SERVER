@@ -11,23 +11,22 @@ namespace p2p {
 
 // ---------------------------------------------------------------------------
 // NAT 类型探测服务（对标原版 nattypecheck_server_start）
-// 双 UDP socket：主 socket（g_sock）+ 备用 socket（g_another_sock）
+// 三 UDP socket：主 + 备用（过滤/映射）+ 第三探测口（NAT4E 步长）
 // 客户端发 NAT_DETECT_REQ -> 主/备 socket 各回一条 NatDetectRsp：
 //   - 若客户端 NAT 无端口过滤（锥型），备用 socket 的应答可送达
-//   - 客户端再向备用 socket 发一次请求，可得到其在备用 socket 上的映射端口
-//     与主 socket 映射端口比较即可区分 对称型/锥型
+//   - 客户端再向备用 / 第三口各发一次，比较映射端口 → EIM/EDM + NAT4E
 // ---------------------------------------------------------------------------
 class NatTypeCheck {
 public:
     NatTypeCheck();
     ~NatTypeCheck();
 
-    // 创建主/备 socket，绑定主端口与备用端口（均 INADDR_ANY）
-    int  init(uint16_t main_port, uint16_t alt_port);
+    // 创建主/备/探测 socket（均 INADDR_ANY；alt/probe=0 则临时端口）
+    int  init(uint16_t main_port, uint16_t alt_port, uint16_t probe_port = 0);
     void request_stop() { running_ = false; }
     bool running() const { return running_; }
 
-    // 备用 socket 快速路径线程（select 阻塞），处理发往备用端口的 NAT 探测
+    // 备用 + 第三探测口快速路径（select 阻塞）
     void run_alt_thread();
 
     // 主 socket 快速路径（由 epoll 收包线程调用）：
@@ -38,15 +37,19 @@ public:
     int  main_fd() const { return sock_main_.fd(); }
     int  alt_fd() const { return sock_alt_.fd(); }
     uint16_t alt_port() const { return alt_port_; }
+    uint16_t probe_port() const { return probe_port_; }
 
 private:
-    // 对 from 双 socket 各回一条 NatDetectRsp
+    // 对 from 主/备各回一条 NatDetectRsp（不含第三口，以免干扰过滤判定）
     void dual_reply(const sockaddr_in& from, uint8_t server_index_hint);
+    void probe_reply(const sockaddr_in& from);
 
     UdpFd    sock_main_;    // RAII：析构自动关闭
     UdpFd    sock_alt_;
+    UdpFd    sock_probe_;
     uint16_t main_port_ = 0;
     uint16_t alt_port_ = 0;
+    uint16_t probe_port_ = 0;
     std::atomic<bool> running_{false};
 };
 

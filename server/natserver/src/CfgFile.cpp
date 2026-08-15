@@ -123,6 +123,7 @@ static void parse_value(CfgData& out, const std::string& key, const std::string&
         {"FloodPktThreshold", [](CfgData& c, const std::string& v) { set_int_in_range(c.flood_pkt_threshold, v, 1, 0x7FFFFFFF); }},
         {"BlacklistSeconds",  [](CfgData& c, const std::string& v) { set_int_in_range(c.blacklist_seconds, v, 1, 0x7FFFFFFF); }},
         {"NatSock2Port",      [](CfgData& c, const std::string& v) { set_int_in_range(c.nat_sock2_port, v, 1, 65535); }},
+        {"NatSock3Port",      [](CfgData& c, const std::string& v) { set_int_in_range(c.nat_sock3_port, v, 1, 65535); }},
         {"SyncPeers",      [](CfgData& c, const std::string& v) { c.sync_enabled = to_bool(v); }},
         {"SyncAddrs",      [](CfgData& c, const std::string& v) { c.sync_addrs = split_csv(v); }},
         {"SyncAuthSecret", [](CfgData& c, const std::string& v) { c.sync_auth_secret = v; }},

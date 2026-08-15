@@ -1,6 +1,7 @@
 #include "client/sdk/api/P2PClient.h"
 #include "common/IceSdp.h"
 #include "common/ConnectToken.h"
+#include "common/NatMatrix.h"
 #include "common/Packet.h"
 
 #include <cerrno>
@@ -87,6 +88,9 @@ bool P2PClient::start(const Config& cfg) {
     }
 
     nat_type_ = NAT_UNKNOWN;
+    nat_mapping_ = NAT_MAP_UNKNOWN;
+    nat_filter_ = NAT_FLT_UNKNOWN;
+    nat_port_step_ = 0;
     authed_ = !has_cred_;            // 无凭据视为免鉴权
     heartbeat_enc_ = false;
     auth_denied_ = false;
@@ -434,6 +438,13 @@ void P2PClient::tick_auth(uint64_t now) {
 void P2PClient::tick_nat_detect(uint64_t now) {
     if (nat_detect_.done() && nat_type_ == NAT_UNKNOWN) {
         nat_type_ = nat_detect_.nattype();
+        nat_mapping_ = nat_detect_.mapping();
+        nat_filter_ = nat_detect_.filter();
+        nat_port_step_ = nat_detect_.port_step();
+        printf("[P2PClient] NAT type=%u mapping=%s filter=%s nat4e_step=%d\n",
+               (unsigned)nat_type_, nat_mapping_str(nat_mapping_),
+               nat_filter_str(nat_filter_), (int)nat_port_step_);
+        fflush(stdout);
     }
     if (!nat_detect_.done()) {
         auto sendfn = [this](const sockaddr_in& to, const uint8_t* b, size_t n) {

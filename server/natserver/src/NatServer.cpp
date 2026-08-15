@@ -68,9 +68,10 @@ int NatServer::init(const std::string& cfg_path, uint16_t nat_port,
             license_.save();   // 首次以密文持久化
     }
 
-    // 双 socket：主端口 + 备用端口（默认临时端口，客户端通过应答获知）
+    // 三 socket：主 + 备用（过滤/映射）+ 第三探测口（NAT4E；默认临时端口）
     uint16_t alt_port = cfg_->nat_sock2_port ? cfg_->nat_sock2_port : 0;
-    if (natcheck_.init(nat_port_, alt_port) != 0) return -1;
+    uint16_t probe_port = cfg_->nat_sock3_port ? cfg_->nat_sock3_port : 0;
+    if (natcheck_.init(nat_port_, alt_port, probe_port) != 0) return -1;
 
     // 注册表同步：解析对端列表（启动后 run() 中发起首次全量快照）
     setup_sync_peers();
@@ -84,8 +85,9 @@ int NatServer::init(const std::string& cfg_path, uint16_t nat_port,
     }
 
     LOGI("NatServer", "start server with NatServerPort[%d] ProxyServerPort[%d] "
-         "NatServerWanIP[%s] AltPort[%d] workers[%d] recv_threads[%zu] sync[%d]",
-         nat_port_, proxy_port_, wan_ip_.c_str(), alt_port, cfg_->proc_workers,
+         "NatServerWanIP[%s] AltPort[%d] ProbePort[%d] workers[%d] recv_threads[%zu] sync[%d]",
+         nat_port_, proxy_port_, wan_ip_.c_str(), alt_port, natcheck_.probe_port(),
+         cfg_->proc_workers,
          recv_socks_.size() + 1, (int)cfg_->sync_enabled);
     return 0;
 }

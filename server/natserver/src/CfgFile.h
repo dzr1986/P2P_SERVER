@@ -23,7 +23,8 @@ namespace p2p {
 //   RecvThreads=N                   UDP 收包线程数（SO_REUSEPORT，>=1）
 //   FloodPktThreshold=N             防洪水阈值（pps）
 //   BlacklistSeconds=N              IP 拉黑时长（秒）
-//   NatSock2Port=N                  备用探测端口（0=主端口+1）
+//   NatSock2Port=N                  备用探测端口（0=临时端口）
+//   NatSock3Port=N                  第三探测口（NAT4E；0=临时端口）
 //   SyncPeers=0|1                   是否启用多 NatServer 注册表同步
 //   SyncAddrs=ip[:port],...         同步对端（缺省用 NatServer* 列表；port 缺省取本机 nat 端口）
 //   SyncAuthSecret=xxx              同步消息签名密钥（空=不签名，不推荐生产）
@@ -68,7 +69,8 @@ struct CfgData {
     int         recv_threads = 2;       // UDP 收包线程数（SO_REUSEPORT）
     uint32_t    flood_pkt_threshold = 200;
     uint32_t    blacklist_seconds = 60;
-    uint16_t    nat_sock2_port = 0;    // 0 -> 主端口+1
+    uint16_t    nat_sock2_port = 0;    // 0 -> 临时端口
+    uint16_t    nat_sock3_port = 0;    // 0 -> 临时端口（NAT4E）
     uint16_t    proxy_alt_port = 0;    // TURN-over-443 UDP 兼听端口（0=不宣告）
     uint16_t    proxy_tcp_port = 0;    // DERP TCP/TLS 面（0=不宣告）
 

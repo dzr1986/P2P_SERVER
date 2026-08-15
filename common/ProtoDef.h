@@ -111,6 +111,21 @@ enum NatType : uint8_t {
     NAT_SYMMETRIC      = 3,   // 对称型（需端口预测/喷洒或多代理兜底）
 };
 
+// RFC 4787 二维：映射与过滤独立。四型只作对外通俗说法。
+enum NatMapping : uint8_t {
+    NAT_MAP_UNKNOWN = 0,
+    NAT_MAP_EIM     = 1,   // Endpoint-Independent Mapping
+    NAT_MAP_ADM     = 2,   // Address-Dependent Mapping（需第二公网 IP 才能区分）
+    NAT_MAP_EDM     = 3,   // Address-and-Port-Dependent Mapping（对称）
+};
+
+enum NatFilter : uint8_t {
+    NAT_FLT_UNKNOWN = 0,
+    NAT_FLT_NONE    = 1,   // 无过滤（全锥）
+    NAT_FLT_ADDR    = 2,   // 地址过滤
+    NAT_FLT_PORT    = 3,   // 地址+端口过滤
+};
+
 // 代理候选地址（CONNECT ack/invite 携带 3 组，对标原版 3 组代理）
 struct ProxyCandidate {
     char     ip[MAX_IP_LEN];
@@ -254,6 +269,7 @@ struct NatDetectRsp {
     uint16_t mapped_port;     // 网络序
     uint16_t main_port;       // 网络序：主 socket 端口
     uint16_t alt_port;        // 网络序：备用 socket 端口
+    uint16_t probe_port;      // 网络序：第三探测口（NAT4E；0=无；旧客户端忽略）
 };
 
 // 鉴权挑战请求

@@ -4,6 +4,7 @@
 //   等待方： peer <NatServerIP> <NatServerPort> <UUID>            [ProxyIP] [ProxyPort]
 //   -s <secret>  鉴权密钥（可选）
 #include "client/sdk/api/P2PClient.h"
+#include "common/NatMatrix.h"
 
 #include <atomic>
 #include <cstdio>
@@ -178,7 +179,9 @@ int main(int argc, char** argv) {
         uint8_t nt = client.nat_type();
         if (nt != last_nat) {
             last_nat = nt;
-            printf("[peer] nattype=%s\n", nattype_str(nt));
+            printf("[peer] nattype=%s mapping=%s filter=%s nat4e_step=%d\n",
+                   nattype_str(nt), nat_mapping_str(client.nat_mapping()),
+                   nat_filter_str(client.nat_filter()), (int)client.nat_port_step());
             fflush(stdout);
         }
         uint64_t etx = client.tunnel_enc_tx(), erx = client.tunnel_enc_rx();

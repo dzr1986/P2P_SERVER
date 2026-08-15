@@ -86,6 +86,7 @@ echo "== [0] unit tests =="
 ./tests/bin/ice_sdp_test > /tmp/ice_sdp_test.log 2>&1 && ok "ICE SDP ufrag/restart unit tests" || fail "ICE SDP unit tests"
 ./tests/bin/twcc_test > /tmp/twcc_test.log 2>&1 && ok "TWCC Kalman unit tests" || fail "TWCC unit tests"
 ./tests/bin/portmap_test > /tmp/portmap_test.log 2>&1 && ok "portmap NAT-PMP/UPnP unit tests" || fail "portmap unit tests"
+./tests/bin/nat_detect_test > /tmp/nat_detect_test.log 2>&1 && ok "RFC 4787 NAT detect / matrix unit tests" || fail "nat detect unit tests"
 
 # ---------------------------------------------------------------- 1. 直连
 echo "== [1] direct P2P (no auth) =="

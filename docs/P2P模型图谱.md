@@ -64,8 +64,9 @@ TUTK Kalay 是 **C 的商业化形态**：UID + 信令 + 打洞 + 中继兜底�
 | 映射 | EIM 终点无关 / ADM 地址相关 / EDM 地址+端口相关 | 只有 EIM 才能稳定打洞 |
 | 过滤 | 无 / 地址 / 地址+端口 | 决定对方要从哪个五元组回包 |
 
-**本仓库动作**：日志与监控用 `mapping=EIM|ADM|EDM` + `filter=none|addr|port`，
-四型只作对外通俗说法。STUN Binding 已能部分推断；完整二维探测可进 P8。
+**本仓库动作**：日志与监控用 `mapping=EIM|ADM|EDM` + `filter=none|addr|port`
+（`P2PClient::nat_mapping/nat_filter/nat_port_step`）。四型只作对外通俗说法。
+第三探测口识别 NAT4E 步长；`NatMatrix.h` 给出两端策略。ADM 需第二公网 IP，暂记 EIM。
 
 ### 3.2 生日悖论打洞（对称 / EDM）
 
@@ -169,7 +170,7 @@ ICE 并行打洞，`direct_ok` 后 `send_tunnel_via` 切 `juice_send`，再回�
 | 锥×锥 | 对已发现公网口互发 | 已有 ICE |
 | 对称×锥 | 对称侧打锥侧开口 | ICE 部分覆盖 |
 | 对称×对称 | 生日 / 可关 | P8 可选，默认关 |
-| NAT4E | 端口预测 | P8 探测后做 |
+| NAT4E | 端口预测 | P8 探测字段已落地；ICE 预测路径待接 |
 | TCP 打洞 | 与 UDP 并行，可单独关 | P8 |
 | `--lazy-p2p` | 无业务流量不后台打洞 | 省电 IPC 可学（与 P7 唤醒配合） |
 | 失败中继 | 自动回退 | 已有 Proxy |

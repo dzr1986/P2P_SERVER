@@ -105,6 +105,9 @@ public:
     bool lan_lookup(const std::string& uuid, LanPeer& out);
 
     uint8_t  nat_type() const { return nat_type_; }
+    uint8_t  nat_mapping() const { return nat_mapping_; }   // RFC 4787 EIM/ADM/EDM
+    uint8_t  nat_filter() const { return nat_filter_; }     // none/addr/port
+    int16_t  nat_port_step() const { return nat_port_step_; } // NAT4E 步长，0=无
     uint16_t local_port() const { return sock_.local_port(); }
     const char* public_ip() const { return pub_ip_; }
     uint16_t public_port() const { return pub_port_; }
@@ -338,6 +341,9 @@ private:
     // NAT 检测
     NatDetect nat_detect_;
     uint8_t  nat_type_ = NAT_UNKNOWN;
+    uint8_t  nat_mapping_ = NAT_MAP_UNKNOWN;
+    uint8_t  nat_filter_ = NAT_FLT_UNKNOWN;
+    int16_t  nat_port_step_ = 0;
 
     // 中继状态
     std::vector<ServerAddr> proxies_;
