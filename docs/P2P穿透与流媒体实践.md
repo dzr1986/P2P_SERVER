@@ -69,6 +69,8 @@ libjuice 向 `stun_server_host:port` 发 Binding Request，用
 同机 host 候选已足够，gather 应立刻完成。
 回环时 `juice_config.bind_address=127.0.0.1`，避免 host 落在 eth0/docker
 导致 controlling 只打到不可达地址、出现单向 CONNECTED。
+若 juice 未回调 CONNECTED 但已收到应用数据，`on_juice_recv` 仍置 `direct_ok`
+并 `set_connected`（路径已证明可达）。
 
 ### 2.2.1 Trickle 与 gathering done
 

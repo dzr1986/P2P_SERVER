@@ -1184,6 +1184,11 @@ void P2PClient::on_juice_recv(juice_agent_t* /*agent*/, const char* data, size_t
     if (!self) return;
     std::lock_guard<std::recursive_mutex> lk(self->mu_);
     if (c->self != self) return;
+    // 对端已能把应用数据打过来：视为直连就绪（controlling 偶发不打 CONNECTED）
+    if (!c->punch.direct_ok) {
+        c->punch.direct_ok = true;
+        self->set_connected(*c, false);
+    }
     // libjuice 已解 ICE，data 为应用负载，直接送入隧道帧处理
     self->on_tunnel_frame(reinterpret_cast<const uint8_t*>(data), size, c->peer_uuid);
 }
