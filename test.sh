@@ -275,13 +275,13 @@ stdbuf -oL $PROXY_BIN $PROXY_PORT 100 > /tmp/proxy.log 2>&1 &
 PROXY_PID=$!
 sleep 0.5
 
-stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT A > /tmp/peerA.log 2>&1 & PA_PID=$!
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT A > /tmp/peerA8.log 2>&1 & PA_PID=$!
 sleep 1
-stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT2 B A 127.0.0.1 $PROXY_PORT > /tmp/peerB.log 2>&1 & PB_PID=$!
-sleep 8
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT2 B A 127.0.0.1 $PROXY_PORT > /tmp/peerB8.log 2>&1 & PB_PID=$!
+sleep 10
 kill -9 $PA_PID $PB_PID 2>/dev/null; PA_PID=""; PB_PID=""
 grep -q "sync entry uuid\[A\]" /tmp/nat2.log && ok "signed sync entry accepted" || fail "signed sync not accepted"
-grep -q "CONNECTED to A via direct" /tmp/peerB.log && ok "B->A direct (signed sync)" || fail "cross-server direct missing"
+grep -q "CONNECTED to A via direct" /tmp/peerB8.log && ok "B->A direct (signed sync)" || fail "cross-server direct missing ($([ -f /tmp/peerB8.log ] && tail -20 /tmp/peerB8.log))"
 python3 /tmp/p2p_forge.py $NAT_PORT2 HACKER1
 sleep 1
 grep -q "sync entry MAC invalid" /tmp/nat2.log && ok "forged sync entry rejected" || fail "forged sync entry not rejected"
