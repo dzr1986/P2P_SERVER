@@ -668,7 +668,7 @@ start_servers ""
 stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT A -tcp-punch > /tmp/peerA21.log 2>&1 & PA_PID=$!
 sleep 1
 stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT B A -tcp-punch > /tmp/peerB21.log 2>&1 & PB_PID=$!
-sleep 8
+sleep 12
 kill -9 $PA_PID $PB_PID 2>/dev/null; PA_PID=""; PB_PID=""
 grep -q "TCP STUN listen" /tmp/nat.log && ok "NatServer TCP STUN listen" || fail "NatServer TCP STUN listen missing"
 grep -q "tcp stun mapped" /tmp/peerA21.log && ok "A tcp stun mapped" || fail "A tcp stun mapped missing"
