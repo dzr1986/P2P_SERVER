@@ -122,6 +122,7 @@ private:
                         const sockaddr_in& from);
     void on_msg_connect_req(const uint8_t* p, size_t plen, const sockaddr_in& from);
     void on_msg_ice_sdp(uint8_t* p, size_t plen, const sockaddr_in& from);
+    void on_msg_tcp_punch(uint8_t* p, size_t plen, const sockaddr_in& from);
     void on_msg_dev_list(const uint8_t* p, size_t plen, const sockaddr_in& from);
     void on_msg_server_list(const uint8_t* p, size_t plen, const sockaddr_in& from);
     void on_msg_delete_uid(const uint8_t* p, size_t plen);

@@ -25,6 +25,7 @@ BIN_ICESDPTEST := tests/bin/ice_sdp_test
 BIN_TWCCTEST := tests/bin/twcc_test
 BIN_PORTMAPTEST := tests/bin/portmap_test
 BIN_NATDETECTTEST := tests/bin/nat_detect_test
+BIN_TCPPUNCHTEST := tests/bin/tcp_punch_test
 BIN_IOTCDEMO := client/bin/iotc_demo
 BIN_WAKE    := server/wakeserver/bin/p2p_wakeserver
 
@@ -49,7 +50,7 @@ PROXY_SRCS := server/proxyserver/src/P2PProxy.cpp
 PEER_SRCS  := client/demo/peer.cpp \
               client/sdk/api/P2PClient.cpp
 
-all: $(LIBJUICE) $(BIN_NAT) $(BIN_PROXY) $(BIN_PEER) $(BIN_CRYPTOTEST) $(BIN_SESSIONTEST) $(BIN_UIDTEST) $(BIN_UIDGEN) $(BIN_TOKENGEN) $(BIN_TOKENTEST) $(BIN_AVTEST) $(BIN_SCHEDTEST) $(BIN_STUNTEST) $(BIN_ABRTEST) $(BIN_ICESDPTEST) $(BIN_TWCCTEST) $(BIN_PORTMAPTEST) $(BIN_NATDETECTTEST) $(BIN_IOTCDEMO) $(BIN_WAKE)
+all: $(LIBJUICE) $(BIN_NAT) $(BIN_PROXY) $(BIN_PEER) $(BIN_CRYPTOTEST) $(BIN_SESSIONTEST) $(BIN_UIDTEST) $(BIN_UIDGEN) $(BIN_TOKENGEN) $(BIN_TOKENTEST) $(BIN_AVTEST) $(BIN_SCHEDTEST) $(BIN_STUNTEST) $(BIN_ABRTEST) $(BIN_ICESDPTEST) $(BIN_TWCCTEST) $(BIN_PORTMAPTEST) $(BIN_NATDETECTTEST) $(BIN_TCPPUNCHTEST) $(BIN_IOTCDEMO) $(BIN_WAKE)
 
 $(LIBJUICE):
 	cmake -B third_party/libjuice/build -S third_party/libjuice -DCMAKE_BUILD_TYPE=Release
@@ -123,6 +124,10 @@ $(BIN_PORTMAPTEST): tests/portmap_test.cpp common/PortMap.cpp common/PortMap.h
 $(BIN_NATDETECTTEST): tests/nat_detect_test.cpp client/sdk/transport/NatDetect.h common/NatMatrix.h common/ProtoDef.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tests/nat_detect_test.cpp
+
+$(BIN_TCPPUNCHTEST): tests/tcp_punch_test.cpp common/TcpPunch.h common/Net.h common/Packet.h common/ProtoDef.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -o $@ tests/tcp_punch_test.cpp
 
 $(BIN_IOTCDEMO): client/demo/iotc_demo.cpp $(IOTC_SRCS) $(COMMON_SRCS) common/ProtoDef.h $(LIBJUICE)
 	@mkdir -p $(dir $@)

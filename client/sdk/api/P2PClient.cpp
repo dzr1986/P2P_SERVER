@@ -3,6 +3,7 @@
 #include "common/ConnectToken.h"
 #include "common/NatMatrix.h"
 #include "common/Packet.h"
+#include "common/TcpPunch.h"
 
 #include <cerrno>
 #include <cstdio>
@@ -78,9 +79,14 @@ bool P2PClient::start(const Config& cfg) {
         if (lz[0] == '1') cfg_.lazy_p2p = true;
         else if (lz[0] == '0') cfg_.lazy_p2p = false;
     }
+    if (const char* tp = getenv("P2P_TCP_PUNCH")) {
+        if (tp[0] == '1') cfg_.tcp_punch = true;
+        else if (tp[0] == '0') cfg_.tcp_punch = false;
+    }
     path_direct_v4_.store(0);
     path_direct_v6_.store(0);
     path_relay_.store(0);
+    tcp_punch_ok_.store(0);
     if (cfg_.port_map) {
         const uint16_t lp = sock_.local_port();
         if (lp) portmap_pending_.push_back(lp);
@@ -370,13 +376,66 @@ void P2PClient::worker_loop() {
             FD_SET(derp_fd_.fd(), &rfds);
             if (derp_fd_.fd() + 1 > maxfd) maxfd = derp_fd_.fd() + 1;
         }
+        std::vector<std::pair<std::string, int>> tcp_listen_fds;
+        std::vector<std::pair<std::string, int>> tcp_conn_fds;
+        std::vector<std::pair<std::string, int>> tcp_ready_fds;
+        fd_set wfds;
+        FD_ZERO(&wfds);
+        {
+            std::lock_guard<std::recursive_mutex> lk(mu_);
+            for (auto& kv : conns_) {
+                Conn& c = *kv.second;
+                if (c.tcp_listen.valid()) {
+                    FD_SET(c.tcp_listen.fd(), &rfds);
+                    if (c.tcp_listen.fd() + 1 > maxfd) maxfd = c.tcp_listen.fd() + 1;
+                    tcp_listen_fds.emplace_back(kv.first, c.tcp_listen.fd());
+                }
+                if (c.tcp_connecting.valid()) {
+                    FD_SET(c.tcp_connecting.fd(), &wfds);
+                    if (c.tcp_connecting.fd() + 1 > maxfd) maxfd = c.tcp_connecting.fd() + 1;
+                    tcp_conn_fds.emplace_back(kv.first, c.tcp_connecting.fd());
+                }
+                if (c.tcp_ready.valid()) {
+                    FD_SET(c.tcp_ready.fd(), &rfds);
+                    if (c.tcp_ready.fd() + 1 > maxfd) maxfd = c.tcp_ready.fd() + 1;
+                    tcp_ready_fds.emplace_back(kv.first, c.tcp_ready.fd());
+                }
+            }
+        }
         timeval tv; tv.tv_sec = 0; tv.tv_usec = 50000;
-        int r = select(maxfd, &rfds, nullptr, nullptr, &tv);
+        int r = select(maxfd, &rfds, tcp_conn_fds.empty() ? nullptr : &wfds,
+                       nullptr, &tv);
         now = plat_now_ms();
         if (r > 0) {
             std::lock_guard<std::recursive_mutex> lk(mu_);
             if (derp_fd_.valid() && FD_ISSET(derp_fd_.fd(), &rfds))
                 derp_on_readable();
+            for (auto& pf : tcp_listen_fds) {
+                auto it = conns_.find(pf.first);
+                if (it == conns_.end() || !it->second->tcp_listen.valid()) continue;
+                if (FD_ISSET(it->second->tcp_listen.fd(), &rfds)) {
+                    TcpFd acc = it->second->tcp_listen.accept_one();
+                    if (acc.valid()) tcp_punch_take_ready(*it->second, std::move(acc));
+                }
+            }
+            for (auto& pf : tcp_conn_fds) {
+                auto it = conns_.find(pf.first);
+                if (it == conns_.end() || !it->second->tcp_connecting.valid()) continue;
+                if (FD_ISSET(it->second->tcp_connecting.fd(), &wfds)) {
+                    int d = tcp_punch_connect_done(it->second->tcp_connecting.fd());
+                    if (d == 1)
+                        tcp_punch_take_ready(*it->second,
+                                             std::move(it->second->tcp_connecting));
+                    else if (d < 0)
+                        it->second->tcp_connecting.close();
+                }
+            }
+            for (auto& pf : tcp_ready_fds) {
+                auto it = conns_.find(pf.first);
+                if (it == conns_.end() || !it->second->tcp_ready.valid()) continue;
+                if (FD_ISSET(it->second->tcp_ready.fd(), &rfds))
+                    tcp_punch_on_readable(*it->second);
+            }
             if (FD_ISSET(sock_.fd(), &rfds)) {
                 sockaddr_in from;
                 int n = sock_.recv_from(recv_buf_, sizeof(recv_buf_), from);
@@ -541,12 +600,17 @@ void P2PClient::tick_connections(uint64_t now) {
         if (c->state == ConnState::Connecting) {
             tick_conn_punch(*c, now);
             if (!(c = conn_of(peer))) continue;
+            tick_tcp_punch(*c, now);
+            if (!(c = conn_of(peer))) continue;
             tick_conn_relay(*c, now);
             if (!(c = conn_of(peer))) continue;
             tick_conn_fsm(*c, now);
-        } else if (c->state == ConnState::Connected && c->via_relay && !cfg_.force_relay) {
-            if (!cfg_.lazy_p2p || c->want_direct)
+        } else if (c->state == ConnState::Connected && !cfg_.force_relay) {
+            if (c->via_relay && (!cfg_.lazy_p2p || c->want_direct))
                 tick_conn_punch(*c, now);
+            if (!(c = conn_of(peer))) continue;
+            if (!c->tcp_ok && (!cfg_.lazy_p2p || c->want_direct || c->tcp_have_peer))
+                tick_tcp_punch(*c, now);
         }
     }
 }
@@ -821,6 +885,7 @@ void P2PClient::handle_proto(uint8_t msg_id, const uint8_t* p, size_t plen,
     case MSG_CONNECT_ACK:            on_connect_ack(p, plen); break;
     case MSG_CONNECT_INVITE:         on_connect_invite(p, plen); break;
     case MSG_ICE_SDP:                on_ice_sdp(p, plen); break;
+    case MSG_TCP_PUNCH:              on_tcp_punch(p, plen); break;
     case MSG_LAN_QUERY:
     case MSG_LAN_ANNOUNCE:           on_lan_beacon(msg_id, p, plen, from); break;
     case MSG_PROXY_REGISTER_RSP:     on_proxy_register_rsp(p, plen); break;
@@ -1104,6 +1169,11 @@ void P2PClient::on_connect_ack(const uint8_t* p, size_t plen) {
             apply_lan_peer(peer, lit->second.addr, lit->second.addr.sin_port);
         }
         ensure_punch_pool(c);
+        auto tpit = pending_tcp_punch_.find(peer);
+        if (tpit != pending_tcp_punch_.end()) {
+            apply_tcp_punch_msg(c, tpit->second);
+            pending_tcp_punch_.erase(tpit);
+        }
     }
 
     std::vector<ServerAddr> cands;
@@ -1157,6 +1227,11 @@ void P2PClient::on_connect_invite(const uint8_t* p, size_t plen) {
             apply_lan_peer(peer, lit->second.addr, lit->second.addr.sin_port);
         }
         ensure_punch_pool(c);
+        auto tpit = pending_tcp_punch_.find(peer);
+        if (tpit != pending_tcp_punch_.end()) {
+            apply_tcp_punch_msg(c, tpit->second);
+            pending_tcp_punch_.erase(tpit);
+        }
     }
 
     std::vector<ServerAddr> cands;
@@ -1481,6 +1556,160 @@ void P2PClient::tick_extra_ice_ports(Conn& c, uint64_t now) {
     }
 }
 
+void P2PClient::send_tcp_punch(const Conn& c) {
+    TcpPunchMsg m{};
+    strncpy(m.dst_uuid, c.peer_uuid.c_str(), MAX_UUID_LEN);
+    strncpy(m.src_uuid, cfg_.uuid.c_str(), MAX_UUID_LEN);
+    const char* mapped = c.tcp_mapped_ip[0] ? c.tcp_mapped_ip : pub_ip_;
+    memcpy(m.mapped_ip, mapped, strnlen(mapped, MAX_IP_LEN - 1));
+    m.mapped_port = htons(c.tcp_mapped_port ? c.tcp_mapped_port : c.tcp_local_port);
+    if (is_loopback_host(nat_server_.ip) || is_loopback_host(pub_ip_))
+        strncpy(m.lan_ip, "127.0.0.1", MAX_IP_LEN - 1);
+    m.lan_port = htons(c.tcp_local_port);
+    m.mapping = nat_mapping_ ? nat_mapping_ : four_type_to_mapping(nat_type_);
+    m.flags = 0x01;
+    send_proto(MSG_TCP_PUNCH, &m, sizeof(m));
+    send_proto(MSG_TCP_PUNCH, &m, sizeof(m));
+    fprintf(stderr, "[P2PClient] tcp punch announced to %s %s:%u local=%u\n",
+            c.peer_uuid.c_str(), m.mapped_ip,
+            (unsigned)ntohs(m.mapped_port), (unsigned)c.tcp_local_port);
+}
+
+void P2PClient::apply_tcp_punch_msg(Conn& c, const TcpPunchMsg& m) {
+    const uint16_t mp = ntohs(m.mapped_port);
+    const uint16_t lp = ntohs(m.lan_port);
+    if (m.mapped_ip[0] && mp && sockaddr_from(m.mapped_ip, mp, c.tcp_peer))
+        c.tcp_have_peer = true;
+    if (m.lan_ip[0] && lp && sockaddr_from(m.lan_ip, lp, c.tcp_peer_lan))
+        c.tcp_have_peer_lan = true;
+}
+
+void P2PClient::on_tcp_punch(const uint8_t* p, size_t plen) {
+    if (plen < sizeof(TcpPunchMsg)) return;
+    TcpPunchMsg m{};
+    memcpy(&m, p, sizeof(m));
+    m.dst_uuid[MAX_UUID_LEN] = 0;
+    m.src_uuid[MAX_UUID_LEN] = 0;
+    const std::string dst(m.dst_uuid, strnlen(m.dst_uuid, MAX_UUID_LEN));
+    const std::string src(m.src_uuid, strnlen(m.src_uuid, MAX_UUID_LEN));
+    if (dst != cfg_.uuid || src.empty() || src == cfg_.uuid) return;
+    if (cfg_.force_relay) return;
+    Conn* c = conn_of(src);
+    if (!c) {
+        pending_tcp_punch_[src] = m;
+        fprintf(stderr, "[P2PClient] tcp punch buffered from %s\n", src.c_str());
+        return;
+    }
+    apply_tcp_punch_msg(*c, m);
+    fprintf(stderr, "[P2PClient] tcp punch from %s %s:%u\n",
+            src.c_str(), m.mapped_ip, (unsigned)ntohs(m.mapped_port));
+}
+
+void P2PClient::tcp_punch_take_ready(Conn& c, TcpFd&& fd) {
+    if (c.tcp_ok) {
+        fd.close();
+        return;
+    }
+    if (!fd.valid()) return;
+    fd.set_nodelay();
+    fd.set_nonblock();
+    c.tcp_ready = std::move(fd);
+    c.tcp_connecting.close();
+    c.tcp_listen.close();
+    c.tcp_ok = true;
+    tcp_punch_ok_.fetch_add(1);
+    fprintf(stderr, "[P2PClient] tcp punch ready with %s\n", c.peer_uuid.c_str());
+    set_connected(c, false);
+}
+
+void P2PClient::tcp_punch_on_readable(Conn& c) {
+    if (!c.tcp_ready.valid()) return;
+    uint8_t tmp[MAX_PKT];
+    const ssize_t n = c.tcp_ready.recv_some(tmp, sizeof(tmp));
+    if (n <= 0) {
+        if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
+            fprintf(stderr, "[P2PClient] tcp punch closed with %s\n", c.peer_uuid.c_str());
+            c.tcp_ready.close();
+            c.tcp_ok = false;
+        }
+        return;
+    }
+    c.tcp_rbuf.insert(c.tcp_rbuf.end(), tmp, tmp + n);
+    for (;;) {
+        uint8_t msg_id = 0;
+        std::vector<uint8_t> payload;
+        const int used = xn_pop_frame(c.tcp_rbuf, msg_id, payload);
+        if (used == 0) break;
+        if (used < 0) {
+            c.tcp_ready.close();
+            c.tcp_ok = false;
+            break;
+        }
+        if (msg_id == MSG_TCP_DATA && !payload.empty())
+            on_tunnel_frame(payload.data(), payload.size(), c.peer_uuid);
+    }
+}
+
+bool P2PClient::tcp_punch_send(Conn& c, const uint8_t* frame, size_t len) {
+    if (!c.tcp_ok || !c.tcp_ready.valid() || !frame || len == 0) return false;
+    uint8_t buf[MAX_PKT];
+    const size_t n = tcp_punch_frame(buf, sizeof(buf), frame, len);
+    if (n == 0) return false;
+    return c.tcp_ready.send_all(buf, n) == (ssize_t)n;
+}
+
+void P2PClient::tick_tcp_punch(Conn& c, uint64_t now) {
+    if (!cfg_.tcp_punch || cfg_.force_relay) return;
+    if (c.tcp_ok) return;
+    if (cfg_.lazy_p2p && !c.want_direct && !c.tcp_have_peer) return;
+    if (!c.tcp_have_peer && !tcp_punch_can_initiate(
+            nat_mapping_ ? nat_mapping_ : four_type_to_mapping(nat_type_)))
+        return;
+
+    if (!c.tcp_listen.valid() && c.tcp_local_port == 0) {
+        if (!tcp_punch_listen(c.tcp_listen, &c.tcp_local_port)) return;
+        c.tcp_mapped_port = c.tcp_local_port;
+        const char* mip = pub_ip_[0] ? pub_ip_ : "127.0.0.1";
+        memcpy(c.tcp_mapped_ip, mip, strnlen(mip, MAX_IP_LEN - 1));
+        fprintf(stderr, "[P2PClient] tcp punch listen %u peer=%s\n",
+                (unsigned)c.tcp_local_port, c.peer_uuid.c_str());
+    }
+
+    if (c.tcp_announce_n < 8 && now >= c.tcp_next_announce_ms && c.tcp_local_port) {
+        send_tcp_punch(c);
+        c.tcp_announce_n++;
+        c.tcp_next_announce_ms = now + (c.tcp_announce_n <= 2 ? 40 : 200);
+    }
+
+    if (!c.tcp_have_peer || c.tcp_connecting.valid() || c.tcp_connect_n >= 5)
+        return;
+    if (now < c.tcp_next_connect_ms) return;
+
+    char ip[INET_ADDRSTRLEN] = {};
+    uint16_t port = 0;
+    const bool use_lan = (c.tcp_connect_n % 2 == 1) && c.tcp_have_peer_lan;
+    if (use_lan) {
+        inet_ntop(AF_INET, &c.tcp_peer_lan.sin_addr, ip, sizeof(ip));
+        port = ntohs(c.tcp_peer_lan.sin_port);
+    } else {
+        inet_ntop(AF_INET, &c.tcp_peer.sin_addr, ip, sizeof(ip));
+        port = ntohs(c.tcp_peer.sin_port);
+    }
+    if (!ip[0] || port == 0) {
+        c.tcp_connect_n++;
+        c.tcp_next_connect_ms = now + 80;
+        return;
+    }
+    const int r = tcp_punch_connect_nb(c.tcp_connecting, c.tcp_local_port, ip, port);
+    c.tcp_connect_n++;
+    c.tcp_next_connect_ms = now + 80;
+    if (r == 1)
+        tcp_punch_take_ready(c, std::move(c.tcp_connecting));
+    else if (r < 0)
+        fprintf(stderr, "[P2PClient] tcp punch connect fail %s %s:%u\n",
+                c.peer_uuid.c_str(), ip, (unsigned)port);
+}
+
 void P2PClient::do_punch(Conn& c) {
     if (c.punch.juice) return; // #19 ICE 由 libjuice 线程驱动，跳过自研发包
     ensure_punch_pool(c);
@@ -1771,6 +2000,8 @@ void P2PClient::send_tunnel_via(Conn& c, const uint8_t* frame, size_t len) {
         juice_send(c.punch.juice, reinterpret_cast<const char*>(tx), txlen);
         return;
     }
+    if (c.tcp_ok && tcp_punch_send(c, tx, txlen))
+        return;
 
     if (direct_proven || (!relay_ready && c.punch.have_direct)) {
         // 直连已打通 / 打洞窗口内：优先使用确认直连的打洞 socket 发送
@@ -1983,6 +2214,11 @@ void P2PClient::close_conn(Conn& c) {
         fs_keys_.erase(peer);
     }
     pending_remote_sdp_.erase(peer);
+    pending_tcp_punch_.erase(peer);
+    c.tcp_listen.close();
+    c.tcp_connecting.close();
+    c.tcp_ready.close();
+    c.tcp_rbuf.clear();
     sessions_.erase(peer);
     conns_.erase(peer);
     if (on_disconnected) on_disconnected(peer);

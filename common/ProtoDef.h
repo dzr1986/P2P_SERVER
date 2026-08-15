@@ -95,6 +95,9 @@ enum MsgId : uint8_t {
     // ---- 局域网发现（对标 TUTK LAN Search，不经 NatServer）----
     MSG_LAN_QUERY             = 0x50,  // 查询同网段 UID: LanBeacon
     MSG_LAN_ANNOUNCE          = 0x51,  // 宣告本机 UID/端口: LanBeacon
+    // ---- TCP 打洞（学 EasyTier simultaneous open；经 NatServer 按 dst 中转）----
+    MSG_TCP_PUNCH             = 0x44,  // 交换 TCP 映射口: TcpPunchMsg
+    MSG_TCP_DATA              = 0x45,  // 打通后的 TCP 数据面（不经 NatServer）
 };
 
 // 局域网组播发现（管理范围 239.255/16，TTL=1 不出网段）
@@ -480,6 +483,18 @@ struct IceSdpMsg {
     char     src_uuid[MAX_UUID_LEN + 1];
     uint16_t sdp_len;                // 网络序：sdp 字节数
     char     sdp[1];                 // 变长，实际长度由 sdp_len 指定
+};
+
+// TCP 打洞映射交换（MSG_TCP_PUNCH，定长；NatServer 按 dst_uuid 投递）
+struct TcpPunchMsg {
+    char     dst_uuid[MAX_UUID_LEN + 1];
+    char     src_uuid[MAX_UUID_LEN + 1];
+    char     mapped_ip[MAX_IP_LEN];
+    uint16_t mapped_port;            // 网络序：公网/映射 TCP 口
+    char     lan_ip[MAX_IP_LEN];
+    uint16_t lan_port;               // 网络序：局域网 TCP 口
+    uint8_t  mapping;                // 本端 RFC 4787 映射（EIM/ADM/EDM）
+    uint8_t  flags;                  // 0x01=发起方
 };
 
 // 局域网发现信标（QUERY / ANNOUNCE 共用）

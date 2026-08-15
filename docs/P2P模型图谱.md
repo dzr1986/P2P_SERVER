@@ -110,7 +110,7 @@ ICE 已收集 v6 host；P8 监控应分开统计 v4/v6 直连率。
 
 DCUtR（IMC 2026）与后续综述：**同步好的 TCP 打洞率与 UDP/QUIC 相当**。
 企业网常只放行 TCP/443。本仓库已有 UDP ICE + UDP/443；
-P8 要补的是 **TCP 打洞或至少 TCP/TLS 中继**，不是再优化一轮纯 UDP。
+P8 已补 **TCP/TLS 中继** 与可选 **TCP 打洞**（`tcp_punch`，学 EasyTier 同时 connect），不是再优化一轮纯 UDP。
 
 ---
 
@@ -171,7 +171,7 @@ ICE 并行打洞，`direct_ok` 后 `send_tunnel_via` 切 `juice_send`，再回�
 | 对称×锥 | 对称侧打锥侧开口 | ICE 部分覆盖 |
 | 对称×对称 | 生日 / 可关 | 开关已落地（默认关，N≤256 熔断） |
 | NAT4E | 端口预测 | 有 step 时向 juice 注入 5 个预测口 |
-| TCP 打洞 | 与 UDP 并行，可单独关 | P8 |
+| TCP 打洞 | 与 UDP 并行，可单独关 | 开关已落地（默认关，EDM 不发起） |
 | `--lazy-p2p` | 无业务流量不后台打洞 | 省电 IPC 可学（与 P7 唤醒配合） |
 | 失败中继 | 自动回退 | 已有 Proxy |
 

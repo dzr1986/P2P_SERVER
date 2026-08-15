@@ -87,6 +87,7 @@ echo "== [0] unit tests =="
 ./tests/bin/twcc_test > /tmp/twcc_test.log 2>&1 && ok "TWCC Kalman unit tests" || fail "TWCC unit tests"
 ./tests/bin/portmap_test > /tmp/portmap_test.log 2>&1 && ok "portmap NAT-PMP/UPnP unit tests" || fail "portmap unit tests"
 ./tests/bin/nat_detect_test > /tmp/nat_detect_test.log 2>&1 && ok "RFC 4787 NAT detect / matrix unit tests" || fail "nat detect unit tests"
+./tests/bin/tcp_punch_test > /tmp/tcp_punch_test.log 2>&1 && ok "TCP punch simultaneous-open unit tests" || fail "tcp punch unit tests"
 
 # ---------------------------------------------------------------- 1. 直连
 echo "== [1] direct P2P (no auth) =="
@@ -656,6 +657,38 @@ kill -9 $PA_PID $PB_PID 2>/dev/null; PA_PID=""; PB_PID=""
 grep -q "DERP tcp ready" /tmp/peerB20.log && ok "B derp via CONNECT ProxyAltPort" || fail "B derp from CONNECT missing"
 grep -q "register ok tcp" /tmp/proxy.log && ok "proxy tcp register on alt" || fail "alt tcp register missing"
 grep -q "CONNECTED to A via relay" /tmp/peerB20.log && ok "B->A relay (alt dual)" || fail "alt dual relay missing"
+stop_all
+
+# ---------------------------------------------------------------- 21. EasyTier 式 TCP 打洞（默认关；与 ICE 并行，不改 force_relay）
+echo "== [21] TCP hole punch (simultaneous open) =="
+start_servers ""
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT A -tcp-punch > /tmp/peerA21.log 2>&1 & PA_PID=$!
+sleep 1
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT B A -tcp-punch > /tmp/peerB21.log 2>&1 & PB_PID=$!
+sleep 8
+kill -9 $PA_PID $PB_PID 2>/dev/null; PA_PID=""; PB_PID=""
+grep -q "tcp punch announced" /tmp/peerA21.log && ok "A tcp punch announced" || fail "A tcp punch announce missing"
+grep -q "tcp punch announced" /tmp/peerB21.log && ok "B tcp punch announced" || fail "B tcp punch announce missing"
+if grep -q "tcp punch ready" /tmp/peerA21.log || grep -q "tcp punch ready" /tmp/peerB21.log; then
+    ok "tcp punch ready (simultaneous open or accept)"
+else
+    fail "tcp punch ready missing"
+fi
+grep -q "CONNECTED to A via" /tmp/peerB21.log && ok "B connected with tcp-punch on" || fail "B connect missing with tcp-punch"
+# force_relay 仍不得打洞（含 TCP）
+stop_all
+start_servers ""
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT A -relay -tcp-punch > /tmp/peerA21r.log 2>&1 & PA_PID=$!
+sleep 1
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT B A -relay -tcp-punch > /tmp/peerB21r.log 2>&1 & PB_PID=$!
+sleep 6
+kill -9 $PA_PID $PB_PID 2>/dev/null; PA_PID=""; PB_PID=""
+if grep -q "tcp punch announced" /tmp/peerA21r.log || grep -q "tcp punch announced" /tmp/peerB21r.log; then
+    fail "force_relay must not TCP punch"
+else
+    ok "force_relay skips TCP punch"
+fi
+grep -q "CONNECTED to A via relay" /tmp/peerB21r.log && ok "B still relays under force_relay+tcp-punch" || fail "force_relay+tcp-punch relay missing"
 stop_all
 
 echo

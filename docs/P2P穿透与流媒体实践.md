@@ -173,7 +173,7 @@ NatServer `ProxyAltPort` 把兼听端口作为额外 CONNECT 候选；客户端�
 4. **真实 `tc netem` 1080p**：卡顿率 / P99 延迟验收（P3，CI 无 netem 权限时仍用用户态切片丢失）
 5. **Token nonce 防重放**：`TokenNonceCache` 已记已用 nonce，过期前重放返回 `CONNECT_BAD_TOKEN`
 6. **P8 开孔**：PCP/NAT-PMP/UPnP + 租约续约已落地（`PortMap.*`）；RFC 4787 二维 + NAT4E
-   与策略表已落地；生日/懒打洞开关默认关；v4/v6 直连计数已落地。TCP 打洞与现网 iptables 矩阵仍待补
+   与策略表已落地；生日/懒打洞/TCP 打洞开关默认关；v4/v6 直连计数已落地。现网 iptables 矩阵仍待补
 7. **P9–P11 旁路**：多看客 SFU/28181 网关、WHIP/WHEP、MoQ 预研 —— 不改 1:1 主路径
 
 参考文献：RFC 8445 / 8489 / 8656 / 4787；pion/ice 角色冲突处理；

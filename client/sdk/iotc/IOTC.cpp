@@ -44,6 +44,7 @@ struct IotcCtx {
     uint16_t proxy_tcp_port = 0;
     bool proxy_tcp_tls = true;
     bool force_relay = false;
+    bool tcp_punch = false;
     std::string connect_token_hex;
     P2PClient client;
     SessionSlot sess[IOTC_MAX_SESSIONS];
@@ -166,6 +167,12 @@ void IOTC_ForceRelay(int enable) {
     g->force_relay = (enable != 0);
 }
 
+void IOTC_SetTcpPunch(int enable) {
+    if (!g) return;
+    std::lock_guard<std::mutex> lk(g->mu);
+    g->tcp_punch = (enable != 0);
+}
+
 int IOTC_SetConnectToken(const char* token_hex) {
     if (!g) return IOTC_ER_NotInitialized;
     std::lock_guard<std::mutex> lk(g->mu);
@@ -192,6 +199,7 @@ int IOTC_Login(const char* uid, const char* secret, const char* auth_key_hex,
     cfg.proxy_tcp_tls = g->proxy_tcp_tls;
     cfg.proxy_tls_insecure = true;
     cfg.force_relay = g->force_relay;
+    cfg.tcp_punch = g->tcp_punch;
     {
         const char* e = std::getenv("P2P_DISABLE_LAN");
         if (e && e[0] == '1') cfg.lan_discover = false;

@@ -65,6 +65,7 @@ public:
         uint16_t birthday_n = 64;              // 扫描目的口上限（硬顶 256）
         uint32_t birthday_interval_ms = 40;    // 每批间隔
         bool lazy_p2p = false;                 // 中继已通则不后台打洞，直到有业务发送
+        bool tcp_punch = false;                // EasyTier 式 TCP 同时 connect，默认关
     };
 
     struct LanPeer {
@@ -123,6 +124,7 @@ public:
     uint64_t path_direct_v4() const { return path_direct_v4_.load(); }
     uint64_t path_direct_v6() const { return path_direct_v6_.load(); }
     uint64_t path_relay() const { return path_relay_.load(); }
+    uint64_t tcp_punch_ok() const { return tcp_punch_ok_.load(); }
 
 private:
     // 打洞子状态机（负责直连路径探测与超时）
@@ -178,6 +180,23 @@ private:
         ConnState state = ConnState::Idle;
         bool via_relay = false;         // Connected 时的路径类型（true=中继）
         bool want_direct = false;       // lazy_p2p：有业务发送后才后台打洞
+        // EasyTier 式 TCP 打洞（与 UDP ICE 并行；force_relay 不走）
+        TcpFd tcp_listen;
+        TcpFd tcp_connecting;
+        TcpFd tcp_ready;
+        uint16_t tcp_local_port = 0;
+        uint16_t tcp_mapped_port = 0;
+        char tcp_mapped_ip[MAX_IP_LEN] = {};
+        bool tcp_have_peer = false;
+        bool tcp_have_peer_lan = false;
+        bool tcp_ok = false;
+        sockaddr_in tcp_peer{};
+        sockaddr_in tcp_peer_lan{};
+        uint64_t tcp_next_announce_ms = 0;
+        uint64_t tcp_next_connect_ms = 0;
+        uint8_t tcp_announce_n = 0;
+        uint8_t tcp_connect_n = 0;
+        std::vector<uint8_t> tcp_rbuf;
         uint8_t peer_nattype = NAT_UNKNOWN;
         std::string connect_token_hex;  // 本连接出示的连线 Token（可空）
         uint32_t backoff_attempt = 0;   // #18 连接级退避尝试计数（CONNECT 重发/中继注册）
@@ -212,6 +231,13 @@ private:
     void tick_relay(uint64_t now);           // 中继注册重试
     void tick_portmap(uint64_t now);         // 家宽 UPnP/NAT-PMP 开孔 + 续约
     void tick_extra_ice_ports(Conn& c, uint64_t now); // NAT4E 预测 / 生日候选
+    void tick_tcp_punch(Conn& c, uint64_t now);       // EasyTier TCP simultaneous open
+    void send_tcp_punch(const Conn& c);
+    void on_tcp_punch(const uint8_t* p, size_t plen);
+    void apply_tcp_punch_msg(Conn& c, const TcpPunchMsg& m);
+    void tcp_punch_take_ready(Conn& c, TcpFd&& fd);
+    void tcp_punch_on_readable(Conn& c);
+    bool tcp_punch_send(Conn& c, const uint8_t* frame, size_t len);
     void note_path_stats(Conn& c, bool relay);
     void tick_connections(uint64_t now);     // 连接状态机（打洞/超时/降级中继/回切 P2P）
     void tick_conn_punch(Conn& c, uint64_t now);   // 打洞子状态机
@@ -334,6 +360,7 @@ private:
     std::atomic<uint64_t> path_direct_v4_{0};
     std::atomic<uint64_t> path_direct_v6_{0};
     std::atomic<uint64_t> path_relay_{0};
+    std::atomic<uint64_t> tcp_punch_ok_{0};
 
     struct HsState {
         uint8_t priv[32]{};
@@ -398,6 +425,7 @@ private:
     bool ready_fired_ = false;
     // ICE_SDP 可能早于 CONNECT_INVITE：按 src uuid 暂存，邀方创建后再应用
     std::unordered_map<std::string, std::string> pending_remote_sdp_;
+    std::unordered_map<std::string, TcpPunchMsg> pending_tcp_punch_;
 
     // 局域网发现
     UdpSocket lan_sock_;

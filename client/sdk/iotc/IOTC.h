@@ -52,6 +52,7 @@ int  IOTC_Login(const char* uid, const char* secret, const char* auth_key_hex,
 int  IOTC_SetProxy(const char* proxy_ip, uint16_t proxy_port);
 int  IOTC_SetProxyTcp(const char* proxy_ip, uint16_t tcp_port, int tls);
 void IOTC_ForceRelay(int enable);
+void IOTC_SetTcpPunch(int enable);  // EasyTier 式 TCP 打洞，Login 前调用
 // 下次 IOTC_Connect_ByUID 出示的连线 Token（104 hex；NULL/空串=不带）
 int  IOTC_SetConnectToken(const char* token_hex);
 

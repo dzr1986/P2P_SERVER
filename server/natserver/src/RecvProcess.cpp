@@ -43,6 +43,7 @@ void NatServer::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
     case MSG_ASK_EXTINFO_REQ:      on_msg_extinfo(h.msg_id, p, plen, from); break;
     case MSG_CONNECT_REQ:          on_msg_connect_req(p, plen, from); break;
     case MSG_ICE_SDP:              on_msg_ice_sdp(const_cast<uint8_t*>(p), plen, from); break;
+    case MSG_TCP_PUNCH:            on_msg_tcp_punch(const_cast<uint8_t*>(p), plen, from); break;
     case MSG_GET_DEV_LIST_REQ:     on_msg_dev_list(p, plen, from); break;
     case MSG_GET_SERVER_LIST_REQ:  on_msg_server_list(p, plen, from); break;
     case MSG_DELETE_UID_REQ:       on_msg_delete_uid(p, plen); break;
@@ -305,6 +306,40 @@ void NatServer::on_msg_ice_sdp(uint8_t* p, size_t plen, const sockaddr_in& from)
         return;
     }
     LOGW("NatServer", "ICE_SDP dst[%s] not found, drop", m->dst_uuid);
+}
+
+// ---------------------------------------------------------------- TCP 打洞映射中转（与 ICE_SDP 同路由）
+void NatServer::on_msg_tcp_punch(uint8_t* p, size_t plen, const sockaddr_in& from) {
+    if (plen < sizeof(TcpPunchMsg)) return;
+    TcpPunchMsg m{};
+    memcpy(&m, p, sizeof(m));
+    m.dst_uuid[MAX_UUID_LEN] = 0;
+    m.src_uuid[MAX_UUID_LEN] = 0;
+    const size_t body = sizeof(TcpPunchMsg);
+    auto cfg = cfg_;
+    if (cfg && !cfg->sync_auth_secret.empty() && plen >= body + 32) {
+        if (!sync_verify(p, plen, body)) {
+            LOGW("NatServer", "TCP_PUNCH sync MAC invalid dst[%s]", m.dst_uuid);
+            return;
+        }
+        plen = body;
+    } else if (plen > body) {
+        plen = body;
+    }
+
+    Peer dst;
+    if (peers_.get(m.dst_uuid, dst)) {
+        send_msg(dst.pub_addr, MSG_TCP_PUNCH, p, plen);
+        LOGI("NatServer", "TCP_PUNCH===>to dst UUID[%s] from[%s] %s:%d",
+             m.dst_uuid, m.src_uuid, m.mapped_ip, ntohs(m.mapped_port));
+        return;
+    }
+    if (sync_enabled()) {
+        LOGI("NatServer", "TCP_PUNCH dst[%s] not local, sync-forward", m.dst_uuid);
+        broadcast_sync_msg(MSG_TCP_PUNCH, p, plen, &from);
+        return;
+    }
+    LOGW("NatServer", "TCP_PUNCH dst[%s] not found, drop", m.dst_uuid);
 }
 
 // ---------------------------------------------------------------- 设备/服务器列表
