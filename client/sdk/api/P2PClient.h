@@ -124,6 +124,7 @@ private:
         bool ice_host_sdp_sent = false;      // 已用 host 候选发出首版 SDP（不等 STUN）
         bool ice_remote_gather_done = false; // 已通知 juice 对端收集结束
         bool ice_restarting = false;         // 正在换代，tick_ice 仍要重传 SDP
+        bool ice_nominated = false;          // 当前 juice 已 CONNECTED，可 juice_send
         uint8_t  ice_gen = 0;                // restart 代数（日志）
         uint64_t ice_remote_applied_ms = 0;  // 首次 set_remote 时间，供延迟标记 gathering done
         uint64_t ice_sdp_rtx_ms = 0;         // 最近一次发出本地 SDP

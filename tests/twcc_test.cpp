@@ -58,9 +58,10 @@ int main() {
 
     // 与 delay-based 混合：TWCC 更低时把目标往下拉
     AbrController ctl;
-    ctl.update(40, 8, 16, 0);                 // 空闲 → 向 6000 加性增
+    int first = ctl.update(40, 8, 16, 0);     // bootstrap → 6000
     int blended = ctl.update(40, 8, 16, 0, 800);
-    CHECK(blended < ABR_BASE_KBPS + 2 * ABR_AI_KBPS, "twcc blend pulls target down");
+    CHECK(first == 6000, "controller bootstrap underuse");
+    CHECK(blended < first, "twcc blend pulls target down");
 
     if (g_fail) {
         printf("twcc_test FAIL=%d\n", g_fail);

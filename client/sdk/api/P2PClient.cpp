@@ -197,6 +197,7 @@ void P2PClient::reset_ice_flags(Conn& c) {
     c.punch.ice_remote_applied_ms = 0;
     c.punch.ice_sdp_rtx_ms = 0;
     c.punch.ice_sdp_rtx_n = 0;
+    c.punch.ice_nominated = false;
     c.punch.local_sdp.clear();
     c.punch.remote_sdp.clear();
     c.punch.direct_ok = false;
@@ -1048,6 +1049,7 @@ void P2PClient::on_juice_state(juice_agent_t* agent, juice_state_t state, void* 
         if (c->self != self) return;  // 已被 close_conn 置空
         if (agent != c->punch.juice) return;  // 旧 agent 的状态忽略
         c->punch.direct_ok = true;
+        c->punch.ice_nominated = true;
         if (c->punch.juice_prev) self->reap_juice(c->punch.juice_prev);
         self->set_connected(*c, false);
     }
@@ -1243,7 +1245,7 @@ void P2PClient::on_juice_recv(juice_agent_t* agent, const char* data, size_t siz
     // 对端已能把应用数据打过来：视为直连就绪（controlling 偶发不打 CONNECTED）
     if (agent == c->punch.juice && !c->punch.direct_ok) {
         c->punch.direct_ok = true;
-        if (c->punch.juice_prev) self->reap_juice(c->punch.juice_prev);
+        // 不在 recv 里 reap juice_prev：新 agent 可能尚未 nominated，媒体仍走旧路径
         self->set_connected(*c, false);
     }
     // libjuice 已解 ICE，data 为应用负载，直接送入隧道帧处理
@@ -1418,14 +1420,17 @@ void P2PClient::send_tunnel_via(Conn& c, const uint8_t* frame, size_t len) {
     if (encrypt_tunnel_frame(c.peer_uuid, encbuf, frame, len, &txlen))
         tx = encbuf;
 
-    // ICE 已连通时优先走 juice_send（候选对由 libjuice 选定）
-    if (c.punch.juice && c.punch.direct_ok) {
+    // 当前 agent 已 nominated 才 juice_send；restart 换代期间走 juice_prev
+    if (c.punch.juice && c.punch.ice_nominated) {
         juice_send(c.punch.juice, reinterpret_cast<const char*>(tx), txlen);
         return;
     }
-    // restart 换代期间旧 agent 继续扛媒体，避免音视频中断
     if (c.punch.juice_prev) {
         juice_send(c.punch.juice_prev, reinterpret_cast<const char*>(tx), txlen);
+        return;
+    }
+    if (c.punch.juice && c.punch.direct_ok) {
+        juice_send(c.punch.juice, reinterpret_cast<const char*>(tx), txlen);
         return;
     }
 

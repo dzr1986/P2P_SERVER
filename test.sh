@@ -551,17 +551,18 @@ stop_servers
 
 # ---------------------------------------------------------------- 16. ICE restart（换 ufrag 重建 agent）
 echo "== [16] ICE restart =="
+sleep 0.5
 start_servers ""
-stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT A > /tmp/peerA.log 2>&1 & PA_PID=$!
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT A > /tmp/peerA16.log 2>&1 & PA_PID=$!
 sleep 1
-stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT B A -restart > /tmp/peerB.log 2>&1 & PB_PID=$!
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT B A -restart > /tmp/peerB16.log 2>&1 & PB_PID=$!
 sleep 10
 kill -9 $PA_PID $PB_PID 2>/dev/null; PA_PID=""; PB_PID=""
-grep -q "CONNECTED to A via direct" /tmp/peerB.log && ok "B->A direct before restart" || fail "B->A direct missing"
-grep -q "ICE restart requested" /tmp/peerB.log && ok "B requested ICE restart" || fail "ICE restart not requested"
-grep -q "ICE restart offer" /tmp/peerB.log && ok "B sent restart offer" || fail "ICE restart offer missing"
-grep -q "ICE restart answer" /tmp/peerA.log && ok "A applied restart answer" || fail "ICE restart answer missing"
-grep -q "ICE restarted" /tmp/peerB.log && ok "B ICE restarted" || fail "B ICE restarted missing"
+grep -q "CONNECTED to A via direct" /tmp/peerB16.log && ok "B->A direct before restart" || fail "B->A direct missing ($([ -f /tmp/peerB16.log ] && tail -30 /tmp/peerB16.log))"
+grep -q "ICE restart requested" /tmp/peerB16.log && ok "B requested ICE restart" || fail "ICE restart not requested"
+grep -q "ICE restart offer" /tmp/peerB16.log && ok "B sent restart offer" || fail "ICE restart offer missing"
+grep -q "ICE restart answer" /tmp/peerA16.log && ok "A applied restart answer" || fail "ICE restart answer missing"
+grep -q "ICE restarted" /tmp/peerB16.log && ok "B ICE restarted" || fail "B ICE restarted missing"
 stop_servers
 
 # ---------------------------------------------------------------- 17. TURN-over-443（Proxy 兼听高位端口，对标 UDP/443）
