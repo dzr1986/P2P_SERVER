@@ -77,6 +77,8 @@ libjuice 向 `stun_server_host:port` 发 Binding Request，用
 - 首次 `set_remote` **不** mark done，记下 `ice_remote_applied_ms`
 - 后续完整 SDP 按行 `juice_add_remote_candidate`，再 mark done
 - 回环 400ms / 公网 25s 兜底（`tick_ice`），防止只收到一包时永远不收口
+- 回环不发「首个 host」SDP：此时往往只有非 127.0.0.1 网卡，controlling 会打偏；
+  等 gather 完成再发齐。连线中每 200ms 重传完整 SDP（最多 8 次），抗跨服丢包
 
 ### 2.2.2 `Conn` 必须堆分配
 

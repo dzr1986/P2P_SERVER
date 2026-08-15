@@ -157,6 +157,8 @@ void P2PClient::connect(const std::string& peer_uuid, const std::string& token_h
     c.punch.ice_host_sdp_sent = false;
     c.punch.ice_remote_gather_done = false;
     c.punch.ice_remote_applied_ms = 0;
+    c.punch.ice_sdp_rtx_ms = 0;
+    c.punch.ice_sdp_rtx_n = 0;
     c.punch.local_sdp.clear();
     c.punch.remote_sdp.clear();
     c.relay.relay_ok = false;
@@ -1012,8 +1014,11 @@ void P2PClient::on_juice_candidate(juice_agent_t* agent, const char* sdp, void* 
     // 阶段 B：候选累积至 local_sdp（信令交换待扩展协议）
     if (!c->punch.local_sdp.empty()) c->punch.local_sdp += "\n";
     c->punch.local_sdp += sdp;
-    // 第一个 host 候选即可先发 SDP（回调线程内取 description，发起方/被邀方都不等 STUN）
-    if (sdp && strstr(sdp, "typ host") && !c->punch.ice_host_sdp_sent) {
+    // 公网：第一个 host 即可先发，不等 STUN。回环跳过——此时往往只有 eth0 等
+    // 非 127.0.0.1 候选，对端 controlling 会打到打不通的地址；gather 无 STUN
+    // 会立刻完成，由 on_juice_gathering_done 发齐全部 host。
+    if (sdp && strstr(sdp, "typ host") && !c->punch.ice_host_sdp_sent &&
+        !is_loopback_host(self->nat_server_.ip)) {
         char full[JUICE_MAX_SDP_STRING_LEN] = {0};
         if (juice_get_local_description(agent, full, sizeof(full)) == JUICE_ERR_SUCCESS &&
             full[0]) {
@@ -1126,6 +1131,9 @@ void P2PClient::send_ice_sdp(const std::string& peer, const std::string& local_s
     if (it != conns_.end() && it->second->punch.have_lan) {
         send_proto(MSG_ICE_SDP, buf.data(), msglen, it->second->punch.direct_lan);
     }
+    if (it != conns_.end()) {
+        it->second->punch.ice_sdp_rtx_ms = plat_now_ms();
+    }
     fprintf(stderr, "[P2PClient] ICE_SDP sent to %s len=%zu\n", peer.c_str(), plen);
 }
 
@@ -1216,6 +1224,14 @@ void P2PClient::tick_ice(uint64_t now) {
     for (auto& kv : conns_) {
         Conn& c = *kv.second;
         if (!c.connecting() || !c.punch.juice) continue;
+        // 完整 SDP 重传：跨服/多收包线程下 UDP 信令偶发丢第二包，controlling 会只剩错误 host
+        if (!c.punch.direct_ok && !c.punch.local_sdp.empty() &&
+            c.punch.ice_sdp_rtx_n < 8 &&
+            (c.punch.ice_sdp_rtx_ms == 0 || now - c.punch.ice_sdp_rtx_ms >= 200)) {
+            send_ice_sdp(c.peer_uuid, c.punch.local_sdp);
+            c.punch.ice_sdp_rtx_ms = now;
+            c.punch.ice_sdp_rtx_n++;
+        }
         if (c.punch.remote_sdp.empty() || c.punch.ice_remote_gather_done) continue;
         if (c.punch.ice_remote_applied_ms == 0) continue;
         if (now - c.punch.ice_remote_applied_ms < wait_ms) continue;

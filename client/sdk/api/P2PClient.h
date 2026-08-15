@@ -120,6 +120,8 @@ private:
         bool ice_host_sdp_sent = false;      // 已用 host 候选发出首版 SDP（不等 STUN）
         bool ice_remote_gather_done = false; // 已通知 juice 对端收集结束
         uint64_t ice_remote_applied_ms = 0;  // 首次 set_remote 时间，供延迟标记 gathering done
+        uint64_t ice_sdp_rtx_ms = 0;         // 最近一次发出本地 SDP
+        uint8_t  ice_sdp_rtx_n = 0;          // 连线中 SDP 重传次数
         std::string local_sdp;               // #19 本端 ICE SDP（gather 后填充）
         std::string remote_sdp;              // #19 对端 ICE SDP（信令交换）
     };
