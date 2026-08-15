@@ -122,9 +122,24 @@ void P2PClient::stop() {
     lan_sock_.close();
     lan_enabled_ = false;
     lan_cache_.clear();
-    conns_.clear();
-    sessions_.clear();
-    addr_to_peer_.clear();
+    std::vector<juice_agent_t*> leftover;
+    {
+        std::lock_guard<std::recursive_mutex> lk(mu_);
+        for (auto& kv : conns_) {
+            Conn& c = *kv.second;
+            if (c.punch.juice) {
+                leftover.push_back(c.punch.juice);
+                c.punch.juice = nullptr;
+            }
+            c.self = nullptr;
+        }
+        leftover.insert(leftover.end(), juice_reap_.begin(), juice_reap_.end());
+        juice_reap_.clear();
+        conns_.clear();
+        sessions_.clear();
+        addr_to_peer_.clear();
+    }
+    for (auto* j : leftover) juice_destroy(j);
 }
 
 // ---------------------------------------------------------------------------
@@ -235,13 +250,16 @@ void P2PClient::worker_loop() {
             if (lan_sock_.fd() + 1 > maxfd) maxfd = lan_sock_.fd() + 1;
         }
         std::vector<std::pair<std::string, int>> punch_fds; // peer_uuid -> socket fd
-        for (auto& kv : conns_) {
-            for (auto& ps : kv.second->punch.punch_socks) {
-                int fd = ps.fd();
-                if (fd < 0) continue;
-                FD_SET(fd, &rfds);
-                if (fd + 1 > maxfd) maxfd = fd + 1;
-                punch_fds.emplace_back(kv.first, fd);
+        {
+            std::lock_guard<std::recursive_mutex> lk(mu_);
+            for (auto& kv : conns_) {
+                for (auto& ps : kv.second->punch.punch_socks) {
+                    int fd = ps.fd();
+                    if (fd < 0) continue;
+                    FD_SET(fd, &rfds);
+                    if (fd + 1 > maxfd) maxfd = fd + 1;
+                    punch_fds.emplace_back(kv.first, fd);
+                }
             }
         }
         timeval tv; tv.tv_sec = 0; tv.tv_usec = 50000;
@@ -280,8 +298,13 @@ void P2PClient::worker_loop() {
                 }
             }
         }
-        std::lock_guard<std::recursive_mutex> lk(mu_);
-        tick(now);
+        std::vector<juice_agent_t*> reap;
+        {
+            std::lock_guard<std::recursive_mutex> lk(mu_);
+            tick(now);
+            reap.swap(juice_reap_);
+        }
+        for (auto* j : reap) juice_destroy(j);
     }
 }
 
@@ -385,6 +408,12 @@ void P2PClient::tick_conn_punch(Conn& c, uint64_t now) {
 
 // 中继子状态机：超时降级与保活
 void P2PClient::tick_conn_relay(Conn& c, uint64_t now) {
+    // ICE 仍在检查时不要按 6s 拆 agent：juice_destroy 曾与回调抢 mu_ 死锁，
+    // 且 IOTC_Connect 等待 15s，过早 close 会让直连永远完不成。
+    if (c.punch.juice && !c.punch.direct_ok && !cfg_.force_relay &&
+        now < c.punch.punch_deadline + cfg_.connect_timeout_ms) {
+        return;
+    }
     const bool need_relay = cfg_.force_relay ||
         (c.punch.have_direct && now >= c.punch.punch_deadline && !c.punch.direct_ok);
     if (need_relay) {
@@ -961,6 +990,8 @@ void P2PClient::on_connect_invite(const uint8_t* p, size_t plen) {
 void P2PClient::on_juice_state(juice_agent_t* /*agent*/, juice_state_t state, void* user_ptr) {
     auto* c = static_cast<Conn*>(user_ptr);
     if (!c) return;
+    fprintf(stderr, "[P2PClient] ICE state=%s peer=%s\n",
+            juice_state_to_string(state), c->peer_uuid.c_str());
     if (state == JUICE_STATE_CONNECTED || state == JUICE_STATE_COMPLETED) {
         P2PClient* self = c->self;
         if (!self) return;
@@ -1492,12 +1523,12 @@ void P2PClient::close_conn(Conn& c) {
     for (auto& ps : c.punch.punch_socks) ps.close();
     c.punch.punch_socks.clear();
     c.punch.direct_sock_idx = -1;
-    // #19 销毁 libjuice ICE agent（加锁保护，防止 ICE 线程回调访问已销毁对象）
-    {
-        std::lock_guard<std::recursive_mutex> lk(mu_);
-        if (c.punch.juice) { juice_destroy(c.punch.juice); c.punch.juice = nullptr; }
-        c.self = nullptr;  // 使在途 ICE 回调能检测失效
+    // 摘下 juice，锁外销毁：juice_destroy 会等回调结束，回调自身要拿 mu_
+    if (c.punch.juice) {
+        juice_reap_.push_back(c.punch.juice);
+        c.punch.juice = nullptr;
     }
+    c.self = nullptr;  // 使在途 ICE 回调能检测失效
     {
         auto hit = hs_.find(peer);
         if (hit != hs_.end()) {

@@ -83,7 +83,8 @@ libjuice 向 `stun_server_host:port` 发 Binding Request，用
 juice `user_ptr` 指向 `Conn`。`unordered_map<string, Conn>` 扩容会移动对象，
 回调变成野指针（随机崩溃、心跳 `pub_ip_` 乱码）。现为
 `unordered_map<string, unique_ptr<Conn>>`，`tick_connections` 先拷贝 key
-再驱动，避免 `close_conn` 边遍历边删。
+再驱动，避免 `close_conn` 边遍历边删。`juice_destroy` 必须在释放 `mu_`
+之后做：回调要拿同一把锁，持锁销毁会与 juice 线程死锁（IOTC `stop()` 挂死）。
 
 ### 2.3 TURN / 中继
 

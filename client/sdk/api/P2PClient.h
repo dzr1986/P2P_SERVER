@@ -321,6 +321,7 @@ private:
     std::recursive_mutex mu_;
     // unique_ptr：juice user_ptr 指向 Conn，map 扩容不得移动对象
     std::unordered_map<std::string, std::unique_ptr<Conn>> conns_;
+    std::vector<juice_agent_t*> juice_reap_; // close_conn 摘下，锁外销毁
     std::unordered_map<std::string, std::unique_ptr<Session>> sessions_;
     std::map<uint64_t, std::string> addr_to_peer_;   // ip<<16|port -> peer uuid
     uint16_t next_session_id_ = 1;
