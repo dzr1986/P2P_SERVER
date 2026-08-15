@@ -179,6 +179,10 @@ int main() {
     CHECK(path_addr_is_ipv6("[2001:db8::1]:3478"), "v6 bracket");
     CHECK(path_addr_is_ipv6("2001:db8::1:3478"), "v6 raw");
     CHECK(!path_addr_is_ipv6(""), "empty addr");
+    CHECK(sdp_has_ipv6_host("a=candidate:1 1 UDP 1 2001:db8::1 9 typ host\n"),
+          "sdp v6 host");
+    CHECK(!sdp_has_ipv6_host("a=candidate:1 1 UDP 1 127.0.0.1 9 typ host\n"),
+          "sdp v4 host");
     uint16_t bp[8];
     size_t bn = birthday_dest_ports(50000, 2, 5, bp, 8);
     CHECK(bn == 5 && bp[0] == 50000 && bp[1] == 50002 && bp[2] == 49998,

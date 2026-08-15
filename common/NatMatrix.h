@@ -7,6 +7,7 @@
 #include "common/ProtoDef.h"
 
 #include <cstdint>
+#include <cstring>
 
 namespace p2p {
 
@@ -57,6 +58,25 @@ inline uint8_t four_type_to_mapping(uint8_t nattype) {
 }
 
 // juice / "ip:port" / "[v6]:port" → 是否 IPv6（NAT66 也算 v6 路径，不假设必通）
+inline bool sdp_has_ipv6_host(const char* sdp) {
+    if (!sdp) return false;
+    for (const char* p = sdp; *p; ) {
+        const char* line = p;
+        while (*p && *p != '\n') ++p;
+        if (p - line > 12 && strncmp(line, "a=candidate", 11) == 0) {
+            bool colon = false, dot = false, brack = false;
+            for (const char* q = line; q < p; ++q) {
+                if (*q == '[') brack = true;
+                else if (*q == '.') dot = true;
+                else if (*q == ':') colon = true;
+            }
+            if (brack || (colon && !dot)) return true;
+        }
+        if (*p == '\n') ++p;
+    }
+    return false;
+}
+
 inline bool path_addr_is_ipv6(const char* s) {
     if (!s || !s[0]) return false;
     if (s[0] == '[') return true;

@@ -258,6 +258,7 @@ void P2PClient::reset_ice_flags(Conn& c) {
     c.punch.extra_ports_added = 0;
     c.punch.extra_ports_tripped = false;
     c.punch.extra_ports_next_ms = 0;
+    c.punch.path_note_direct = false;
 }
 
 void P2PClient::begin_ice_restart(Conn& c, bool as_offerer) {
@@ -429,13 +430,6 @@ void P2PClient::tick(uint64_t now) {
     tick_handshake(now);
     tick_lan(now);
     tick_ice(now);
-    for (auto& kv : conns_) {
-        Conn& c = *kv.second;
-        if (c.punch.path_note_direct) {
-            c.punch.path_note_direct = false;
-            note_path_stats(c, false);
-        }
-    }
 }
 
 // 心跳发送与重试间隔
@@ -627,7 +621,7 @@ void P2PClient::set_connected(Conn& c, bool relay) {
     if (c.state == ConnState::Connected) {
         if (c.via_relay && !relay) {
             c.via_relay = false;
-            c.punch.path_note_direct = true;  // tick 里再计 v4/v6
+            note_path_stats(c, false);
             if (on_connected) on_connected(c.peer_uuid, false);
         } else if (!relay && c.punch.ice_restarting) {
             c.punch.ice_restarting = false;
@@ -639,9 +633,8 @@ void P2PClient::set_connected(Conn& c, bool relay) {
     }
     c.state = ConnState::Connected;
     c.via_relay = relay;
-    if (relay) path_relay_.fetch_add(1);
-    else c.punch.path_note_direct = true;
-    // 握手放到 tick_handshake；路径 v4/v6 放到 tick，避免 juice 回调里调 juice_*
+    note_path_stats(c, relay);
+    // 握手放到 tick_handshake；路径统计只读已有 SDP，不调 juice_*
     if (on_connected) on_connected(c.peer_uuid, relay);
 }
 
@@ -1417,18 +1410,14 @@ void P2PClient::note_path_stats(Conn& c, bool relay) {
         path_relay_.fetch_add(1);
         return;
     }
-    char loc[64] = {};
-    char rem[64] = {};
-    bool v6 = false;
-    if (c.punch.juice &&
-        juice_get_selected_addresses(c.punch.juice, loc, sizeof(loc),
-                                     rem, sizeof(rem)) == JUICE_ERR_SUCCESS) {
-        v6 = path_addr_is_ipv6(loc) || path_addr_is_ipv6(rem);
-    }
+    // 不调用 juice_*（回调/持 mu_ 都会和 libjuice 线程死锁）。
+    // 两侧 SDP 出现 v6 host 则记 v6（NAT66 也算）；回环只有 127.0.0.1 → v4。
+    const bool v6 = sdp_has_ipv6_host(c.punch.local_sdp.c_str()) ||
+                    sdp_has_ipv6_host(c.punch.remote_sdp.c_str());
     if (v6) path_direct_v6_.fetch_add(1);
     else path_direct_v4_.fetch_add(1);
-    fprintf(stderr, "[P2PClient] path %s peer=%s loc=%s rem=%s v4=%llu v6=%llu relay=%llu\n",
-            v6 ? "direct-v6" : "direct-v4", c.peer_uuid.c_str(), loc, rem,
+    fprintf(stderr, "[P2PClient] path %s peer=%s v4=%llu v6=%llu relay=%llu\n",
+            v6 ? "direct-v6" : "direct-v4", c.peer_uuid.c_str(),
             (unsigned long long)path_direct_v4_.load(),
             (unsigned long long)path_direct_v6_.load(),
             (unsigned long long)path_relay_.load());
