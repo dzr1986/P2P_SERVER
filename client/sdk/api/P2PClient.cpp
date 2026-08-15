@@ -62,6 +62,17 @@ bool P2PClient::start(const Config& cfg) {
     if (!sockaddr_from(nat_server_.ip, nat_server_.port, nat_sock_)) return false;
 
     if (!sock_.open(0, "0.0.0.0")) return false;
+    portmap_pending_.clear();
+    portmap_ok_.clear();
+    next_portmap_ms_ = 0;
+    if (cfg_.port_map) {
+        const char* dis = getenv("P2P_DISABLE_PORTMAP");
+        if (dis && dis[0] == '1') cfg_.port_map = false;
+    }
+    if (cfg_.port_map) {
+        const uint16_t lp = sock_.local_port();
+        if (lp) portmap_pending_.push_back(lp);
+    }
 
     // P1：鉴权凭据 = 每 UID AuthKey（优先取配置的 hex，否则从主密钥派生）
     memset(auth_key_, 0, sizeof(auth_key_));
@@ -96,6 +107,8 @@ bool P2PClient::start(const Config& cfg) {
     derp_registered_.store(false);
     derp_rbuf_.clear();
     derp_addr_ = {};
+    next_derp_try_ms_ = 0;
+    derp_backoff_ms_ = 400;
     derp_use_tls_ = cfg.proxy_tcp_tls;
     if (cfg.proxy_tcp_port != 0) {
         std::string ip = !cfg.proxy_servers.empty() ? cfg.proxy_servers[0].ip
@@ -386,6 +399,7 @@ void P2PClient::tick(uint64_t now) {
     tick_auth(now);
     tick_nat_detect(now);
     tick_relay(now);
+    tick_portmap(now);
     tick_connections(now);
     tick_sessions(now);
     tick_handshake(now);
@@ -437,8 +451,27 @@ void P2PClient::tick_relay(uint64_t now) {
         relay_register();
         next_relay_reg_ = now + cfg_.relay_register_ms;
     }
-    if (!derp_registered_.load() && derp_addr_.port != 0 && !derp_fd_.valid())
+    if (!derp_registered_.load() && derp_addr_.port != 0 && !derp_fd_.valid() &&
+        now >= next_derp_try_ms_)
         derp_try_connect();
+}
+
+void P2PClient::tick_portmap(uint64_t now) {
+    if (!cfg_.port_map || portmap_pending_.empty() || now < next_portmap_ms_) return;
+    const uint16_t port = portmap_pending_.front();
+    portmap_pending_.erase(portmap_pending_.begin());
+    if (portmap_ok_.count(port)) return;
+    PortMapResult r;
+    if (portmap_any(port, 3600, r)) {
+        portmap_ok_[port] = r;
+        printf("[P2PClient] portmap %s %u->%u lifetime=%us\n",
+               r.backend, (unsigned)r.internal_port, (unsigned)r.external_port,
+               (unsigned)r.lifetime_sec);
+        fflush(stdout);
+        next_portmap_ms_ = now + 80;
+    } else {
+        next_portmap_ms_ = now + 400;
+    }
 }
 
 // 连接状态机（打洞/超时/降级中继；Connected+中继时后台继续打洞以便回切 P2P）
@@ -1112,6 +1145,13 @@ void P2PClient::on_juice_candidate(juice_agent_t* agent, const char* sdp, void* 
     // 公网：第一个 host 即可先发，不等 STUN。回环跳过——此时往往只有 eth0 等
     // 非 127.0.0.1 候选，对端 controlling 会打到打不通的地址；gather 无 STUN
     // 会立刻完成，由 on_juice_gathering_done 发齐全部 host。
+    if (self->cfg_.port_map && sdp) {
+        std::vector<uint16_t> ps;
+        portmap_host_ports_from_sdp(sdp, ps);
+        for (uint16_t p : ps) {
+            if (!self->portmap_ok_.count(p)) self->portmap_pending_.push_back(p);
+        }
+    }
     if (sdp && strstr(sdp, "typ host") && !c->punch.ice_host_sdp_sent &&
         !is_loopback_host(self->nat_server_.ip)) {
         char full[JUICE_MAX_SDP_STRING_LEN] = {0};
@@ -1492,6 +1532,8 @@ void P2PClient::derp_close() {
     derp_tls_.close();
     derp_fd_.close();
     derp_rbuf_.clear();
+    next_derp_try_ms_ = plat_now_ms() + derp_backoff_ms_;
+    if (derp_backoff_ms_ < 8000) derp_backoff_ms_ *= 2;
 }
 
 bool P2PClient::derp_send(uint8_t msg_id, const void* payload, size_t plen) {
@@ -1526,6 +1568,7 @@ void P2PClient::derp_on_readable() {
             on_proxy_register_rsp(payload.data(), payload.size());
             if (!payload.empty() && payload[0] == 0) {
                 derp_registered_.store(true);
+                derp_backoff_ms_ = 400;
                 printf("[P2PClient] DERP tcp registered\n");
                 fflush(stdout);
             }

@@ -19,6 +19,7 @@
 #include "common/Handshake.h"
 #include "common/Net.h"
 #include "common/ProtoDef.h"
+#include "common/PortMap.h"
 #include "common/TlsIo.h"
 #include "common/Uid.h"
 #include "client/sdk/plat/Plat.h"
@@ -59,6 +60,7 @@ public:
         uint16_t proxy_tcp_port = 0;           // DERP TCP/TLS 面（0=不连；可由 CONNECT 填）
         bool proxy_tcp_tls = true;             // TCP 面默认 TLS（对标 DERP HTTPS/443）
         bool proxy_tls_insecure = true;        // 自签/内网不校验证书；生产应 false
+        bool port_map = true;                  // PCP/NAT-PMP/UPnP 主动开孔（失败忽略）
     };
 
     struct LanPeer {
@@ -192,6 +194,7 @@ private:
     void tick_auth(uint64_t now);            // 鉴权状态机（challenge/login 重试）
     void tick_nat_detect(uint64_t now);      // NAT 检测推进
     void tick_relay(uint64_t now);           // 中继注册重试
+    void tick_portmap(uint64_t now);         // 家宽 UPnP/NAT-PMP 开孔（每 tick 最多一孔）
     void tick_connections(uint64_t now);     // 连接状态机（打洞/超时/降级中继/回切 P2P）
     void tick_conn_punch(Conn& c, uint64_t now);   // 打洞子状态机
     void tick_conn_relay(Conn& c, uint64_t now);   // 中继子状态机
@@ -349,6 +352,12 @@ private:
     bool       derp_use_tls_ = false;
     std::atomic<bool> derp_registered_{false};
     std::vector<uint8_t> derp_rbuf_;
+    uint64_t next_derp_try_ms_ = 0;
+    uint32_t derp_backoff_ms_ = 400;
+
+    std::vector<uint16_t> portmap_pending_;
+    std::unordered_map<uint16_t, PortMapResult> portmap_ok_;
+    uint64_t next_portmap_ms_ = 0;
 
     // 会话与连接
     std::recursive_mutex mu_;

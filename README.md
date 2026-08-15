@@ -150,7 +150,9 @@ bash test.sh         # 本地端到端测试（两个对端打洞直连）
 
 ```sh
 ./server/natserver/bin/p2p_natserver <NatServerPort> <ProxyServerPort> <WanIP> [P2pServers.cfg]
-./server/proxyserver/bin/p2p_proxy <Port> <MaxProxyNum> [Workers] [QuotaMB] [AltPort]
+./server/proxyserver/bin/p2p_proxy <Port> <MaxProxyNum> [Workers] [QuotaMB] [AltPort] [TcpPort]
+# AltPort 未给 TcpPort 时兼听 TCP/TLS（对标 443）。证书：P2P_PROXY_TLS_CERT / P2P_PROXY_TLS_KEY
+# 启动脚本：P2P_PROXY_ALT_PORT=443 P2P_PROXY_TCP_PORT=443 ./start.sh public
 ./client/bin/peer <NatServerIP> <NatServerPort> <UUID> [对端UUID] [ProxyIP] [ProxyPort] [-s 密钥] [-relay] [-restart]
 ```
 

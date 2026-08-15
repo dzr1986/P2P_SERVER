@@ -345,8 +345,9 @@ libp2p DCUtR ~70%、TUTK 号称 ~92%。本仓库有中心信令，**应显著高
 锥型组合目标仍是 ≥85%，对称×对称不计入该分母（必须中继）。
 
 - 范围：
-  1. **PCP / NAT-PMP / UPnP IGD**（学 EasyTier）：先 IGD 再 NAT-PMP/PCP，租约续期；
-     家宽主动要口，把 EDM 近似成 EIM（优先，零服务器成本）。失败是常态。
+  1. **PCP / NAT-PMP / UPnP IGD**（学 EasyTier）【核心已落地】：`common/PortMap.*`，
+     先 IGD 再 NAT-PMP 再 PCP；ICE host 候选端口入队、worker 里逐个开孔。
+     `P2P_DISABLE_PORTMAP=1` 可关。失败是常态。续约/现网家宽验收待补。
   2. **RFC 4787 二维 NAT 探测**：日志/监控用 `mapping=EIM|ADM|EDM` + `filter=…`，四型只作对外说法；
      识别 **NAT4E（端口递增/递减）** 则走预测，不先扫端口。
   3. **生日打洞（可选，默认关）**：EIM×EDM 时 N≤256、有间隔、失败即停，防 IDS

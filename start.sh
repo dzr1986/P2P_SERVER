@@ -8,6 +8,10 @@ cd "$(dirname "$0")"
 
 NAT_PORT=16001
 PROXY_PORT=16002
+# 可选：P2P_PROXY_ALT_PORT=443 P2P_PROXY_TCP_PORT=443
+#       P2P_PROXY_TLS_CERT=/path/fullchain.pem P2P_PROXY_TLS_KEY=/path/privkey.pem
+PROXY_ALT="${P2P_PROXY_ALT_PORT:-0}"
+PROXY_TCP="${P2P_PROXY_TCP_PORT:-0}"
 
 # 默认本地模式
 BIND_IP="127.0.0.1"
@@ -24,6 +28,12 @@ echo " P2P 服务器启动"
 echo "  模式: $BIND_IP"
 echo "  NatServer:  $BIND_IP:$NAT_PORT (UDP)"
 echo "  P2PProxy:  $BIND_IP:$PROXY_PORT (UDP)"
+if [ "$PROXY_ALT" != "0" ]; then
+    echo "  Proxy UDP/TCP alt: $PROXY_ALT (DERP；未设 TcpPort 时兼听 TCP)"
+fi
+if [ "$PROXY_TCP" != "0" ]; then
+    echo "  Proxy TCP/TLS: $PROXY_TCP"
+fi
 echo "========================================"
 
 # 先停掉旧进程
@@ -31,15 +41,30 @@ pkill -9 -f "server/natserver/bin/[p]2p_natserver" 2>/dev/null
 pkill -9 -f "server/proxyserver/bin/[p]2p_proxy" 2>/dev/null
 sleep 1
 
-# 启动 NatServer
-./server/natserver/bin/p2p_natserver $NAT_PORT $PROXY_PORT $BIND_IP &
+# 启动 NatServer（有 Alt/Tcp 时写入配置，CONNECT 才能宣告 DERP 口）
+NAT_CFG=""
+if [ "$PROXY_ALT" != "0" ] || [ "$PROXY_TCP" != "0" ]; then
+    NAT_CFG=/tmp/p2p_start.cfg
+    : > "$NAT_CFG"
+    [ "$PROXY_ALT" != "0" ] && echo "ProxyAltPort=$PROXY_ALT" >> "$NAT_CFG"
+    [ "$PROXY_TCP" != "0" ] && echo "ProxyTcpPort=$PROXY_TCP" >> "$NAT_CFG"
+fi
+if [ -n "$NAT_CFG" ]; then
+    ./server/natserver/bin/p2p_natserver $NAT_PORT $PROXY_PORT $BIND_IP "$NAT_CFG" &
+else
+    ./server/natserver/bin/p2p_natserver $NAT_PORT $PROXY_PORT $BIND_IP &
+fi
 NAT_PID=$!
 echo "[OK] NatServer started (PID=$NAT_PID)"
 
 sleep 2
 
-# 启动 P2PProxy
-./server/proxyserver/bin/p2p_proxy $PROXY_PORT 100 &
+# 启动 P2PProxy（Workers=2 Quota=0；Alt/Tcp 为 0 时与旧行为一致）
+if [ "$PROXY_ALT" != "0" ] || [ "$PROXY_TCP" != "0" ]; then
+    ./server/proxyserver/bin/p2p_proxy $PROXY_PORT 100 2 0 "$PROXY_ALT" "$PROXY_TCP" &
+else
+    ./server/proxyserver/bin/p2p_proxy $PROXY_PORT 100 &
+fi
 PROXY_PID=$!
 echo "[OK] P2PProxy started (PID=$PROXY_PID)"
 

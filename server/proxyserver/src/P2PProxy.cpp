@@ -36,7 +36,10 @@ int P2PProxy::init(uint16_t port, uint16_t max_proxy, int workers,
                    uint64_t quota_bytes, uint16_t alt_port, uint16_t tcp_port) {
     port_ = port;
     alt_port_ = (alt_port && alt_port != port) ? alt_port : 0;
-    tcp_port_ = (tcp_port && tcp_port != port) ? tcp_port : 0;
+    // 未单独给 TcpPort 时，AltPort（生产 443）兼听 TCP —— 对标 DERP 同口 UDP+TLS
+    if (tcp_port && tcp_port != port) tcp_port_ = tcp_port;
+    else if (!tcp_port && alt_port_) tcp_port_ = alt_port_;
+    else tcp_port_ = 0;
     max_proxy_ = max_proxy;
     workers_ = (workers >= 1 && workers <= 64) ? workers : 4;
     quota_bytes_ = quota_bytes;

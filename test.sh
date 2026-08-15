@@ -69,6 +69,7 @@ make -s all || { echo "BUILD FAILED"; exit 1; }
 echo "build ok"
 # 测试默认关闭 LAN 组播，避免占用 17890 / 串扰 ICE；[15] 再打开
 export P2P_DISABLE_LAN=1
+export P2P_DISABLE_PORTMAP=1   # CI 无家宽 IGD，开孔单测见 [0] portmap_test
 kill_strays
 sleep 0.3
 
@@ -84,6 +85,7 @@ echo "== [0] unit tests =="
 ./tests/bin/abr_test > /tmp/abr_test.log 2>&1 && ok "ABR delay-based unit tests" || fail "ABR delay-based unit tests"
 ./tests/bin/ice_sdp_test > /tmp/ice_sdp_test.log 2>&1 && ok "ICE SDP ufrag/restart unit tests" || fail "ICE SDP unit tests"
 ./tests/bin/twcc_test > /tmp/twcc_test.log 2>&1 && ok "TWCC Kalman unit tests" || fail "TWCC unit tests"
+./tests/bin/portmap_test > /tmp/portmap_test.log 2>&1 && ok "portmap NAT-PMP/UPnP unit tests" || fail "portmap unit tests"
 
 # ---------------------------------------------------------------- 1. 直连
 echo "== [1] direct P2P (no auth) =="
@@ -632,6 +634,27 @@ elif grep -q "CONNECTED to A via direct" /tmp/peerB19.log; then
 else
     grep -q "CONNECTED to A via relay" /tmp/peerB19.log && ok "B stayed on derp relay" || fail "B no connected path"
 fi
+stop_all
+
+# ---------------------------------------------------------------- 20. AltPort 兼听 TCP（不单独传 TcpPort）+ CONNECT 宣告
+echo "== [20] AltPort dual-stack TCP (no explicit TcpPort) =="
+PROXY_ALT=18445
+printf 'ProxyAltPort=%d\n' $PROXY_ALT > $CFG
+stdbuf -oL $NAT_BIN $NAT_PORT $PROXY_PORT 127.0.0.1 $CFG > /tmp/nat.log 2>&1 &
+NAT_PID=$!
+sleep 0.5
+stdbuf -oL $PROXY_BIN $PROXY_PORT 100 2 0 $PROXY_ALT > /tmp/proxy.log 2>&1 &
+PROXY_PID=$!
+sleep 0.5
+grep -q "DERP tcp listen $PROXY_ALT" /tmp/proxy.log && ok "alt port also listens TCP" || fail "alt dual tcp listen missing"
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT A 127.0.0.1 $PROXY_PORT -relay > /tmp/peerA20.log 2>&1 & PA_PID=$!
+sleep 1
+stdbuf -oL $PEER_BIN 127.0.0.1 $NAT_PORT B A 127.0.0.1 $PROXY_PORT -relay > /tmp/peerB20.log 2>&1 & PB_PID=$!
+sleep 8
+kill -9 $PA_PID $PB_PID 2>/dev/null; PA_PID=""; PB_PID=""
+grep -q "DERP tcp ready" /tmp/peerB20.log && ok "B derp via CONNECT ProxyAltPort" || fail "B derp from CONNECT missing"
+grep -q "register ok tcp" /tmp/proxy.log && ok "proxy tcp register on alt" || fail "alt tcp register missing"
+grep -q "CONNECTED to A via relay" /tmp/peerB20.log && ok "B->A relay (alt dual)" || fail "alt dual relay missing"
 stop_all
 
 echo

@@ -21,7 +21,7 @@ BIN_PEER := bin/peer
 PEER_SRCS := demo/peer.cpp \
              sdk/api/P2PClient.cpp
 
-COMMON_SRCS := ../common/Crypto.cpp ../common/TlsIo.cpp
+COMMON_SRCS := ../common/Crypto.cpp ../common/TlsIo.cpp ../common/PortMap.cpp
 
 HEADERS := sdk/api/P2PClient.h \
            sdk/plat/Plat.h \

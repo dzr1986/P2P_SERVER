@@ -281,7 +281,7 @@ Cloudflare 已把 MoQ 当「实时 + CDN 中继」方向。本仓库 IPC 预览�
 |------|----|------|
 | ICE + 自建 TURN | 已做，继续加固 | — |
 | DERP 式「先通再切」 | P8：TCP/443 中继面 | 不做成系统 VPN / 虚拟网卡 |
-| PCP/UPnP/NAT-PMP | P8，学 EasyTier 顺序与续约 | 失败是常态 |
+| PCP/UPnP/NAT-PMP | 已落地（`PortMap`，失败忽略） | 续约/现网家宽验收待补 |
 | 生日打洞 / NAT4E 预测 | P8 可选，默认关，有上限 | 不作为默认；对称×对称直接中继 |
 | TCP 打洞 | P8 与 TLS 中继二选一或并行 | 不替代 UDP ICE |
 | SFU / 多看客 | P9 旁路网关 | 不在设备上 mesh |
