@@ -238,11 +238,11 @@ int IOTC_Connect_ByUID(const char* peer_uid, int timeout_ms) {
     g->client.connect(peer_uid, token);   // 锁外调用（见文件头锁序约定）
 
     std::unique_lock<std::mutex> lk(g->mu);
-    bool ok = g->cv.wait_for(lk, std::chrono::milliseconds(timeout_ms),
-                             [sid] { return g->sess[sid].connected ||
-                                            g->sess[sid].closed; });
-    if (!ok || !g->sess[sid].connected) {
-        // 超时/失败：释放句柄（底层 Conn 由 P2PClient 超时逻辑自行回收）
+    g->cv.wait_for(lk, std::chrono::milliseconds(timeout_ms),
+                   [sid] { return g->sess[sid].connected ||
+                                  g->sess[sid].closed; });
+    // 以 connected 为准：wait 超时与 on_connected 竞态时，!ok 仍可能已连通
+    if (!g->sess[sid].connected) {
         g->peer2sid.erase(g->sess[sid].peer);
         g->sess[sid] = SessionSlot{};
         return IOTC_ER_ConnectTimeout;

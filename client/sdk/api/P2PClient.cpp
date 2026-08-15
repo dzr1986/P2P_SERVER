@@ -158,6 +158,7 @@ bool P2PClient::start(const Config& cfg) {
 
 void P2PClient::stop() {
     if (!running_.exchange(false)) return;
+    if (sock_.fd() >= 0) ::shutdown(sock_.fd(), SHUT_RDWR);
     // 尽力注销中继
     if (relay_registered_ && !proxies_.empty()) {
         ProxyRegReq req;
