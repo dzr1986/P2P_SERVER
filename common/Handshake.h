@@ -19,6 +19,7 @@ namespace p2p {
 constexpr uint8_t  HS_MAGIC = 0xE1;
 constexpr uint8_t  HS_VER = 1;
 constexpr uint8_t  HS_HELLO = 1;
+constexpr uint8_t  HS_ACK = 2;
 constexpr uint8_t  HS_CHANNEL = 0xFE;
 constexpr size_t   HS_PUB = 32;
 constexpr size_t   HS_NONCE = 16;
@@ -27,11 +28,13 @@ constexpr size_t   HS_LEN = 3 + HS_PUB + HS_NONCE + HS_MAC;
 constexpr char     HS_LABEL[] = "P2P-FS-v1";
 
 inline size_t hs_write(uint8_t* out, size_t cap, const uint8_t pub[32],
-                       const uint8_t nonce[16], const uint8_t* psk, size_t psk_len) {
+                       const uint8_t nonce[16], const uint8_t* psk, size_t psk_len,
+                       uint8_t type = HS_HELLO) {
     if (!out || cap < HS_LEN || !pub || !nonce) return 0;
+    if (type != HS_HELLO && type != HS_ACK) return 0;
     out[0] = HS_MAGIC;
     out[1] = HS_VER;
-    out[2] = HS_HELLO;
+    out[2] = type;
     memcpy(out + 3, pub, HS_PUB);
     memcpy(out + 3 + HS_PUB, nonce, HS_NONCE);
     memset(out + 3 + HS_PUB + HS_NONCE, 0, HS_MAC);
@@ -46,7 +49,7 @@ inline size_t hs_write(uint8_t* out, size_t cap, const uint8_t pub[32],
 inline bool hs_read(const uint8_t* buf, size_t len, uint8_t pub[32],
                     uint8_t nonce[16], const uint8_t* psk, size_t psk_len) {
     if (!buf || len != HS_LEN || buf[0] != HS_MAGIC || buf[1] != HS_VER ||
-        buf[2] != HS_HELLO || !pub || !nonce) {
+        (buf[2] != HS_HELLO && buf[2] != HS_ACK) || !pub || !nonce) {
         return false;
     }
     if (psk && psk_len > 0) {

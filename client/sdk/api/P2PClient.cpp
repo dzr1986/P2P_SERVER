@@ -346,7 +346,7 @@ void P2PClient::set_connected(Conn& c, bool relay) {
     if (c.state == ConnState::Connected) return;
     c.state = ConnState::Connected;
     c.via_relay = relay;
-    start_handshake(c.peer_uuid);
+    // 握手放到 tick_handshake，避免在 libjuice 状态回调里 juice_send
     if (on_connected) on_connected(c.peer_uuid, relay);
 }
 
@@ -361,7 +361,8 @@ void P2PClient::start_handshake(const std::string& peer) {
     uint8_t msg[HS_LEN];
     const uint8_t* psk = secret_.empty() ? nullptr : (const uint8_t*)secret_.data();
     if (hs_write(msg, sizeof(msg), h.pub, h.nonce, psk, secret_.size()) == 0) return;
-    if (auto* s = session_for(peer)) s->send(HS_CHANNEL, msg, HS_LEN, true);
+    // 不可靠发送，避免占用可靠序号把头阻塞 IOCtrl/RDT
+    if (auto* s = session_for(peer)) s->send(HS_CHANNEL, msg, HS_LEN, false);
     if (h.remote_ready) finish_handshake(peer);
 }
 
@@ -373,12 +374,17 @@ void P2PClient::on_hs_msg(const std::string& peer, const uint8_t* data, size_t l
         return;
     }
     auto& h = hs_[peer];
+    if (data[2] == HS_ACK) {
+        h.peer_acked = true;
+        return;
+    }
     if (h.remote_ready && memcmp(h.peer_pub, pub, 32) == 0 &&
         memcmp(h.peer_nonce, nonce, 16) == 0) {
         return;   // 重复 HELLO
     }
     if (h.done && memcmp(h.peer_pub, pub, 32) != 0) {
         h.done = false;
+        h.peer_acked = false;
         h.local_ready = false;   // 对端轮换：本端同步换新临时密钥
     }
     memcpy(h.peer_pub, pub, 32);
@@ -409,6 +415,12 @@ void P2PClient::finish_handshake(const std::string& peer) {
     if (!h.done) tunnel_fs_ok_.fetch_add(1);
     h.done = true;
     h.last_rekey_ms = plat_now_ms();
+    // 通知对端：本端已派生，对端可以切换 FS 加密
+    uint8_t ack[HS_LEN];
+    const uint8_t* psk = secret_.empty() ? nullptr : (const uint8_t*)secret_.data();
+    if (hs_write(ack, sizeof(ack), h.pub, h.nonce, psk, secret_.size(), HS_ACK) != 0) {
+        if (auto* s = session_for(peer)) s->send(HS_CHANNEL, ack, HS_LEN, false);
+    }
 }
 
 void P2PClient::tick_handshake(uint64_t now) {
@@ -419,9 +431,23 @@ void P2PClient::tick_handshake(uint64_t now) {
             start_handshake(kv.first);
             continue;
         }
+        if (!it->second.done || !it->second.peer_acked) {
+            if (now - it->second.last_rekey_ms >= 200) {
+                it->second.last_rekey_ms = now;
+                uint8_t msg[HS_LEN];
+                const uint8_t* psk = secret_.empty() ? nullptr : (const uint8_t*)secret_.data();
+                if (hs_write(msg, sizeof(msg), it->second.pub, it->second.nonce,
+                             psk, secret_.size()) != 0) {
+                    if (auto* s = session_for(kv.first))
+                        s->send(HS_CHANNEL, msg, HS_LEN, false);
+                }
+            }
+            continue;
+        }
         if (it->second.done && now - it->second.last_rekey_ms >= 180000) {
             it->second.local_ready = false;
             it->second.done = false;
+            it->second.peer_acked = false;
             start_handshake(kv.first);
         }
     }
@@ -1066,7 +1092,10 @@ bool P2PClient::psk_tunnel_key(const std::string& peer, uint8_t out[32]) {
 
 bool P2PClient::get_tunnel_key(const std::string& peer, uint8_t out[32]) {
     auto it = fs_keys_.find(peer);
-    if (it != fs_keys_.end() && it->second.has_cur) {
+    auto hit = hs_.find(peer);
+    // 仅在对端已 ACK（确认已派生）后改用 FS 加密，避免对端尚未完成握手时解不开
+    if (it != fs_keys_.end() && it->second.has_cur &&
+        hit != hs_.end() && hit->second.peer_acked) {
         memcpy(out, it->second.cur.data(), 32);
         return true;
     }

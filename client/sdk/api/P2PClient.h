@@ -265,6 +265,7 @@ private:
         bool local_ready = false;
         bool remote_ready = false;
         bool done = false;
+        bool peer_acked = false;   // 对端已派生，可以开始用 FS 密钥加密
         uint64_t last_rekey_ms = 0;
     };
     struct FsKeyPair {
