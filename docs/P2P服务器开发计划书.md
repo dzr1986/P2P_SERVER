@@ -30,7 +30,7 @@
 | [`EasyTier指南架构对照.md`](EasyTier指南架构对照.md) / [`EasyTier核心架构对照.md`](EasyTier核心架构对照.md) | 目录对照（只学编排） |
 | [`EasyTier配置对照.md`](EasyTier配置对照.md) | 配置覆盖与键 |
 | [`P2P模型图谱.md`](P2P模型图谱.md) | 学什么 / 不抄什么 |
-| [`P2P穿透与流媒体实践.md`](P2P穿透与流媒体实践.md) | ICE / STUN / DERP / 通道 |
+| [`P2P穿透与流媒体实践.md`](P2P穿透与流媒体实践.md) | P2P 流媒体特点 + ICE / STUN / DERP / 通道 |
 | [`启动与测试指南.md`](启动与测试指南.md) | 怎么跑、端口、`test.sh` |
 
 ---
