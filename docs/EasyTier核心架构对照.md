@@ -1,7 +1,7 @@
 # EasyTier-core 目录对照（只学编排，不抄成 SD-WAN）
 
 > 对照源：本机只读树 `/home/ubuntu/EasyTier/easytier-core/src/`（**不要** `git add` 进本仓库）。
-> 配套：[`P2P模型图谱.md`](P2P模型图谱.md) §4.5、[`开发指南.md`](开发指南.md) §1、[`P2P服务器开发计划书.md`](P2P服务器开发计划书.md) P8。
+> 配套：[`P2P模型图谱.md`](P2P模型图谱.md) §4.5、[`开发指南.md`](开发指南.md) §1、[`P2P服务器开发计划书.md`](P2P服务器开发计划书.md)（档 A 已收口）。
 
 EasyTier 是 **开源 SD-WAN / 虚拟网卡 mesh**。本仓库是 **有中心信令的 IoT UID 会话**。
 分层可以学，产品形态不能抄。

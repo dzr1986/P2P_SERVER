@@ -1,469 +1,377 @@
-# 类 TUTK P2P 服务器开发计划书
+# P2P 服务器开发计划书
 
-> 目标：基于本仓库现有代码（NatServer + P2PProxy + 客户端 SDK），演进为一套可私有化部署、
-> 对标 TUTK Kalay（IOTC/AV/RDT/P2PTunnel）的 P2P 物联网连接平台，
-> 首要场景为 IP 摄像机 / NVR 的远程实时视频与设备管理。
+> 更新：2026-08-16。本文是**活计划**：先写清现在有什么，再写还该做什么。
+> 产品：可私有化部署、对标 TUTK Kalay 的 **有中心信令 IoT UID** 平台。
+> 首要场景：IPC / NVR 远程预览与设备管理。**不是** EasyTier 式 SD-WAN。
 >
-> 配套文档：[`代码优化分析报告.md`](../代码优化分析报告.md)、
-> [`流媒体优化学习路线.md`](流媒体优化学习路线.md)、
-> [`P2P穿透与流媒体实践.md`](P2P穿透与流媒体实践.md)（ICE/STUN/TURN 对照）、
-> [`P2P模型图谱.md`](P2P模型图谱.md)（行业 P2P 模型与取舍）。
+> 编号约定：新工作只用 **档 A / B / C**。`P0–P11` 只在附录对照历史阶段，不再当待办清单。
 
 ---
 
-## 1. 项目定位与目标
+## 0. 怎么用本文
 
-### 1.1 对标产品
+| 你想… | 看 |
+|--------|----|
+| 现在做到哪、下一档是什么 | §2 |
+| 进程怎么拆、流量怎么走 | §3 |
+| 和 TUTK 差在哪 | §4 |
+| 配置键 / 目录不能再堆什么 | §5 |
+| 协议与选路（已落地） | §6 |
+| **还该做什么、按什么优先级** | §7 |
+| 绝对不能改什么 | §8 |
+| 怎么验收、当前基线 | §9 |
 
-TUTK Kalay 平台的核心价值：设备烧录一个 **UID** 即可被全球任意客户端连接，
-平台负责 NAT 穿透（P2P）与中继兜底（Relay），SDK 提供音视频（AV）、
-可靠传输（RDT）、TCP 隧道（P2PTunnel）三类通道，穿透成功即流量走 P2P，
-为流媒体节省大量服务器带宽成本。
+配套（细节不在本文重复）：
 
-### 1.2 本项目目标
-
-| 维度 | 目标 |
+| 文档 | 用途 |
 |------|------|
-| 功能 | UID 报到/连接、LAN/P2P/Relay 三模式自动选择、AV 帧级通道、RDT 可靠通道、TCP 隧道 |
-| 穿透率 | P2P 直连 ≥ 85%（锥型 NAT 组合），含中继兜底整体可达率 ≥ 99.9% |
-| 连接时延 | LAN < 300ms；P2P 打洞 < 3s；打洞失败切中继总时长 < 8s |
-| 规模 | 单 NatServer 节点 ≥ 10 万设备在线；单 Relay 节点 ≥ 500 Mbps 转发 |
-| 部署 | 全部组件可私有化部署（对标 TUTK「P2P 服务器可私有化」） |
-| 安全 | 报到鉴权、端到端加密（AEAD 已有 → 前向保密握手）、防 UID 盗用/串流 |
-
-### 1.3 非目标（本计划不含）
-
-云存储/云录像、推送服务、账号体系 App 云（对标 Kalay 的 Cloud Recording / Push
-/ Account Management 模块）——预留 API 边界，后续独立立项。
+| [`p2p_server优化完毕.md`](p2p_server优化完毕.md) | 信令核收口清单 |
+| [`项目整体优化分析.md`](项目整体优化分析.md) | 全仓库体检与本轮改动 |
+| [`EasyTier指南架构对照.md`](EasyTier指南架构对照.md) / [`EasyTier核心架构对照.md`](EasyTier核心架构对照.md) | 目录对照（只学编排） |
+| [`EasyTier配置对照.md`](EasyTier配置对照.md) | 配置覆盖与键 |
+| [`P2P模型图谱.md`](P2P模型图谱.md) | 学什么 / 不抄什么 |
+| [`P2P穿透与流媒体实践.md`](P2P穿透与流媒体实践.md) | ICE / STUN / DERP / 通道 |
+| [`启动与测试指南.md`](启动与测试指南.md) | 怎么跑、端口、`test.sh` |
 
 ---
 
-## 2. 术语对标：TUTK 概念 ↔ 本项目
+## 1. 定位
 
-| TUTK 概念 | 说明 | 本项目现状 | 差距 |
-|-----------|------|-----------|------|
-| UID（20 字节） | 平台签发的设备唯一 ID，设备以 UID 向 P2P 服务器报到 | `common/Uid.*` + `tools/uidgen`（20 字符 Base32） | 签发/校验已落地；批量签发与计费面待补 |
-| P2P Server | 管理 UID 报到、协助连线、全球分布 | `NatServer`（心跳/CONNECT/跨服同步/REGION 调度/STUN Binding） | 10 万心跳压测待补 |
-| Relay Server | 打洞失败时转发数据 | `P2PProxy`（RELAY_DATA + HMAC + QuotaMB + AltPort/443） | 现网带宽压测待补；TCP/443 DERP 面见 P8 |
-| IOTC Session (SID) | 设备↔客户端连接载体，上限 128 | `client/sdk/iotc/IOTC.*` SID 句柄表（上限 128） | 已落地 |
-| IOTC Channel（0~31） | 会话内逻辑通道 | `IOTC_Session_Read/Write`（0~31） | 已落地 |
-| AVAPIs (avIndex) | 音视频帧级传输，重传可配，上限 32 通道/连接 | `AVAPIs` + `AvCodec` 分片/重组/too-late-drop | 弱网 1080p 压测待补（P3 验收） |
-| RDTAPIs | 可靠字节流 Read/Write | `RDTAPIs` 分片发送 + leftover 部分读取 | 已落地（大文件压测待补） |
-| P2PTunnelAPIs | 把 TCP 协议（RTSP/HTTP/SSH）隧道化 | `P2PTunnel_Serve/Map` + `TunnelCodec` | 已落地（RTSP/ffmpeg 演示待补） |
-| avSendIOCtrl | 控制指令通道 | `avSendIOCtrl/avRecvIOCtrl`（通道 0 可靠） | 已落地 |
-| LAN Search | 局域网免服务器发现 | 组播 `239.255.77.89:17890` + `IOTC_Search_Device` | 免服务器纯 LAN 建链（无 NatServer）待补 |
-| Device Wakeup | 低功耗设备唤醒 | `p2p_wakeserver` + `MSG_WAKE_*` | 三平台 SDK 接入与 <6s 出图待补 |
-| AuthKey / Token 鉴权 | 报到与连线鉴权 | 每 UID AuthKey + `EnableConnectToken` + nonce 防重放 + X25519 FS | — |
+### 1.1 对标什么
 
-**结论**：UID / IOTC / AV / RDT / Tunnel / REGION 调度 / wakeserver 协议 /
-ICE restart / TURN-over-443 / TWCC+Kalman **核心已落地**。
-**p2p_server 信令核（P0–P8 可在本仓库完成的部分）已收口**，见
-[`p2p_server优化完毕.md`](p2p_server优化完毕.md)。
+TUTK Kalay 的核心：设备烧一个 **UID**，全球客户端能连上；平台做 NAT 穿透和中继兜底；
+SDK 提供 IOTC（会话）、AV（帧）、RDT（可靠流）、P2PTunnel（TCP 映射）。
+直连成功则媒体不经服务器，省中继带宽。
 
-下一档差距不在「再拆 NatServer」，而在环境/旁路：
+本仓库对齐这条价值链，**不**对齐 Kalay 的云录像 / 推送 / App 账号。
 
-1. **现网验收**：10 万心跳、弱网 1080p、三平台 SDK、唤醒出图 <6s、真 `tc netem`、
-   docker+iptables NAT 矩阵。
-2. **观看拓扑**（P9）：1:1 保持 P2P；多看客走旁路 SFU/网关，禁止 mesh。
-3. **浏览器 / 国标接入**（P10/P9）：WHIP/WHEP、28181 网关，不改设备端主协议。
-4. **P11 MoQ**：只调研，不进 1:1 主路径。
+### 1.2 目标（验收口径）
 
-模型取舍与公开穿透率对照见 [`P2P模型图谱.md`](P2P模型图谱.md)。
-中国家宽 >95% 在 CGNAT 后，中继按 **15–30%（国内可按 ~30%）** 做容量，不是「偶尔兜底」。
+| 维度 | 目标 | 口径 |
+|------|------|------|
+| 功能 | UID 报到、LAN / P2P / Relay 自动选路、AV / RDT / Tunnel | **档 A 已具备** |
+| 直连率 | 锥×锥 ≥ 85% | **不含** EDM×EDM（必须中继） |
+| 可达率 | 含中继 ≥ 99.9% | 国内家宽多在 CGNAT 后，中继按 **15–30%（国内可按 ~30%）** 做容量 |
+| 时延 | LAN < 300ms；打洞 < 3s；失败切中继总时长 < 8s | **档 B** 现网待验 |
+| 规模 | 单 NatServer ≥ 10 万在线；单 Relay ≥ 500 Mbps | **档 B** 压测机待验，不是再改信令分发 |
+| 部署 | 全部组件可私有化 | 裸机 / 容器均可 |
+| 安全 | 每 UID AuthKey、连线 Token、AEAD + X25519 FS、中继 HMAC | **档 A 已具备** |
+
+### 1.3 非目标
+
+- 云存储、推送、账号云（独立立项）
+- TUN / DHCP / 子网代理 / SOCKS / 魔法 DNS / mesh / 系统 VPN
+- 把 SFU、28181、WHIP/WHEP、MoQ 塞进 `p2p_natserver`
+- 改 `force_relay`「不打洞」语义（`test.sh` [2]/[11]/[21] 依赖）
+
+---
+
+## 2. 现在做到哪一档
+
+一句话：**仓库内核已收口。** 下一档是现网验收和旁路网关，不是再拆 NatServer。
+
+| 档 | 内容 | 状态 | 缺的是 |
+|----|------|------|--------|
+| **A. 仓库内核** | 信令、中继、UID/Token、IOTC/AV/RDT/Tunnel、ICE/DERP/TCP 打洞、同步/调度/状态口 | **已收口** | 无（小项见 §7.3） |
+| **B. 现网验收** | 10 万心跳、弱网 1080p、家宽开孔、443 正式证书、三平台 SDK、唤醒出图 <6s、真 `tc netem` / iptables NAT 矩阵 | **待环境** | 机器、证书、真设备 |
+| **C. 旁路网关** | 多看客 SFU、28181、WHIP/WHEP、MoQ 预研 | **未立项** | 独立进程，禁止进信令核 |
+
+编排目标：**先保证通（中继/443），再升级直连**。一对多禁止设备侧 mesh。
 
 ---
 
 ## 3. 总体架构
 
 ```
-                       ┌──────────────── 管理面 ────────────────┐
-                       │  UID 签发服务   统计/计费 API   监控告警  │
-                       └──────┬──────────────┬─────────────────┘
-                              │              │
-        ┌─────────────────────▼──────────────▼───────────────────┐
-        │                    P2P 服务器集群 (NatServer)             │
-        │   区域A: nat-a1 nat-a2 ←同步→ 区域B: nat-b1 nat-b2 ...    │
-        │   职责: UID 报到/心跳/在线表、CONNECT 协调、NAT 探测、      │
-        │        跨服注册表同步(已有)、调度返回就近 Relay             │
-        └───────┬──────────────────────────────────┬─────────────┘
-                │ 报到/心跳/打洞协调                  │ 可用性探测(已有)
-     ┌──────────▼─────────┐                ┌────────▼───────────┐
-     │  设备端 SDK          │   P2P 直连     │  Relay 集群(P2PProxy)│
-     │  (IPC/NVR/嵌入式)    │◄════════════► │  打洞失败兜底转发      │
-     │  UID 烧录 + 报到      │   打洞失败↘    │  注册鉴权(已有)+配额   │
-     └──────────▲─────────┘      中继       └────────▲───────────┘
-                │        ┌───────────────────────────┘
-     ┌──────────▼────────┴─┐
-     │  客户端 SDK           │  通道 API: IOTC(会话) / AV(音视频帧) /
-     │  (App/PC/Web网关)     │           RDT(可靠流) / Tunnel(TCP映射)
-     └─────────────────────┘
+                       ┌────────────── 管理面（档 B 补齐）──────────────┐
+                       │  UID 批量签发 / 计费面    监控告警 / 部署手册   │
+                       └──────┬───────────────────────┬────────────────┘
+                              │                       │
+        ┌─────────────────────▼───────────────────────▼─────────────────┐
+        │              p2p_natserver 集群（只建连，不转发业务）            │
+        │   区域 A: nat-a1 ↔ RegistrySync ↔ 区域 B: nat-b1 …             │
+        │   报到 / 心跳 / CONNECT / STUN / REGION 调度 / 状态口            │
+        └───────┬─────────────────────────────────────┬─────────────────┘
+                │ 信令                                  │ RelayHealth
+     ┌──────────▼─────────┐                ┌───────────▼──────────┐
+     │  设备 / App SDK     │   直连成功      │  p2p_proxy 集群      │
+     │  IOTC / AV / RDT    │◄═════════════► │  UDP 或 TCP/TLS 443  │
+     │  Tunnel             │   失败才中继    │  HMAC + 配额         │
+     └──────────▲─────────┘                └──────────▲───────────┘
+                │ 离线目标                              │
+                └──────── p2p_wakeserver POKE ──────────┘
 ```
 
-组件与仓库目录映射：
-
-| 组件 | 目录 | 状态 |
-|------|------|------|
-| NatServer | `server/natserver/` | UID/REGION 调度/STUN Binding/连线 Token 已落地 |
-| Relay | `server/proxyserver/` | HMAC 注册 + QuotaMB 已落地 |
-| 设备/客户端 SDK 核 | `client/sdk/`（api/session/transport/proto/plat/iotc） | IOTC/AV/RDT/Tunnel 已落地 |
-| 唤醒服务 | `server/wakeserver/` | 保活/触发/POKE 雏形 |
-| UID / Token 工具 | `tools/uidgen/` `tools/tokengen/` | 已落地 |
-| 管理面 API | `StatusServer` `GET /` + `GET /metrics` | Prometheus 已落地 |
-
----
-
-## 4. 核心设计
-
-### 4.1 UID 体系
-
-对标 TUTK 20 字节 UID，采用结构化编码（Base32 大写，可读可校验）：
-
 ```
-UID(20B) = PREFIX(4B) + REGION(1B) + RANDOM(12B) + CRC(3B)
-  PREFIX : 客户/产品线代码（签发时分配，用于计费与隔离）
-  REGION : 建议接入区域（调度提示，非强制）
-  RANDOM : 密码学随机（p2p_random_bytes，已有安全熵源）
-  CRC    : 前 17 字节校验（快速拒绝手输错误/爆破）
+设备/App ──心跳 / CONNECT──► p2p_natserver
+                │
+                ├─ 直连：LAN / ICE / TCP 打洞
+                └─ 失败 ──► p2p_proxy（只转发）
+离线目标 ──► p2p_wakeserver POKE
 ```
 
-- **签发**：`tools/uidgen` 离线批量生成，同时产出 `UID → AuthKey(32B)` 清单；
-  AuthKey 烧录进设备安全存储，服务端存 HMAC 派生值（不存明文）。
-- **报到鉴权**：复用现有挑战应答（`AUTH_CHALLENGE/LOGIN`），密钥从全局
-  `AuthSecret` 收敛为 **每 UID 独立 AuthKey**（防单点泄漏拖垮全网）。
-- **防串流**：客户端连线携带业主签发的连线 Token（HMAC(AuthKey, uid‖有效期‖nonce)），
-  NatServer 验签后才下发 CONNECT_ACK；对标 TUTK 的 `av_token` 模式。
-- 兼容期：UID 与旧 uuid 并存（协议字段 33B 足够容纳 Base32 UID 字符串）。
-
-### 4.2 会话与通道模型（对齐 IOTC/AV/RDT 三层）
-
-```
-IOTC_Session (SID)                 ← 现有 Conn+Session，补 SID 句柄表(上限128)
- ├─ Channel 0 : 默认控制通道        ← IOCtrl 指令(可靠)
- ├─ Channel 1 : AV 视频            ← 不可靠+FEC+延迟预算(帧级 API)
- ├─ Channel 2 : AV 音频            ← 不可靠+FEC(小帧高频)
- ├─ Channel 3 : RDT 文件           ← 可靠字节流(背压)
- └─ Channel N : P2PTunnel(RTSP...) ← RDT 之上的 TCP 端口映射
-```
-
-SDK API 形态（C 风格导出，贴近 TUTK 习惯便于客户迁移）：
-
-```c
-int  P2P_Initialize(const char* server_list);
-int  P2P_Device_Login(const char* uid, const char* auth_key);      // 设备报到
-int  P2P_Connect_ByUID(const char* uid, const char* token);        // 返回 SID
-int  AV_Start(int sid, int channel, const AVConfig* cfg);          // 返回 avIndex
-int  AV_SendFrame(int av, const uint8_t* frame, int len, const FrameInfo* fi);
-int  AV_RecvFrame(int av, uint8_t* buf, int cap, FrameInfo* fi);   // 整帧出、可丢过期帧
-int  AV_SendIOCtrl(int av, uint16_t cmd, const void* data, int len);
-int  RDT_Write(int rdt, const void* data, int len);                // 可靠流，满窗阻塞/背压
-int  RDT_Read(int rdt, void* buf, int cap, int timeout_ms);
-int  Tunnel_Map(int sid, uint16_t local_tcp_port, uint16_t remote_tcp_port);
-```
-
-### 4.3 连接流程（三模式自动选择）
-
-```
-Client                         NatServer                       Device
-  │ 1. LAN 组播 QUERY/ANNOUNCE ──局域网 239.255.77.89:17890 ─────► │
-  │    命中 → 写入 have_lan，SDP 可走局域网单播                    │
-  │ 2. CONNECT_REQ(uid,token) ──►│ 验 token/在线表                 │
-  │ ◄── CONNECT_ACK(公网/私网/NAT类型/Relay候选) │── INVITE ──────► │
-  │ 3. CONNECT_OK 后发起方 gather（controlling）◄══ ICE/P2P ══════► │
-  │    host 候选先发 SDP；srflx trickle；回环跳过 STUN              │
-  │    跨服：本机无 dst 时 ICE_SDP 经 sync 对端转发（防同步竞态）     │
-  │    换网：restart_ice 重建 agent，旧路径扛媒体直到新 ICE 就绪     │
-  │ 4. 超时/对称NAT → Relay 注册(HMAC，已有) → RELAY_DATA 中继      │
-  │    企业网：Proxy 兼听 UDP/443（ProxyAltPort）+ TCP/TLS（ProxyTcpPort）│
-  │    DERP：TCP/TLS 先注册出图，ICE 并行，direct_ok 无缝切直连         │
-  │ 5. 中继期间打洞持续后台重试，成功即无缝升级回 P2P                │
-```
-
-模式偏好与 TUTK / 群晖 QuickConnect 一致：LAN > P2P > Relay。
-编排目标从「先打洞、失败再中继」演进为 **先保证通（中继/443），再升级直连**
-（学 Tailscale DERP，不抄系统 VPN）。连接建立后 `link_stats()` +
-`abr_suggest_kbps()` + AIMD 平滑驱动通道层码率自适应。
-
-一对多（多手机同时看一台 IPC）**不要 mesh P2P**，见 P9。
-
-### 4.4 AV 通道（流媒体面，直接受益于第二轮优化）
-
-- **帧分片/重组**：视频 I 帧远大于 `MAX_TUNNEL_PAYLOAD(1200)`，通道层按
-  `frame_id + slice_idx/slice_cnt` 分片，收端整帧重组后交付（对齐 `avRecvFrameData2` 语义）。
-- **重传可配**（对标 TUTK `resend` 开关）：直播模式走不可靠+FEC（已有 XOR FEC），
-  回放/文件走可靠通道。
-- **延迟预算 + too-late-drop**（学 SRT，第三轮传输项）：帧带时间戳，
-  超预算的分片不再重传/投递，宁丢不卡。
-- **丢帧策略**：拥塞（`send()` 返回 -2，已有信号）时按 非参考帧 → P 帧 → 整 GOP 丢弃，
-  I 帧优先保护（FEC 加密度）。
-- **音频优先**：音频通道帧小、优先级高于视频（发送队列排序）。
-
-### 4.5 RDT 与 P2PTunnel
-
-- RDT：在 `Session` 可靠通道（已有自适应 RTO/快速重传/拥塞窗口）之上加
-  字节流化（消息边界消除）与背压（窗口满时 `RDT_Write` 阻塞或 EAGAIN）。
-- P2PTunnel：本地 TCP listen ↔ RDT 通道 ↔ 对端 TCP connect 的双向搬运，
-  即可透传 RTSP/ONVIF/HTTP/SSH，是存量设备零改造接入的关键卖点。
-
-### 4.6 安全体系（在两轮加固之上）
-
-| 层 | 现状 | 计划 |
-|----|------|------|
-| 报到鉴权 | 全局 secret 挑战应答、常量时间比较 | 每 UID 独立 AuthKey；失败限速与封禁（AntiAbuse 已有） |
-| 连线授权 | `EnableConnectToken` + `tokengen` | 已落地（验签 + `TokenNonceCache` 防重放） |
-| 数据加密 | AEAD(AES-256-CTR+HMAC)、密钥自 PSK 派生 | X25519 ECDH 握手实现前向保密，AEAD 复用现有实现；预留 DTLS 选项 |
-| 服务器间 | 同步 HMAC 签名+时间戳防重放（已有） | 无大改 |
-| 中继 | 注册 HMAC + 源地址校验（已有） | 中继流量按 UID 计量，配额超限限速 |
-
-### 4.7 低功耗唤醒（门铃/电池 IPC 场景）
-
-新增 `wakeserver`：设备休眠前与唤醒服务器保持极低频 UDP 保活（NAT 映射不失效），
-客户端连线时 NatServer 通知唤醒服务器发唤醒包 → 设备全速上线走正常连接流程。
-协议复用 XN 报文头，新增 `MSG_WAKE_KEEPALIVE / MSG_WAKE_TRIGGER`。
-
----
-
-## 5. 分阶段开发计划
-
-> 每阶段给出范围、交付物、依赖与验收标准。阶段间尽量并行（SDK 通道层与服务端集群层独立）。
-
-### P0 基线（已完成）
-连接底座与多轮优化：打洞/中继/鉴权/加密/跨服同步/ICE/自适应 RTO/快速重传/拥塞窗口/FEC/LinkStats /
-ICE restart / TURN-over-443 / TWCC+Kalman。
-端到端 `test.sh` **PASS=108 FAIL=0**（数字随用例增长，以仓库当前脚本为准）。
-
-### P1 UID 体系与设备身份【已落地（核心部分）】
-- 范围：20B 结构化 UID 编解码与 CRC 校验；`tools/uidgen` 签发工具；
-  每 UID AuthKey 报到鉴权（PeerManage/LicenseMgr 扩展）；连线 Token 验签；
-  设备/客户端角色区分（dev_type 已有字段，语义落地）。
-- 交付物：uidgen 工具、协议文档更新、服务端验签实现、单测。
-- 验收：伪造 UID/过期 Token/错误 AuthKey 全部被拒；旧 uuid 兼容并存；`test.sh` 增加鉴权用例。
-- **落地情况**：
-  - `common/Uid.h/.cpp`：20 字符 Base32 UID（PREFIX4+REGION1+RANDOM12+CRC3，SHA-256 截断 CRC）、
-    `uid_generate/uid_valid/uid_derive_auth_key`（域分隔 HMAC 派生）
-  - `tools/uidgen`：批量签发，输出 `UID AuthKey_hex`；主密钥即服务端 `AuthSecret`
-  - 服务端：`UidStrict=1` 时心跳/挑战双门拒绝非结构化 UID；登录验签与加密心跳流密钥
-    全部改为**每 UID 派生密钥**（单设备泄露不影响全网，设备间无法互解心跳）
-  - 客户端 SDK：`Config.auth_key_hex`（设备侧只烧录 AuthKey，不知晓主密钥）；
-    demo `-k` 选项；旧 `-s` 主密钥模式自动派生，兼容并存
-  - 验证：`tests/uid_test.cpp` 17 项断言；`test.sh` [9] 端到端（合法 UID -k 鉴权成功、
-    伪造 UID 双门被拒）；当时全量 PASS=50，现已并入 `test.sh` 108 项
-  - 连线 Token：`common/ConnectToken.*` + `tools/tokengen`；
-    `EnableConnectToken=1` 时 CONNECT 必须尾随 Token（HMAC(dst AuthKey, src‖dst‖expire‖nonce)）；
-    过期/错 src/错 MAC/已用 nonce 返回 `CONNECT_BAD_TOKEN`（`TokenNonceCache` 记已用至 expire）；
-    旧客户端不带 Token 在开关关闭时兼容
-  - 验证：`tests/token_test.cpp`；`test.sh` [14]
-  - 未含：dev_type 角色语义细化
-
-### P2 会话与通道 API 层（SDK 核心重构）【已落地】
-- 范围：SID 句柄表（上限 128）与 IOTC 通道（0~31）生命周期管理；
-  C 导出 API（`IOTC_Connect_ByUID`/`avStart`/...）；线程安全回调→轮询双模式。
-- 依赖：无（纯 SDK 层，`P2PClient/Session` 之上封装）。
-- 交付物：`client/sdk/iotc/` 新模块 + 头文件 + `iotc_demo`。
-- 验收：单会话 4 通道并发（控制+视频+音频+文件）互不干扰；API 覆盖单测。
-- **落地情况**：
-  - `IOTC.h/.cpp`：进程级单例、SID 句柄表、每通道接收队列、阻塞 Read、
-    `IOTC_Session_GetLinkStats`；锁序约定避免与 P2PClient 回调死锁
-  - `AVAPIs` + `AvCodec.h`：帧分片/重组、resend 开关、too-late-drop、IOCtrl、
-    `avGetLinkStats` / `avSuggestedBitrateKbps`（`AbrEstimate.h` delay-based + AIMD）
-  - `iotc_demo`：设备/客户端四通道并发回声验收
-  - 验证：`tests/av_frame_test.cpp`；`test.sh` [10] 端到端
-
-### P3 AV 帧级通道【核心已随 P2 落地，弱网压测待补】
-- 范围：帧分片/重组、重传开关、延迟预算+too-late-drop、丢帧策略、音频优先、
-  IOCtrl 封装；`link_stats` 驱动的码率建议回调。
-- 依赖：P2。
-- 交付物：`avSendFrameData/avRecvFrameData/avSendIOCtrl` 全链路 + 弱网单测。
-- 验收：`tc netem` 10% 丢包 + 100ms 延迟下，1080p 模拟流（8Mbps 帧序列）
-  卡顿率 < 2%，端到端 P99 延迟 < 800ms；I 帧恢复正确。
-- **已落地**：分片/重组、resend、too-late-drop、IOCtrl、码率建议。
-- **本轮补齐**：`av_should_drop_p`（保护 I 帧/音频，直播拥塞丢 P）；`AV_ER_Dropped` + `avGetDropStats`；
-  `av_frame_test` 1080p 量级 GOP + 10% P 切片丢失（I 帧仍重组成功）。
-- **未含**：真实 `tc netem` 8Mbps 长稳压测（CI 环境无 netem 权限时用用户态切片丢失代替）。
-
-### P4 RDT 可靠流与 P2PTunnel【核心已落地，演示压测待补】
-- 范围：字节流化 + 背压；本地 TCP 端口映射隧道（RTSP 透传验证）。
-- 依赖：P2。
-- 交付物：`RDT_Read/Write`、`P2PTunnel_Serve/Map`；用 ffmpeg 经隧道拉取对端 RTSP 演示。
-- 验收：隧道内 RTSP 播放稳定；大文件（≥1GB）经 RDT 传输校验一致；
-  中继模式下同样可用。
-- **落地情况**：
-  - `RDTAPIs`：可靠通道分片 Write + leftover 部分 Read（窗口满走 IOTC 背压重试）
-  - `TunnelCodec.h` + `P2PTunnelAPIs`：OPEN/DATA/CLOSE 帧，Serve 回连本地 TCP，
-    Map 本机 listen 映射；`common/Net.h::TcpFd` RAII
-  - `iotc_demo` 含 TCP echo 经隧道往返；`av_frame_test` 覆盖 TunnelCodec
-- **本轮补齐**：`IOTC_SetProxy` / `IOTC_ForceRelay`；`iotc_demo -relay`；`test.sh` [11] 中继四通道。
-- **未含**：ffmpeg/RTSP 演示、≥1GB 文件压测。
-
-### P5 安全升级【核心已落地】
-- 范围：X25519 ECDH 会话密钥协商（前向保密），握手消息走现有可靠通道；
-  中继流量按 UID 计量与配额限速。
-- 依赖：P1（UID/AuthKey 就位）。
-- 交付物：握手协议文档 + 实现 + 互操作测试；Relay 计量统计接口。
-- 验收：抓包验证会话密钥不可由 AuthKey 离线推导；密钥轮换不断流。
-- **落地情况**：
-  - `common/X25519.*`：RFC 7748 Montgomery ladder（NIST/RFC 向量单测）
-  - `common/Handshake.h`：HELLO 报文 + HMAC 可选鉴权 + 会话密钥派生（PSK 不进入 FS 密钥）
-  - `P2PClient`：连接建立后通道 `0xFE` 可靠握手；双密钥解密（cur/prev/PSK）支持轮换不断流；
-    180s 自动换新临时密钥；`tunnel_fs_ok()` 供验收
-  - `P2PProxy`：每 UID 累计转发字节 + `QuotaMB` 超限丢包（`p2p_proxy port max [workers] [QuotaMB]`）
-  - 验证：`crypto_test` X25519/FS 派生；`test.sh` [5] `fs-hs=` 端到端
-- **未含**：无（连线 Token 已在 P1 补齐）
-
-### P6 服务端集群与调度【核心已落地，规模压测待补】
-- 范围：多区域部署模型（区域内同步已有，跨区按 UID REGION 调度）；
-  客户端 `GET_SERVER_LIST`（已有）扩展为就近排序；Relay 按负载/地理择优
-  （`pick_proxy` 已有雏形）；Prometheus 指标导出（StatusServer 扩展）；
-  中继升级回 P2P 的无缝切换。
-- 依赖：P1。
-- 验收：单节点 10 万模拟设备在线心跳压测 CPU < 50%；节点故障时设备
-  在一个心跳周期内迁移到备节点（跨服同步保证在线表可用）。
-- **落地情况**：
-  - 配置：`Region` / `NatRegions` / `ProxyRegions`（`ip:R` 标注）
-  - `GET_SERVER_LIST` 按请求 UID REGION（`ServerListReq`）就近稳定排序；
-    无 UID 时回退本节点 `Region`
-  - `pick_proxy`：健康代理空闲度加权 × 同区×3 / 本节点区×1.5；回退列表同样就近
-  - StatusServer：`GET /` JSON（含 region/uptime/login_*）；`GET /metrics` Prometheus
-  - 客户端：中继建链后（非 `force_relay`）后台继续打洞；`direct_ok` 后
-    `via_relay` 切回 P2P 并再次回调 `on_connected(relay=false)`
-  - 验证：`tests/sched_test.cpp`；`test.sh` [12]
-- **未含**：10 万心跳压测、节点故障热迁移演练（跨服同步已有，本轮未扩压测）
-
-### P7 低功耗唤醒 + 多平台 SDK【唤醒协议已落地，多平台 SDK 待补】
-- 范围：wakeserver 与唤醒协议；SDK 移植层落地（`Plat.h` 已抽象）：
-  Android(NDK)/iOS/Windows；嵌入式裁剪版（无 ICE 仅自研打洞，降 footprint）；
-  示例 App 与集成文档。
-- 依赖：P2~P4 API 冻结。
-- 验收：休眠设备唤醒到出图 < 6s；三平台 demo 跑通同一 UID 互连。
-- **落地情况**：
-  - `server/wakeserver/`：`MSG_WAKE_KEEPALIVE / TRIGGER / RESULT / POKE`
-  - 设备低频 UDP 报到（可选 `WakeSecret` HMAC）；触发后向上次公网地址发 POKE
-  - NatServer `WakeServer=ip:port`：CONNECT 目标不在线时转发 TRIGGER
-  - 验证：`test.sh` [13]
-- **未含**：Android/iOS/Windows SDK 移植、嵌入式裁剪版、唤醒到出图 < 6s 现网验收
-
-### P8 穿透增强（下一档主线）
-
-对照 [`P2P模型图谱.md`](P2P模型图谱.md) §3–§4。公开基线：标准 WebRTC ~80%、
-libp2p DCUtR ~70%、TUTK 号称 ~92%。本仓库有中心信令，**应显著高于 70%**；
-锥型组合目标仍是 ≥85%，对称×对称不计入该分母（必须中继）。
-
-- 范围：
-  1. **PCP / NAT-PMP / UPnP IGD**（学 EasyTier）【核心已落地】：`common/PortMap.*`，
-     先 IGD 再 NAT-PMP 再 PCP；ICE host 候选端口入队、worker 里逐个开孔。
-     `P2P_DISABLE_PORTMAP=1` 可关。失败是常态。租约 2/3 处续约已落地；现网家宽验收待补。
-  2. **RFC 4787 二维 NAT 探测**【核心已落地】：`NatDetect` 输出 `mapping=EIM|ADM|EDM` +
-     `filter=none|addr|port`，四型只作对外说法；第三探测口（`NatSock3Port` / `probe_port`）
-     识别 **NAT4E 步长**。策略表见 `common/NatMatrix.h`（EDM×EDM 中继；有 step 则预测）。
-     ADM 需第二公网 IP，单机双/三口无法区分，暂记 EIM。
-  3. **生日打洞（可选，默认关）**【开关已落地】：`birthday_punch` / `-birthday` / `P2P_BIRTHDAY=1`。
-     EIM×EDM 时向 juice 注入预测/扫描目的口，N≤256、每批 8 个、间隔 40ms，达上限即停。
-     `force_relay` 仍不打洞。EDM×EDM 默认中继（不开生日）。NAT4E 有 step 时走预测（5 口）。
-  4. **DERP 风格 TCP/TLS 443 中继面**【核心已落地】：`p2p_proxy … [TcpPort]` 兼听；
-     有证书走 PEM，否则临时自签（`P2P_PROXY_TLS=0` 可关 TLS）。客户端 `-tcp PORT -tls`，
-     或 CONNECT 携带 `proxy_tcp_port`。先经 TCP/TLS 通，并行打洞，`direct_ok` 切直连。
-     `force_relay` 仍不打洞。现网 443 用 `P2P_PROXY_TLS_CERT/KEY`（见 `start.sh`）；未给则自签。
-  5. **TCP 打洞（可选）**【开关已落地】：学 EasyTier simultaneous open。
-     `tcp_punch` / `-tcp-punch` / `P2P_TCP_PUNCH=1` / `IOTC_SetTcpPunch`。
-     经 NatServer 交换 `MSG_TCP_PUNCH` 映射口，两端从同一本地口非阻塞 connect + listen accept。
-     EDM/未知映射不发起；`force_relay` 仍不打洞。数据面 `MSG_TCP_DATA`。
-     **TCP STUN 已落地**：NatServer 在 UDP 同口兼听 TCP，回 RFC 8489 XOR-MAPPED；
-     客户端从打洞本地口非阻塞探测，失败回退 UDP 公网 IP + 本地口。企业网仍以 TLS 中继兜底。
-  6. **IPv6 优先**【分统计已落地】：`path_direct_v4/v6` + `path_relay`；有公网 v6 走 host；
-     NAT66 计入 v6，不假设「有 v6 就能通」。
-  7. **NAT 矩阵**【表+单测已落地】：`punch_strategy()` × `tests/nat_detect_test`；
-     `tools/nat_matrix.sh` 打印组合；`common/NatSim.h` 用户态盒对照锥×锥 / EDM 失败
-     （CI 无 iptables/netns）。docker + iptables 现网分类型对照仍待补（`--iptables-demo`）。
-  8. **懒打洞（可选，对齐 P7）**【开关已落地】：`lazy_p2p` / `-lazy` / `P2P_LAZY_P2P=1`。
-     中继已通且无业务发送时不后台打洞；`send()` 置 `want_direct` 后再升直连。
-  9. **EasyTier-core 分层对照**【文档+选路已落地】：按目录学 `foundation → socket →
-     packet → tunnel → connectivity → instance`，见 [`EasyTier核心架构对照.md`](EasyTier核心架构对照.md)。
-     发送路径在 `core/connectivity/transport/PathSelect.h`。客户端核在 `core/`；
-     **p2p_server** 按 EasyTier 模块拆到
-     `server/{config,peers,connectivity,management,rpc,listener,instance}`。
-     CONNECT 准入 `PunchAdmit`：EDM×EDM 在 ACK 尾部提示更快开中继（仍打洞）。
-     不抄 `gateway` / `peers/route` mesh / WASI / 虚拟网卡。
-- 依赖：P0 ICE/Proxy 已就绪；不改 `force_relay`「不打洞」语义（测试 [2]/[11] 依赖）。
-- 交付物：PCP/UPnP 客户端探测与续约、二维 NAT + NAT4E 字段、可选生日/TCP 打洞开关、
-  v4/v6 直连率指标、矩阵脚本。TCP/TLS DERP 面、二维探测字段、策略表已落地（见上）。
-  生日/懒打洞开关、开孔续约、v4/v6 分统计、TCP 打洞 + TCP STUN、用户态 NAT 矩阵已落地。
-  现网 iptables/netns 矩阵仍待补（本环境无 iptables/`ip`，`unshare` 被拒）。
-  p2p_server 侧：`need_p2p` 跨对端宣告、`ConnectAuth`、`JailFile`、信令核拒绝业务转发
-  已落地，见 [`p2p_server优化完毕.md`](p2p_server优化完毕.md)。
-- 验收：锥型组合直连 ≥85%；企业「只放 443/TCP」场景能在 <8s 出图（经 TLS 中继）；
-  生日扫描默认关，打开时有端口上限与熔断。
-- **未含（本阶段不做）**：libp2p DHT、Iroh/QUIC 重写底座、系统级 VPN。
-
-### P9 观看拓扑与国标网关
-
-一对一预览继续走本仓库 P2P。一台 IPC、多个看客 **禁止设备侧 mesh**（嵌软 CPU/上行会爆）。
-
-- 范围：
-  1. **旁路 SFU/转推网关**（go2rtc / mediasoup / ZLMediaKit 之一）：第一路可仍 P2P 高清，
-     其余看客从网关拉。设备只出一份码流。
-  2. **双通道策略写进 SDK 文档**：控制/预览走可靠或小图；高清走不可靠+FEC（AV 已具备）。
-  3. **GB/T 28181 网关**（可选）：SIP+PS ↔ 本仓库通道 / WebRTC；**设备端不重写国标栈**。
-- 依赖：P2–P4 API 稳定。
-- 验收：3 路同看时设备上行不随看客数线性增长；网关进程独立，不进 `p2p_natserver`。
-- **未含**：MCU 混流、HLS/CDN 回看（非目标）。
-
-### P10 浏览器接入（WHIP / WHEP）
-
-- 范围：网关侧 HTTP POST SDP（WHIP RFC 9725 推、WHEP RFC 9737 拉），
-  浏览器/OBS 预览不强制装 IOTC SDK。
-- 依赖：P9 网关进程（或最小独立 `p2p_webgateway`）。
-- 验收：Chrome 打开 WHEP 能看已连上的 UID 预览；不改 IOTC 主路径、不替换 juice+自研帧。
-- **未含**：把 SIP/WHIP 塞进 NatServer。
-
-### P11 MoQ 预研（不进 1:1 主路径）
-
-Media over QUIC 适合一对多直播/回看、CDN 化中继（Cloudflare / IETF 草案）。
-**不替代 IPC↔App 1:1 预览**。本阶段只出调研笔记与和 P9 网关的边界，不改核心协议。
-
-### 里程碑关系
-
-```
-P0(done) ─► P1(done) ─┬─► P5(done) ─► P6(done*) ─► 现网灰度
-                      ├─► P2(done) ─► P3* ─┬─► P7* ─► GA
-                      │                    └─► P4* ─┘
-                      └─► P8 穿透增强 ─┬─► P9 多看客/28181 网关 ─► P10 WHIP/WHEP
-                                       └─► P11 MoQ 预研（旁路）
-* 核心已落地，缺现网/三平台/弱网长稳压测
-```
-
----
-
-## 6. 测试与质量保障
-
-| 层级 | 手段 | 现状/计划 |
+| 进程 | 职责 | 不做什么 |
 |------|------|----------|
-| 单元测试 | crypto_test、session_test（已有）→ 新增 uid/av/rdt 单测 | 每阶段验收前置 |
-| 端到端 | `test.sh`（当前 108 项）持续扩展：Token 鉴权、AV 弱网、隧道、ICE restart、443 | 每次提交必跑 |
-| 弱网仿真 | `tc netem`：丢包 5/10/20%、延迟 50/200/500ms、抖动、限速 | P3 起纳入 CI（无权限时用户态切片丢失代替） |
-| NAT 组合矩阵 | RFC 4787 二维 × 两端，docker + iptables；对照 DCUtR 分类型直连率 | P8 |
-| 规模压测 | 模拟设备心跳器（10 万级）、Relay 吞吐打流 | P6 |
-| 安全测试 | 伪造报到/重放/串流/中继盗用回归集 | P1、P5 |
-| 现网灰度 | 小批量真实设备（不同运营商/地域），穿透率与连接时延埋点 | P6 后 |
+| `p2p_natserver` | 报到 / CONNECT / STUN / 同步 / 状态口 | 不转发 `MSG_PROXY_RELAY_DATA` |
+| `p2p_proxy` | 数据面中继（DERP） | 不是 gateway / 不是 mesh 中转 |
+| `p2p_wakeserver` | IoT 唤醒 POKE | 不替代信令 |
+| `peer` / `iotc_demo` | 客户端演示 | — |
+| `uidgen` / `tokengen` | 离线签发 | 计费面另立 |
 
-## 7. 风险与对策
+二进制仍输出到 `server/natserver/bin/p2p_natserver`。
 
-| 风险 | 影响 | 对策 |
+---
+
+## 4. 术语对标
+
+| TUTK | 本仓库落点 | 差距 |
+|------|------------|------|
+| UID（20 字符） | `core/foundation/Uid.*` + `tools/uidgen` | 批量签发与计费面待补（档 B） |
+| P2P Server | `p2p_natserver`：心跳 / CONNECT / STUN / 同步 / REGION | 10 万心跳压测待补（档 B） |
+| Relay | `p2p_proxy`：UDP + DERP TCP/TLS + HMAC + 配额 | 现网带宽压测、正式 443 证书（档 B） |
+| IOTC SID / Channel | `client/sdk/iotc/IOTC.*`（128 SID，通道 0–31） | 已落地 |
+| AVAPIs | `AVAPIs` + `AvCodec` + ABR/TWCC | 弱网 1080p 现网待补（档 B） |
+| RDTAPIs | `RDTAPIs` | 大文件压测待补（档 B） |
+| P2PTunnel | `P2PTunnel_Serve/Map` + `TunnelCodec` | ffmpeg/RTSP 演示待补（档 B） |
+| LAN Search | `239.255.77.89:17890` | 已落地（`P2P_DISABLE_LAN=1` 可关） |
+| Device Wakeup | `p2p_wakeserver` | 三平台接入与 <6s 出图待补（档 B） |
+| AuthKey / Token | 每 UID AuthKey + `ConnectAuth` + nonce 防重放 + X25519 FS | 已落地 |
+
+旧路径 `common/*.h`、`server/natserver/src/*.h`、`client/sdk/{plat,proto,session,transport,api}/*.h` 只是转发头，逻辑在 `core/` 与 `server/`。
+
+---
+
+## 5. 目录与配置
+
+```
+server/
+  instance/       生命周期组合根（只焊，不堆同步/择优/验签实现）
+  config/         文件 < 已设置的 P2P_* < 命令行
+  peers/          PeerManage + RegistrySync
+  connectivity/   STUN responder / 映射观察 / NAT 探测
+  management/     AntiAbuse、JailFile、License、AuthChallenge、ConnectAuth、RelayHealth、Status
+  rpc/            on_msg_*
+  listener/       bind + LocalListeners 防回环
+  proxyserver/    专用中继
+  wakeserver/     唤醒
+core/
+  foundation → socket → packet → tunnel → connectivity → instance
+```
+
+`instance` 不得再长出同步协议或代理择优。不建 `gateway/`、`peers/route`、`wasi/`。
+
+配置覆盖（学 EasyTier）：`P2pServers.cfg` < 已设置的 `P2P_*` < 命令行。
+文件值支持 `${ENV}`；`P2P_DISABLE_ENV_PARSING=1` 只关展开。
+
+| 键 | 作用 |
+|----|------|
+| `PrivateMode` / `P2P_PRIVATE_MODE` | 强制 `EnableAuth`（仍需 `AuthSecret`） |
+| `StatusAllow` / `P2P_STATUS_ALLOW` | 状态口 CIDR；空=不限制 |
+| `JailFile` / `P2P_JAIL_FILE` | fail2ban：一行一个拉黑 IP |
+| `P2P_PROXY_AUTH_SECRET` | 中继注册 HMAC；空=演示默认（测试兼容） |
+| `P2P_NEED_P2P` / `peer -need-p2p` | 本端尽快直连，心跳宣告 `np=1` |
+| `force_relay` / `peer -relay` | **硬关打洞**；对端 `need_p2p` 也不能打开 |
+
+---
+
+## 6. 核心设计（档 A 已落地）
+
+### 6.1 UID
+
+```
+UID(20) = PREFIX(4) + REGION(1) + RANDOM(12) + CRC(3)   // Base32
+```
+
+- `uidgen` 离线批量签发 `UID + AuthKey`；服务端用 `AuthSecret` 派生，不存明文 AuthKey。
+- `UidStrict=1` 拒绝非结构化 UID。
+- 连线 Token：`tokengen` 签发；`EnableConnectToken=1` 时 CONNECT 尾部验签 + `TokenNonceCache` 防重放。实现在 `server/management/ConnectAuth.h`。
+
+### 6.2 通道
+
+```
+IOTC_Session (SID ≤ 128)
+ ├─ ch0  IOCtrl（可靠）
+ ├─ ch1  AV 视频（不可靠 + FEC + too-late-drop）
+ ├─ ch2  AV 音频
+ ├─ ch3  RDT 文件（可靠 + 背压）
+ └─ chN  P2PTunnel（RTSP/HTTP/SSH）
+```
+
+C API 形态见 `client/sdk/iotc/`（`IOTC_*` / `av*` / `RDT_*` / `P2PTunnel_*`）。
+
+### 6.3 连线
+
+```
+LAN 组播 → CONNECT(token) → ACK/INVITE（公网/LAN/NAT/Relay 候选 + punch hint）
+  → 发起方 ICE gather（controlling）→ 直连
+  → 失败或 force_relay → Proxy（UDP 或 TCP/TLS）
+  → 非 force_relay 时后台继续打洞，direct_ok 无缝切回
+```
+
+CONNECT 尾部 1 字节 hint（旧客户端忽略）：
+
+| hint | 含义 |
+|------|------|
+| 0 | 旧服务端 / 未知 |
+| 1 Ice | 锥×锥、锥×对称：满超时打洞 |
+| 2 Relay | EDM×EDM：仍打洞，但 1.5s 后开中继 |
+| 3 Need | 任一侧心跳 `np=1`：满超时打洞；**不能**盖掉 Relay，也**不能**打开 `force_relay` |
+
+选路：`PathSelect`（ICE nominated → juice_prev → juice+direct_ok → TCP 打洞 → UDP 打洞 → DERP TCP → UDP 中继）。
+
+### 6.4 安全
+
+| 层 | 现状 |
+|----|------|
+| 报到 | 挑战应答；每 UID AuthKey；失败走 AntiAbuse |
+| 连线 | ConnectToken + nonce |
+| 隧道 | AEAD；X25519 FS 握手（PSK 不进入 FS 密钥）；180s 轮换不断流 |
+| 集群 | RegistrySync HMAC；hop 防环 |
+| 中继 | `ProxyAuth` HMAC + 源地址校验 + 每小时配额窗口 |
+| 管理 | 黑名单必须 `AdminSecret`；统计口有密钥才校验 HMAC |
+| 主机 | `JailFile` 给 fail2ban |
+
+### 6.5 唤醒
+
+设备低频 `MSG_WAKE_KEEPALIVE`（可选 `WakeSecret`）。CONNECT 目标离线时 NatServer 通知 wakeserver `TRIGGER`，向上次公网地址 `POKE`。Trigger 本身尚无 HMAC（协议扩字段需兼容期，见 §7.3）。
+
+---
+
+## 7. 下一步（按优先级）
+
+不再把历史阶段写成「待做说明书」。changelog 见 git 与收口文档。
+
+### 7.1 档 B — 现网验收（优先）
+
+这些**不改协议**也能做，缺的是机器、证书和真设备。按依赖排序：
+
+| 优先级 | 项 | 验收 | 依赖 |
+|--------|----|------|------|
+| B1 | 部署手册：裸机 / 容器 + 正式 443 证书 | 企业只放 443/TCP 时 <8s 出图 | 证书、公网机 |
+| B2 | 单节点 10 万心跳、Relay 吞吐打流 | 对照 §1.2 规模目标 | 压测机 |
+| B3 | 分 NAT 类型埋点（锥与对称分母分开） | 直连率口径可报 | 现网或 docker+iptables |
+| B4 | 家宽 IGD 开孔续约 | 锥型家宽直连率可测 | 真路由；CI 默认 `P2P_DISABLE_PORTMAP=1` |
+| B5 | `tc netem` 弱网 1080p | P50/P99、卡顿；无权限时继续用户态丢包 | 网络命名空间 |
+| B6 | 唤醒到出图 <6s | 真低功耗设备 | 设备 + wakeserver |
+| B7 | Android / iOS / Windows SDK 包 | `Plat.h` 已隔离，差打包 | 交叉编译链 |
+| B8 | ffmpeg 经 Tunnel 拉 RTSP、≥1GB RDT | 演示与大文件校验 | 演示机 |
+
+本 CI 无 iptables/`ip`，`unshare` 被拒——B3/B4/B5 **不算内核未完成**。
+
+### 7.2 档 C — 旁路立项（原 P9–P11）
+
+**一律独立进程，不进 `p2p_natserver`。** 档 B 未灰度前不要开工。
+
+| 编号 | 内容 | 验收 |
 |------|------|------|
-| 国内 CGNAT / 对称 NAT 占比高 | 中继带宽成本上升；「≥85% 直连」被误解为含对称对 | 锥型与对称分母分开统计；中继按 ~30% 容量规划；P8 PCP/UPnP 优先于生日扫描；EDM×EDM 直接中继 |
-| 企业防火墙只放行 TCP/443 | 纯 UDP ICE 黑屏 | DERP TCP/TLS 面已落地（先通再切）；现网绑 443 + 正式证书待补 |
-| 多看客走 mesh P2P | 设备 CPU/上行爆、卡顿 | P9 旁路网关；设备只出一份码流 |
-| 生日打洞触发 IDS/运营商风控 | 设备被封端口或投诉 | 默认关；N 上限、间隔、熔断；不可作为默认路径 |
-| 嵌入式设备资源受限（RAM<1MB） | SDK 集成受阻 | 裁剪版 SDK（去 ICE/减缓冲），`Plat.h` 隔离已就绪 |
-| 自研加密握手实现风险 | 安全事故 | ECDH 用成熟实现（如嵌入 tweetnacl/mbedTLS 单文件），AEAD 复用已测代码，外部评审 |
-| 对标 iLnkP2P/PPPP/TUTK 历史 CVE | 可伪造 UID / 明文媒体 / 硬编码密钥 | 已避开：每 UID AuthKey、Token nonce、X25519 FS、中继 HMAC；红线保持 |
-| UID 兼容迁移 | 存量设备升级困难 | 双栈并行 + 服务端灰度开关（CfgFile 热加载已有） |
-| 单区域服务器故障 | 大面积掉线 | 跨服同步（已有）+ 客户端多服务器列表重连（`P2pServers.cfg` 已有） |
-| 把 MoQ/28181/WHIP 塞进核心 | 协议膨胀、嵌软扛不住 | 全部进独立网关；1:1 IOTC 主路径冻结 |
+| C1（原 P9） | 多看客走 SFU/转推（go2rtc / mediasoup / ZLMediaKit 之一）；可选 28181 网关 | 3 路同看时设备上行不随看客数涨；设备端不重写国标栈 |
+| C2（原 P10） | 网关 WHIP/WHEP，浏览器预览不强制 IOTC | Chrome 能看已连 UID；不替换 juice+自研帧 |
+| C3（原 P11） | MoQ 调研笔记 | 不替代 1:1 预览，不改核心协议 |
 
-## 8. 交付物清单
+不做：MCU 混流、HLS/CDN 回看、把 SIP/WHIP 塞进 NatServer。
 
-1. 服务端：NatServer（UID/Token/调度扩展）、P2PProxy（计量配额 + UDP/443，P8 补 TCP/TLS 面）、wakeserver、部署手册（Docker/裸机）
-2. SDK：C API 头文件 + 静态库（Linux/Android/iOS/Windows/嵌入式裁剪版）+ 集成文档
-3. 工具：uidgen 签发工具、模拟设备压测器、NAT 矩阵测试环境（P8）
-4. 文档：协议规范（XN/PT 帧 + 新增消息）、安全白皮书、API 参考、示例代码、[`P2P模型图谱.md`](P2P模型图谱.md)
-5. 质量：单测 + e2e + 弱网 + 压测报告，现网灰度穿透率/时延数据（锥型与对称分母分开）
-6. 旁路（P9–P11）：多看客/28181/WHIP-WHEP 网关、MoQ 预研笔记 —— 不进 NatServer 主进程
+### 7.3 仓库内小项（不挡现网）
+
+来自 [`项目整体优化分析.md`](项目整体优化分析.md)，有空再做：
+
+1. Proxy TCP 会话可 join 的优雅停机
+2. WakeTrigger 可选 HMAC（旧空字段兼容）
+3. 心跳压测器 / NAT 矩阵脚本接到独立 CI 机
+
+### 7.4 关系
+
+```
+档 A 仓库内核 ──已收口──► 档 B 现网灰度 ──► GA
+                         │
+                         └─► 档 C 旁路网关（C1 → C2，C3 只调研）
+```
+
+---
+
+## 8. 红线
+
+| 红线 | 原因 |
+|------|------|
+| 不改 `force_relay` | [2]/[11]/[21]：硬关打洞；NEED 也不能打开 |
+| juice 状态/recv 回调里不调任何 `juice_*` | 与 `mu_` 死锁 |
+| 持 `mu_` 的 tick 里不查 juice | 同上；restart 完成探测必须锁外 `juice_get_state` |
+| `juice_set_remote_gathering_done` 仍在 tick 持锁 | 锁外会与回调并发，[3]/[5] 单边 CONNECTED |
+| RegistrySync 三条日志原文不动 | [6]/[8] grep |
+| `p2p_node_region` 不塞 instance 标签 | [12] |
+| NatServer 不转发 `MSG_PROXY_RELAY_DATA` | 信令核只建连 |
+| 不抄 TUN / mesh / `--p2p-only` / gateway | 产品不是 SD-WAN；IoT 必须能中继 |
+
+---
+
+## 9. 测试与基线
+
+| 层 | 手段 | 说明 |
+|----|------|------|
+| 单测 | `tests/bin/*`（[0] 挂上） | PunchAdmit / PunchPolicy / CfgFile / server_arch / ConnectAuth |
+| 端到端 | `test.sh` [0]–[21] | 数字以脚本为准；cleanup 的 `Killed` 不是失败 |
+| 弱网 | 用户态切片丢失；真 `tc netem` 待环境 | 档 B5 |
+| NAT 矩阵 | `NatSim` + `nat_matrix.sh`；docker+iptables 待环境 | 档 B3 |
+| 规模 / 现网 | 档 B1–B8 | |
+
+**当前 CI 基线**（2026-08-16）：`test.sh` **PASS=139 FAIL=1**。[16] ICE restart 已过；剩余 `G FS handshake missing` 是 [5] 7s 窗口内 X25519 日志偶发，与协议改动无关。
+
+本环境：无 `killall`（`pkill -f` + `[x]`）；不要在同一条 shell 里同时写 `peer`/`iotc_demo` 路径和 `pkill -f`。
+`P2P_DISABLE_PORTMAP=1` 是 CI 默认（无家宽 IGD）。
+
+RegistrySync 日志必须仍含：`registry sync enabled, %zu peer(s)`、`sync entry uuid[%s]`、`sync snapshot sent`。
+
+---
+
+## 10. 风险
+
+| 风险 | 对策 |
+|------|------|
+| 国内 CGNAT / 对称 NAT 多 | 锥与对称分母分开；中继按 ~30%；EDM×EDM 走 Relay hint |
+| 企业只放 TCP/443 | DERP 已落地；现网绑 443 + 正式证书（B1） |
+| 多看客 mesh | 档 C 旁路网关；设备只出一份码流 |
+| 生日打洞触发风控 | 默认关；N 上限、间隔、熔断 |
+| 嵌软 RAM 紧 | `Plat.h` 裁剪（去 ICE/减缓冲） |
+| 自研握手 | X25519 有向量单测；AEAD 复用已测路径；外部评审仍建议做 |
+| 历史 P2P 厂商 CVE | 每 UID 密钥、Token nonce、FS、中继 HMAC；红线保持 |
+| 把 MoQ/28181/WHIP 塞进核心 | 全部进独立网关；1:1 IOTC 主路径冻结 |
+
+---
+
+## 11. 交付物
+
+**已有（档 A）**
+
+1. `p2p_natserver` / `p2p_proxy` / `p2p_wakeserver`
+2. Linux 上的 IOTC/AV/RDT/Tunnel SDK + `peer` / `iotc_demo`
+3. `uidgen` / `tokengen`、`test.sh`、分层文档
+
+**待环境（档 B）**
+
+4. 部署手册（Docker/裸机 + 443 证书）
+5. 压测器、现网穿透率（锥/对称分开）
+6. 三平台 SDK 包
+
+**待旁路（档 C）**
+
+7. SFU / 28181 / WHIP 网关进程与 MoQ 笔记 —— **不进 NatServer**
+
+---
+
+## 附录：历史阶段编号对照
+
+只为读旧文档 / 旧提交。新计划用档 A/B/C。
+
+| 旧编号 | 交付 | 回归 | 现归属 |
+|--------|------|------|--------|
+| P0 底座 | 打洞 / 中继 / 鉴权 / AEAD / ICE / Session | `test.sh` [0][1][2] | 档 A |
+| P1 身份 | 结构化 UID、每 UID AuthKey、ConnectToken | [9][14] | 档 A |
+| P2–P4 通道 | IOTC / AV / RDT / Tunnel；中继四通道 | [10][11] | 档 A |
+| P5 安全 | X25519 FS、中继配额 | [5] | 档 A |
+| P6 集群 | RegistrySync、REGION 调度、`GET /` + `/metrics` | [6][8][12] | 档 A |
+| P7 唤醒 | wakeserver 协议 | [13] | 档 A |
+| P8 穿透 | PortMap、NAT 矩阵、need_p2p、DERP、TCP 打洞、PunchAdmit/PunchPolicy、PathSelect | [15]–[21] | 档 A（现网家宽/iptables 在档 B） |
+| P9 | 多看客 SFU / 可选 28181 | — | 档 C1 |
+| P10 | WHIP/WHEP 网关 | — | 档 C2 |
+| P11 | MoQ 调研 | — | 档 C3 |
+
+P8 服务端半边另含：`need_p2p` 跨对端宣告、`PrivateMode`、`StatusAllow`、`JailFile`、NatServer 丢弃 `MSG_PROXY_RELAY_DATA`。
