@@ -2,6 +2,7 @@
 //   handle_packet 校验报文头后按 msg_id 派发到 on_msg_* 处理器，
 //   每个处理器职责单一、可独立测试（C++ 风格重构：拆分巨型 switch）。
 #include "server/instance/NatServer.h"
+#include "server/management/AdminAuth.h"
 #include "core/foundation/Crypto.h"
 #include "core/foundation/Log.h"
 #include "core/socket/Packet.h"
@@ -51,7 +52,7 @@ void NatServer::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
     case MSG_CHECK_UID_REQ:        on_msg_check_uid(p, plen, from); break;
     case MSG_AUTH_CHALLENGE_REQ:   on_msg_auth_challenge(p, plen, from); break;
     case MSG_AUTH_LOGIN_REQ:       on_msg_auth_login(p, plen, from); break;
-    case MSG_ADMIN_STATS_REQ:      on_msg_admin_stats(from); break;
+    case MSG_ADMIN_STATS_REQ:      on_msg_admin_stats(p, plen, from); break;
     case MSG_ADMIN_BLACKLIST_REQ:  on_msg_admin_blacklist(p, plen, from); break;
     case MSG_SYNC_PEER_ENTRY:      on_msg_sync_entry(p, plen, from); break;
     case MSG_SYNC_PEER_DEL:        on_msg_sync_del(p, plen, from); break;
@@ -518,7 +519,13 @@ void NatServer::on_msg_auth_login(const uint8_t* p, size_t plen,
 }
 
 // ---------------------------------------------------------------- 管理统计
-void NatServer::on_msg_admin_stats(const sockaddr_in& from) {
+void NatServer::on_msg_admin_stats(const uint8_t* p, size_t plen,
+                                   const sockaddr_in& from) {
+    auto cfg = cfg_;
+    if (cfg && !verify_admin_stats(*cfg, p, plen)) {
+        LOGW("NatServer", "admin stats rejected from [%s]", addr_to_str(from).c_str());
+        return;
+    }
     AdminStatsRsp rsp{};
     rsp.total_pkts = htonl((uint32_t)total_pkts_.load());
     rsp.peers_online = htonl((uint32_t)peers_.size());

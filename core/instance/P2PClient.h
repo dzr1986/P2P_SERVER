@@ -145,6 +145,7 @@ private:
         bool ice_gathered = false;           // 已 juice_gather：发起方先 gather=controlling
         bool ice_host_sdp_sent = false;      // 已用 host 候选发出首版 SDP（不等 STUN）
         bool ice_remote_gather_done = false; // 已通知 juice 对端收集结束
+        bool ice_need_gather_done = false;   // tick 置位，锁外才调 juice_set_remote_gathering_done
         bool ice_restarting = false;         // 正在换代，tick_ice 仍要重传 SDP
         bool ice_nominated = false;          // 当前 juice 已 CONNECTED，可 juice_send
         uint8_t  ice_gen = 0;                // restart 代数（日志）

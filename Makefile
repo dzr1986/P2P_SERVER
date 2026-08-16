@@ -6,7 +6,8 @@
 CC      := g++
 CFLAGS  := -O2 -Wall -Wextra -std=c++17 -pthread -DJUICE_STATIC -I. -Icommon -Iserver/natserver/src -Iserver/proxyserver/src -Ithird_party/libjuice/include
 LIBJUICE := third_party/libjuice/build/libjuice.a
-LDFLAGS := $(LIBJUICE) -pthread -lssl -lcrypto
+LDFLAGS_SSL := -pthread -lssl -lcrypto
+LDFLAGS := $(LIBJUICE) $(LDFLAGS_SSL)
 
 BIN_NAT   := server/natserver/bin/p2p_natserver
 BIN_PROXY := server/proxyserver/bin/p2p_proxy
@@ -69,13 +70,13 @@ $(LIBJUICE):
 	cmake --build third_party/libjuice/build --target juice-static -j
 	ln -sfn libjuice-static.a $(LIBJUICE)
 
-$(BIN_NAT): $(NAT_SRCS) $(COMMON_SRCS) core/packet/ProtoDef.h $(LIBJUICE)
+$(BIN_NAT): $(NAT_SRCS) $(COMMON_SRCS) core/packet/ProtoDef.h
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -o $@ $(NAT_SRCS) $(COMMON_SRCS) $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $(NAT_SRCS) $(COMMON_SRCS) $(LDFLAGS_SSL)
 
-$(BIN_PROXY): $(PROXY_SRCS) $(COMMON_SRCS) core/packet/ProtoDef.h $(LIBJUICE)
+$(BIN_PROXY): $(PROXY_SRCS) $(COMMON_SRCS) core/packet/ProtoDef.h
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -o $@ $(PROXY_SRCS) $(COMMON_SRCS) $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $(PROXY_SRCS) $(COMMON_SRCS) $(LDFLAGS_SSL)
 
 $(BIN_PEER): $(PEER_SRCS) $(COMMON_SRCS) core/packet/ProtoDef.h $(LIBJUICE)
 	@mkdir -p $(dir $@)
@@ -190,10 +191,10 @@ $(BIN_IOTCDEMO): client/demo/iotc_demo.cpp $(IOTC_SRCS) $(COMMON_SRCS) core/pack
 
 $(BIN_WAKE): server/wakeserver/WakeServer.cpp server/wakeserver/WakeServer.h $(COMMON_SRCS) core/packet/ProtoDef.h
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -o $@ server/wakeserver/WakeServer.cpp $(COMMON_SRCS) $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ server/wakeserver/WakeServer.cpp $(COMMON_SRCS) $(LDFLAGS_SSL)
 
 clean:
-	rm -rf server/natserver/bin server/proxyserver/bin client/bin tests/bin tools/bin
+	rm -rf server/natserver/bin server/proxyserver/bin server/wakeserver/bin client/bin tests/bin tools/bin
 
 test: all
 	bash test.sh

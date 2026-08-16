@@ -1,6 +1,7 @@
 #include "core/instance/P2PClient.h"
 #include "core/packet/IceSdp.h"
 #include "core/foundation/ConnectToken.h"
+#include "core/foundation/ProxyAuth.h"
 #include "core/connectivity/hole_punch/NatMatrix.h"
 #include "core/connectivity/hole_punch/PunchAdmit.h"
 #include "core/connectivity/hole_punch/PunchPolicy.h"
@@ -197,6 +198,10 @@ void P2PClient::stop() {
                 leftover.push_back(c.punch.juice);
                 c.punch.juice = nullptr;
             }
+            if (c.punch.juice_prev) {
+                leftover.push_back(c.punch.juice_prev);
+                c.punch.juice_prev = nullptr;
+            }
             c.self = nullptr;
         }
         leftover.insert(leftover.end(), juice_reap_.begin(), juice_reap_.end());
@@ -222,6 +227,7 @@ void P2PClient::connect(const std::string& peer_uuid, const std::string& token_h
     c.punch.ice_gathered = false;
     c.punch.ice_host_sdp_sent = false;
     c.punch.ice_remote_gather_done = false;
+    c.punch.ice_need_gather_done = false;
     c.punch.ice_remote_applied_ms = 0;
     c.punch.ice_sdp_rtx_ms = 0;
     c.punch.ice_sdp_rtx_n = 0;
@@ -266,6 +272,7 @@ void P2PClient::reset_ice_flags(Conn& c) {
     c.punch.ice_gathered = false;
     c.punch.ice_host_sdp_sent = false;
     c.punch.ice_remote_gather_done = false;
+    c.punch.ice_need_gather_done = false;
     c.punch.ice_remote_applied_ms = 0;
     c.punch.ice_sdp_rtx_ms = 0;
     c.punch.ice_sdp_rtx_n = 0;
@@ -481,12 +488,37 @@ void P2PClient::worker_loop() {
             }
         }
         std::vector<juice_agent_t*> reap;
+        std::vector<juice_agent_t*> gather_done;
+        std::vector<std::pair<juice_agent_t*, std::string>> ice_poll;
         {
             std::lock_guard<std::recursive_mutex> lk(mu_);
             tick(now);
             reap.swap(juice_reap_);
+            for (auto& kv : conns_) {
+                Conn& c = *kv.second;
+                if (c.punch.ice_need_gather_done && c.punch.juice) {
+                    gather_done.push_back(c.punch.juice);
+                    c.punch.ice_need_gather_done = false;
+                }
+                if (c.punch.ice_restarting && c.punch.juice)
+                    ice_poll.emplace_back(c.punch.juice, c.peer_uuid);
+            }
+        }
+        for (auto* j : gather_done) juice_set_remote_gathering_done(j);
+        std::vector<std::string> restarted;
+        for (auto& it : ice_poll) {
+            const juice_state_t st = juice_get_state(it.first);
+            if (st == JUICE_STATE_CONNECTED || st == JUICE_STATE_COMPLETED)
+                restarted.push_back(it.second);
         }
         for (auto* j : reap) juice_destroy(j);
+        if (!restarted.empty()) {
+            std::lock_guard<std::recursive_mutex> lk(mu_);
+            for (const auto& peer : restarted) {
+                Conn* c = conn_of(peer);
+                if (c && c->punch.ice_restarting) set_connected(*c, false);
+            }
+        }
     }
 }
 
@@ -696,14 +728,19 @@ void P2PClient::tick_conn_fsm(Conn& c, uint64_t /*now*/) {
 // 已 Connected 且中继路径上直连打通时无缝切回 P2P（再触发一次 on_connected(relay=false)）
 void P2PClient::set_connected(Conn& c, bool relay) {
     if (c.state == ConnState::Connected) {
-        if (c.via_relay && !relay) {
-            c.via_relay = false;
-            note_path_stats(c, false);
-            if (on_connected) on_connected(c.peer_uuid, false);
-        } else if (!relay && c.punch.ice_restarting) {
+        if (!relay && c.punch.ice_restarting) {
             c.punch.ice_restarting = false;
             ice_restarts_.fetch_add(1);
             fprintf(stderr, "[P2PClient] ICE restarted with %s\n", c.peer_uuid.c_str());
+            fflush(stderr);
+            if (c.via_relay) {
+                c.via_relay = false;
+                note_path_stats(c, false);
+            }
+            if (on_connected) on_connected(c.peer_uuid, false);
+        } else if (c.via_relay && !relay) {
+            c.via_relay = false;
+            note_path_stats(c, false);
             if (on_connected) on_connected(c.peer_uuid, false);
         }
         return;
@@ -1868,7 +1905,7 @@ void P2PClient::tick_ice(uint64_t now) {
         if (c.punch.remote_sdp.empty() || c.punch.ice_remote_gather_done) continue;
         if (c.punch.ice_remote_applied_ms == 0) continue;
         if (now - c.punch.ice_remote_applied_ms < wait_ms) continue;
-        juice_set_remote_gathering_done(c.punch.juice);
+        c.punch.ice_need_gather_done = true;
         c.punch.ice_remote_gather_done = true;
     }
 }
@@ -1996,13 +2033,10 @@ bool P2PClient::derp_try_connect() {
            derp_addr_.ip.c_str(), (unsigned)derp_addr_.port, derp_use_tls_ ? 1 : 0);
     fflush(stdout);
 
-    static const uint8_t kProxyAuthKey[] = "p2p-proxy-auth-2024";
     ProxyRegReq req;
     memset(&req, 0, sizeof(req));
     strncpy(req.uuid, cfg_.uuid.c_str(), MAX_UUID_LEN);
-    hmac_sha256(kProxyAuthKey, sizeof(kProxyAuthKey) - 1,
-                reinterpret_cast<const uint8_t*>(cfg_.uuid.data()), cfg_.uuid.size(),
-                req.hmac);
+    proxy_register_hmac(cfg_.uuid, req.hmac);
     derp_send(MSG_PROXY_REGISTER_REQ, &req, sizeof(req));
     return true;
 }
@@ -2060,14 +2094,10 @@ void P2PClient::derp_on_readable() {
 
 void P2PClient::relay_register() {
     if (proxies_.empty()) return;
-    // 与 proxy 端共享的注册鉴权密钥（HMAC-SHA256(key, uuid)，防伪造注册）
-    static const uint8_t kProxyAuthKey[] = "p2p-proxy-auth-2024";
     ProxyRegReq req;
     memset(&req, 0, sizeof(req));
     strncpy(req.uuid, cfg_.uuid.c_str(), MAX_UUID_LEN);
-    hmac_sha256(kProxyAuthKey, sizeof(kProxyAuthKey) - 1,
-                reinterpret_cast<const uint8_t*>(cfg_.uuid.data()), cfg_.uuid.size(),
-                req.hmac);
+    proxy_register_hmac(cfg_.uuid, req.hmac);
     for (const auto& px : proxies_) {
         sockaddr_in to;
         if (sockaddr_from(px.ip, px.port, to))

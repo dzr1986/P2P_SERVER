@@ -243,8 +243,11 @@ int IOTC_Connect_ByUID(const char* peer_uid, int timeout_ms) {
                                   g->sess[sid].closed; });
     // 以 connected 为准：wait 超时与 on_connected 竞态时，!ok 仍可能已连通
     if (!g->sess[sid].connected) {
-        g->peer2sid.erase(g->sess[sid].peer);
+        const std::string peer = g->sess[sid].peer;
+        g->peer2sid.erase(peer);
         g->sess[sid] = SessionSlot{};
+        lk.unlock();
+        g->client.disconnect(peer);   // 锁外：拆掉超时留下的 ICE agent
         return IOTC_ER_ConnectTimeout;
     }
     return sid;

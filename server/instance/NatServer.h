@@ -131,7 +131,7 @@ private:
     void on_msg_check_uid(const uint8_t* p, size_t plen, const sockaddr_in& from);
     void on_msg_auth_challenge(const uint8_t* p, size_t plen, const sockaddr_in& from);
     void on_msg_auth_login(const uint8_t* p, size_t plen, const sockaddr_in& from);
-    void on_msg_admin_stats(const sockaddr_in& from);
+    void on_msg_admin_stats(const uint8_t* p, size_t plen, const sockaddr_in& from);
     void on_msg_admin_blacklist(const uint8_t* p, size_t plen, const sockaddr_in& from);
     void on_msg_sync_entry(const uint8_t* p, size_t plen, const sockaddr_in& from);
     void on_msg_sync_del(const uint8_t* p, size_t plen, const sockaddr_in& from);

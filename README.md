@@ -18,6 +18,7 @@
 `foundation → socket → packet → tunnel → connectivity → instance`），对外 UID API 在
 `client/sdk/iotc/`。演示程序 `client/demo/peer.cpp`。导读见 [`docs/开发指南.md`](docs/开发指南.md)。
 ICE/STUN/TURN 与流媒体通道对照见 [`docs/P2P穿透与流媒体实践.md`](docs/P2P穿透与流媒体实践.md)。
+整体优化与缺口见 [`docs/项目整体优化分析.md`](docs/项目整体优化分析.md)。
 
 ## 目录结构
 

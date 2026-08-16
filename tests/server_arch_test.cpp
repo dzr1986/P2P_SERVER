@@ -2,8 +2,10 @@
 #include "server/config/CfgFile.h"
 #include "server/management/AntiAbuse.h"
 #include "server/management/AuthChallenge.h"
+#include "server/management/AdminAuth.h"
 #include "server/management/ConnectAuth.h"
 #include "server/management/RelayHealth.h"
+#include "core/foundation/ProxyAuth.h"
 #include "server/peers/PeerManage.h"
 #include "server/peers/RegistrySync.h"
 #include "core/connectivity/hole_punch/PunchAdmit.h"
@@ -11,6 +13,7 @@
 
 #include <arpa/inet.h>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -108,6 +111,26 @@ int main() {
     }
     CHECK(std::string(line).find("203.0.113.9") != std::string::npos, "jail ip");
     unlink("/tmp/p2p_jail_test.txt");
+
+    unsetenv("P2P_PROXY_AUTH_SECRET");
+    CHECK(proxy_auth_secret() == kProxyAuthDefault, "default proxy secret");
+    setenv("P2P_PROXY_AUTH_SECRET", "prod-key", 1);
+    CHECK(proxy_auth_secret() == "prod-key", "env proxy secret");
+    uint8_t pmac[32];
+    proxy_register_hmac("u1", pmac);
+    CHECK(proxy_register_hmac_ok("u1", pmac), "proxy hmac self");
+    unsetenv("P2P_PROXY_AUTH_SECRET");
+
+    CfgData astats;
+    CHECK(verify_admin_stats(astats, nullptr, 0), "stats no secret = pass");
+    astats.admin_secret = "adm";
+    CHECK(!verify_admin_stats(astats, nullptr, 0), "stats secret requires mac");
+    uint8_t smac[32];
+    const uint8_t sid = MSG_ADMIN_STATS_REQ;
+    hmac_sha256(reinterpret_cast<const uint8_t*>("adm"), 3, &sid, 1, smac);
+    CHECK(verify_admin_stats(astats, smac, 32), "stats mac ok");
+    smac[0] ^= 1;
+    CHECK(!verify_admin_stats(astats, smac, 32), "stats mac tamper");
 
     if (g_fail) {
         printf("server_arch_test FAIL %d\n", g_fail);

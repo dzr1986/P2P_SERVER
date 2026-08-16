@@ -320,6 +320,12 @@ void AntiAbuse::sweep() {
         if (now > it->second) { it = ip_black_.erase(it); dirty_ = true; } else ++it;
     for (auto it = uuid_black_.begin(); it != uuid_black_.end();)
         if (now > it->second) { it = uuid_black_.erase(it); dirty_ = true; } else ++it;
+    for (auto it = flood_.begin(); it != flood_.end();) {
+        while (!it->second.empty() && now - it->second.front() >= 1)
+            it->second.pop_front();
+        if (it->second.empty()) it = flood_.erase(it);
+        else ++it;
+    }
 }
 
 } // namespace p2p

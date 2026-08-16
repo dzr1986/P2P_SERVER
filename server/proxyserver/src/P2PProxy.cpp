@@ -6,6 +6,7 @@
 //   - PUNCH_HELPER 打洞协助：向请求方返回目标当前公网地址
 //   - SP_ASK_EXTINFO_REQ 可用性查询（供 NatServer 择优调度）
 #include "P2PProxy.h"
+#include "core/foundation/ProxyAuth.h"
 #include "Crypto.h"   // hmac_sha256 / p2p_const_time_eq
 #include "Log.h"
 #include "Packet.h"
@@ -25,10 +26,6 @@ namespace {
 constexpr time_t kRegTtl = 120;    // 注册表项 120s 无刷新回收
 constexpr time_t kCountTtl = 3;    // 计数衰减周期（缩短以控制 srcpaths 膨胀）
 constexpr uint32_t kPathInitCount = 3;
-
-// 代理注册鉴权共享密钥（演示用固定值；生产环境应从配置/环境变量注入）
-constexpr uint8_t kProxyAuthKey[] = "p2p-proxy-auth-2024";
-constexpr size_t  kProxyAuthKeyLen = sizeof(kProxyAuthKey) - 1;
 
 } // namespace
 
@@ -183,10 +180,7 @@ void P2PProxy::do_register(const std::string& uuid, const sockaddr_in& from,
         LOGW("Proxy", "register rejected, no hmac uuid[%s]", uuid.c_str());
         return;
     }
-    uint8_t expect[32];
-    hmac_sha256(kProxyAuthKey, kProxyAuthKeyLen,
-                reinterpret_cast<const uint8_t*>(uuid.data()), uuid.size(), expect);
-    if (!p2p_const_time_eq(expect, hmac, 32)) {
+    if (!proxy_register_hmac_ok(uuid, hmac)) {
         rsp.result = 3;
         reply();
         LOGW("Proxy", "register rejected, bad hmac uuid[%s]", uuid.c_str());
@@ -404,10 +398,7 @@ void P2PProxy::do_register_tcp(const std::string& uuid, std::shared_ptr<TcpClien
         reply();
         return;
     }
-    uint8_t expect[32];
-    hmac_sha256(kProxyAuthKey, kProxyAuthKeyLen,
-                reinterpret_cast<const uint8_t*>(uuid.data()), uuid.size(), expect);
-    if (!p2p_const_time_eq(expect, hmac, 32)) {
+    if (!proxy_register_hmac_ok(uuid, hmac)) {
         rsp.result = 3;
         reply();
         LOGW("Proxy", "tcp register rejected, bad hmac uuid[%s]", uuid.c_str());
@@ -578,9 +569,15 @@ void P2PProxy::on_avail_query(const sockaddr_in& from) {
 // 定时回收
 // ---------------------------------------------------------------------------
 void P2PProxy::timer_loop() {
+    time_t last_quota_reset = time(nullptr);
     while (running_) {
         sleep((unsigned)kCountTtl);
         const time_t now = time(nullptr);
+        if (now - last_quota_reset >= 3600) {
+            last_quota_reset = now;
+            std::lock_guard<std::mutex> qlk(quota_mu_);
+            quota_used_.clear();
+        }
         size_t path_count = 0;
         for (auto& shard : path_shards_) {
             std::lock_guard<std::mutex> lk(shard.mu);
