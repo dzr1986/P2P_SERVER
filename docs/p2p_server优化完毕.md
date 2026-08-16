@@ -117,7 +117,11 @@ server/
 单测：`punch_admit_test`（NEED / compose）、`cfg_file_test`（JailFile）、
 `server_arch_test`（注册表 `np=1`、ConnectAuth 门、jail 导出）。
 
-端到端：`test.sh` [0]–[21]。RegistrySync 日志必须仍含：
+端到端：`test.sh` [0]–[21]。本轮全量 **PASS=139 FAIL=1**：
+唯一失败是 [16] `B ICE restarted`（客户端 ICE restart 完成后日志竞态，10s 窗口内未打出
+`ICE restarted`；offer/answer 与直连均已通过）。**与本轮信令核改动无关**，属已知偶发。
+
+RegistrySync 日志必须仍含：
 
 - `registry sync enabled, %zu peer(s)`
 - `sync entry uuid[%s]`
