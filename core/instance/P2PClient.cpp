@@ -227,7 +227,6 @@ void P2PClient::connect(const std::string& peer_uuid, const std::string& token_h
     c.punch.ice_gathered = false;
     c.punch.ice_host_sdp_sent = false;
     c.punch.ice_remote_gather_done = false;
-    c.punch.ice_need_gather_done = false;
     c.punch.ice_remote_applied_ms = 0;
     c.punch.ice_sdp_rtx_ms = 0;
     c.punch.ice_sdp_rtx_n = 0;
@@ -272,7 +271,6 @@ void P2PClient::reset_ice_flags(Conn& c) {
     c.punch.ice_gathered = false;
     c.punch.ice_host_sdp_sent = false;
     c.punch.ice_remote_gather_done = false;
-    c.punch.ice_need_gather_done = false;
     c.punch.ice_remote_applied_ms = 0;
     c.punch.ice_sdp_rtx_ms = 0;
     c.punch.ice_sdp_rtx_n = 0;
@@ -488,7 +486,6 @@ void P2PClient::worker_loop() {
             }
         }
         std::vector<juice_agent_t*> reap;
-        std::vector<juice_agent_t*> gather_done;
         std::vector<std::pair<juice_agent_t*, std::string>> ice_poll;
         {
             std::lock_guard<std::recursive_mutex> lk(mu_);
@@ -496,15 +493,10 @@ void P2PClient::worker_loop() {
             reap.swap(juice_reap_);
             for (auto& kv : conns_) {
                 Conn& c = *kv.second;
-                if (c.punch.ice_need_gather_done && c.punch.juice) {
-                    gather_done.push_back(c.punch.juice);
-                    c.punch.ice_need_gather_done = false;
-                }
                 if (c.punch.ice_restarting && c.punch.juice)
                     ice_poll.emplace_back(c.punch.juice, c.peer_uuid);
             }
         }
-        for (auto* j : gather_done) juice_set_remote_gathering_done(j);
         std::vector<std::string> restarted;
         for (auto& it : ice_poll) {
             const juice_state_t st = juice_get_state(it.first);
@@ -1905,7 +1897,7 @@ void P2PClient::tick_ice(uint64_t now) {
         if (c.punch.remote_sdp.empty() || c.punch.ice_remote_gather_done) continue;
         if (c.punch.ice_remote_applied_ms == 0) continue;
         if (now - c.punch.ice_remote_applied_ms < wait_ms) continue;
-        c.punch.ice_need_gather_done = true;
+        juice_set_remote_gathering_done(c.punch.juice);
         c.punch.ice_remote_gather_done = true;
     }
 }
