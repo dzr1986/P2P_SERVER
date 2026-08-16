@@ -43,6 +43,11 @@ inline uint8_t punch_admit_hint(PunchAdmit a) {
     }
 }
 
+// 心跳尚未带上自检结果时，用服务端观察值补全。
+inline uint8_t resolve_nattype(uint8_t reported, uint8_t observed) {
+    return reported != NAT_UNKNOWN ? reported : observed;
+}
+
 inline PunchAdmit admit_connect_punch(uint8_t src_nat, uint8_t dst_nat) {
     const uint8_t a = four_type_to_mapping(src_nat);
     const uint8_t b = four_type_to_mapping(dst_nat);

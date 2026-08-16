@@ -2,10 +2,12 @@
 #define P2P_NAT_TYPE_CHECK_H
 
 #include "core/socket/Net.h"
+#include "server/connectivity/MappingObserve.h"
 
 #include <arpa/inet.h>
 #include <atomic>
 #include <cstdint>
+#include <ctime>
 
 namespace p2p {
 
@@ -32,12 +34,27 @@ public:
     // 主 socket 快速路径（由 epoll 收包线程调用）：
     //   命中 NAT_DETECT_REQ -> 双 socket 应答并返回 true
     //   其它消息 -> 返回 false（交给处理线程池）
-    bool try_fast_handle(const uint8_t* data, size_t len, const sockaddr_in& from);
+    bool try_fast_handle(const uint8_t* data, size_t len, const sockaddr_in& from,
+                         uint8_t sock_idx = 0);
+
+    // 广告 OTHER-ADDRESS（wan:alt / wan:main）。0.0.0.0 不广告。
+    void set_advertise(const char* wan_ip);
+
+    // EasyTier responder：CHANGE-REQUEST 从对口回；on_alt 时对口=主 socket。
+    bool handle_stun(int recv_fd, const uint8_t* req, size_t len,
+                     const sockaddr_in& from, bool on_alt);
+
+    uint8_t inferred_nat(const sockaddr_in& from) const {
+        return observe_.inferred_nat(from);
+    }
+    void cleanup_observe(time_t now) { observe_.cleanup(now); }
 
     int  main_fd() const { return sock_main_.fd(); }
     int  alt_fd() const { return sock_alt_.fd(); }
     uint16_t alt_port() const { return alt_port_; }
     uint16_t probe_port() const { return probe_port_; }
+    uint64_t stun_same() const { return stun_same_.load(); }
+    uint64_t stun_other() const { return stun_other_.load(); }
 
 private:
     // 对 from 主/备各回一条 NatDetectRsp（不含第三口，以免干扰过滤判定）
@@ -51,6 +68,12 @@ private:
     uint16_t alt_port_ = 0;
     uint16_t probe_port_ = 0;
     std::atomic<bool> running_{false};
+    MappingObserve observe_;
+    bool advertise_ok_ = false;
+    sockaddr_in advertise_main_{};
+    sockaddr_in advertise_alt_{};
+    std::atomic<uint64_t> stun_same_{0};
+    std::atomic<uint64_t> stun_other_{0};
 };
 
 } // namespace p2p

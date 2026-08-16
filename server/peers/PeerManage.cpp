@@ -33,7 +33,8 @@ bool PeerManager::upsert(const std::string& uuid, const sockaddr_in& pub,
         it->second.pub_addr = pub;
         it->second.lan_addr = lan;
         it->second.dev_type = dev_type;
-        it->second.nattype = nattype;
+        if (nattype != 0 || it->second.nattype == 0)
+            it->second.nattype = nattype;
         it->second.last_heartbeat = now;
         if (extinfo.size() <= (size_t)MAX_EXTINFO) it->second.extinfo = extinfo;
         it->second.extlen = (uint16_t)it->second.extinfo.size();
@@ -70,7 +71,8 @@ bool PeerManager::upsert_synced(const std::string& uuid, const sockaddr_in& pub,
         it->second.pub_addr = pub;
         it->second.lan_addr = lan;
         it->second.dev_type = dev_type;
-        it->second.nattype = nattype;
+        if (nattype != 0 || it->second.nattype == 0)
+            it->second.nattype = nattype;
         it->second.last_heartbeat = hb_time;
         if (extinfo.size() <= (size_t)MAX_EXTINFO) it->second.extinfo = extinfo;
         it->second.extlen = (uint16_t)it->second.extinfo.size();
@@ -90,6 +92,13 @@ bool PeerManager::get(const std::string& uuid, Peer& out) {
     if (it == peers_.end()) return false;
     out = it->second;
     return true;
+}
+
+void PeerManager::set_nattype(const std::string& uuid, uint8_t nattype) {
+    if (nattype == 0) return;
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = peers_.find(uuid);
+    if (it != peers_.end()) it->second.nattype = nattype;
 }
 
 void PeerManager::set_auth_expire(const std::string& uuid, time_t expire) {

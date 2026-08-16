@@ -227,7 +227,6 @@ void NatServer::on_msg_connect_req(const uint8_t* p, size_t plen,
     ack.dst_pub_port = dst.pub_addr.sin_port;
     inet_ntop(AF_INET, &dst.lan_addr.sin_addr, ack.dst_lan_ip, MAX_IP_LEN);
     ack.dst_lan_port = dst.lan_addr.sin_port;
-    ack.dst_nattype = dst.nattype;
     pick_proxy(ack.proxies, ack.proxy_count, uid_region(req.src_uuid));
     if (cfg) {
         const uint16_t tcp = cfg->proxy_tcp_port ? cfg->proxy_tcp_port
@@ -237,8 +236,18 @@ void NatServer::on_msg_connect_req(const uint8_t* p, size_t plen,
 
     Peer src;
     const bool have_src = peers_.get(req.src_uuid, src);
-    const PunchAdmit admit = admit_connect_punch(
-        have_src ? src.nattype : (uint8_t)NAT_UNKNOWN, dst.nattype);
+    uint8_t src_nat = have_src ? src.nattype : (uint8_t)NAT_UNKNOWN;
+    uint8_t dst_nat = dst.nattype;
+    if (src_nat == NAT_UNKNOWN)
+        src_nat = resolve_nattype(src_nat, natcheck_.inferred_nat(from));
+    if (dst_nat == NAT_UNKNOWN)
+        dst_nat = resolve_nattype(dst_nat, natcheck_.inferred_nat(dst.pub_addr));
+    if (have_src && src.nattype == NAT_UNKNOWN && src_nat != NAT_UNKNOWN)
+        peers_.set_nattype(req.src_uuid, src_nat);
+    if (dst.nattype == NAT_UNKNOWN && dst_nat != NAT_UNKNOWN)
+        peers_.set_nattype(req.dst_uuid, dst_nat);
+    ack.dst_nattype = dst_nat;
+    const PunchAdmit admit = admit_connect_punch(src_nat, dst_nat);
     note_punch_admit(admit);
     const uint8_t hint = punch_admit_hint(admit);
 
@@ -263,12 +272,11 @@ void NatServer::on_msg_connect_req(const uint8_t* p, size_t plen,
     if (have_src) {
         inet_ntop(AF_INET, &src.lan_addr.sin_addr, inv.src_lan_ip, MAX_IP_LEN);
         inv.src_lan_port = src.lan_addr.sin_port;
-        inv.src_nattype = src.nattype;
     } else {
         inet_ntop(AF_INET, &from.sin_addr, inv.src_lan_ip, MAX_IP_LEN);
         inv.src_lan_port = from.sin_port;
-        inv.src_nattype = NAT_UNKNOWN;
     }
+    inv.src_nattype = src_nat;
     pick_proxy(inv.proxies, inv.proxy_count, uid_region(req.dst_uuid));
     if (cfg) {
         const uint16_t tcp = cfg->proxy_tcp_port ? cfg->proxy_tcp_port

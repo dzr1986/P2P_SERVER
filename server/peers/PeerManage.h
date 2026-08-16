@@ -46,6 +46,7 @@ public:
     bool exists(const std::string& uuid);
     bool get(const std::string& uuid, Peer& out);
 
+    void set_nattype(const std::string& uuid, uint8_t nattype);
     void set_auth_expire(const std::string& uuid, time_t expire);
     bool authed(const std::string& uuid) const;
     // 清掉过期的鉴权记录（周期调用，防止 auth_sessions_ 无限增长）

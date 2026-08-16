@@ -66,7 +66,7 @@ EasyTier 把「怎么连上」从「连上之后怎么转发」拆开：
 
 | 子模块 | 他们做什么 | 本仓库对应 |
 |--------|------------|------------|
-| `stun/` | UDP/TCP STUN 采集映射 | `NatDetect` + NatServer TCP STUN + `StunBind.h` |
+| `stun/` | UDP/TCP STUN 采集映射；`responder` 按 CHANGE-REQUEST 换口回 | `NatDetect` + `StunResponder`（备用口）+ TCP STUN + `StunBind.h` |
 | `hole_punch/udp` | UDP 打洞引擎 | libjuice ICE + 自研 punch socks |
 | `hole_punch/tcp` | 同时 connect | `TcpPunch.h`（默认关，EDM 不发起） |
 | `hole_punch/port_mapping` | UPnP → NAT-PMP → PCP | `PortMap.*` |
@@ -109,12 +109,14 @@ server/natserver|proxyserver  中心信令 + 专用中继（他们没有对等�
 |----------|-------------------|
 | `config/` | `server/config/CfgFile.*` |
 | `peers/` | `server/peers/PeerManage.*`（仅注册表） |
-| `connectivity/` | `server/connectivity/NatTypeCheck.*` |
+| `connectivity/` | `server/connectivity/` STUN responder + 映射观察 + NAT 探测 |
 | `management/` | `server/management/` 防滥用、白名单、Status |
 | `rpc/` | `server/rpc/RecvProcess.cpp` |
 | `instance/` | `server/instance/NatServer.*` |
 | `listener/` | `server/listener/` UDP bind + LocalListeners 防 hairpin |
 | `hole_punch/policy` | CONNECT `PunchAdmit`：EDM×EDM 提示更快开中继（仍打洞，不改 force_relay） |
+| `stun/responder` | CHANGE-REQUEST 从备用口回；OTHER-ADDRESS 广告备口 |
+| `stun/collector` | `MappingObserve`：主/备口映射补 CONNECT nattype |
 | `gateway/` | **不建**；中继是独立进程 `proxyserver/` |
 
 `send_tunnel_via` 用 `PathSelect` 决定走哪条已就绪路径：

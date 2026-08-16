@@ -27,4 +27,4 @@ foundation → socket → packet → tunnel → connectivity → instance
 | `instance/` | `instance/` | `P2PClient` 生命周期 + worker | 对外门面；juice 只在 tick 里调 |
 
 对外 UID API 仍在 `client/sdk/iotc/`（TUTK 形，不是 EasyTier 层）。
-**p2p_server 自己的拆分**在 [`server/README.md`](../server/README.md)：`config / peers / connectivity / management / rpc / instance`。
+**p2p_server 自己的拆分**在 [`server/README.md`](../server/README.md)：`config / peers / connectivity / management / rpc / listener / instance`。

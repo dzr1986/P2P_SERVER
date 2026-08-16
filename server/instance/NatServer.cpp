@@ -74,6 +74,7 @@ int NatServer::init(const std::string& cfg_path, uint16_t nat_port,
     uint16_t alt_port = cfg_->nat_sock2_port ? cfg_->nat_sock2_port : 0;
     uint16_t probe_port = cfg_->nat_sock3_port ? cfg_->nat_sock3_port : 0;
     if (natcheck_.init(nat_port_, alt_port, probe_port) != 0) return -1;
+    natcheck_.set_advertise(wan_ip_.c_str());
 
     listeners_.clear();
     listeners_.add_any(nat_port_);
@@ -465,9 +466,9 @@ void NatServer::recv_thread(int idx) {
                 if (abuse_.is_ip_blacklisted(from)) continue;
                 if (abuse_.check_flood(from)) continue;
 
-                // 快速路径：RFC 8489 STUN Binding（libjuice srflx）+ 自研 NAT 探测
+                // 快速路径：RFC 8489/5780 STUN Binding（CHANGE-REQUEST 走备用口）
                 if (stun_is_binding_request(buf, (size_t)r)) {
-                    stun_reply_binding(fd, buf, (size_t)r, from);
+                    natcheck_.handle_stun(fd, buf, (size_t)r, from, false);
                     continue;
                 }
                 if (natcheck_.try_fast_handle(buf, (size_t)r, from)) continue;
@@ -520,6 +521,7 @@ void NatServer::timer_thread() {
             broadcast_sync_msg(MSG_SYNC_PEER_DEL, &d, sizeof(d), nullptr);
         }
         peers_.cleanup_auth_sessions();   // 清理过期鉴权会话
+        natcheck_.cleanup_observe(now);
         abuse_.sweep();
         if (abuse_.needs_save() && abuse_.save()) abuse_.reset_dirty();  // 黑名单持久化
 
@@ -896,6 +898,9 @@ std::string NatServer::status_json() const {
        << ",\"login_fail\":" << login_fail_.load()
        << ",\"punch_ice\":" << punch_ice_.load()
        << ",\"punch_relay\":" << punch_relay_.load()
+       << ",\"punch_unknown\":" << punch_unknown_.load()
+       << ",\"stun_same\":" << natcheck_.stun_same()
+       << ",\"stun_other\":" << natcheck_.stun_other()
        << ",\"blacklist_ips\":" << abuse_.ip_blacklist_size()
        << ",\"proxy_count\":" << (cfg ? cfg->proxy_ips.size() : 0)
        << ",\"region\":\"" << (region ? std::string(1, region) : "") << "\""
@@ -937,6 +942,11 @@ std::string NatServer::status_metrics() const {
        << "p2p_connect_punch_total{strategy=\"ice\"} " << punch_ice_.load() << "\n"
        << "p2p_connect_punch_total{strategy=\"relay\"} " << punch_relay_.load() << "\n"
        << "p2p_connect_punch_total{strategy=\"unknown\"} " << punch_unknown_.load()
+       << "\n";
+    os << "# HELP p2p_stun_reply_total STUN Binding replies (EasyTier responder)\n"
+       << "# TYPE p2p_stun_reply_total counter\n"
+       << "p2p_stun_reply_total{src=\"same\"} " << natcheck_.stun_same() << "\n"
+       << "p2p_stun_reply_total{src=\"other\"} " << natcheck_.stun_other()
        << "\n";
     os << "# HELP p2p_node_region Node REGION label (1=set)\n"
        << "# TYPE p2p_node_region gauge\n"

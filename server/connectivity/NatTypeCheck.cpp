@@ -2,7 +2,9 @@
 #include "core/foundation/Log.h"
 #include "core/socket/Packet.h"
 #include "core/packet/ProtoDef.h"
+#include "core/packet/StunBind.h"
 #include "core/foundation/Util.h"
+#include "server/connectivity/StunResponder.h"
 
 #include <cerrno>
 #include <cstring>
@@ -44,6 +46,40 @@ int NatTypeCheck::init(uint16_t main_port, uint16_t alt_port, uint16_t probe_por
     return 0;
 }
 
+void NatTypeCheck::set_advertise(const char* wan_ip) {
+    advertise_ok_ = false;
+    memset(&advertise_main_, 0, sizeof(advertise_main_));
+    memset(&advertise_alt_, 0, sizeof(advertise_alt_));
+    if (!wan_ip || !wan_ip[0]) return;
+    in_addr a{};
+    if (inet_pton(AF_INET, wan_ip, &a) != 1 || a.s_addr == 0) return;
+    advertise_main_.sin_family = AF_INET;
+    advertise_main_.sin_addr = a;
+    advertise_main_.sin_port = htons(main_port_);
+    advertise_alt_ = advertise_main_;
+    advertise_alt_.sin_port = htons(alt_port_);
+    advertise_ok_ = true;
+    LOGI("NatTypeCheck", "OTHER-ADDRESS advertise %s main=%d alt=%d",
+         wan_ip, main_port_, alt_port_);
+}
+
+bool NatTypeCheck::handle_stun(int recv_fd, const uint8_t* req, size_t len,
+                               const sockaddr_in& from, bool on_alt) {
+    if (!stun_is_binding_request(req, len)) return false;
+    const sockaddr_in* adv = nullptr;
+    if (advertise_ok_)
+        adv = on_alt ? &advertise_main_ : &advertise_alt_;
+    const int other_fd = on_alt ? sock_main_.fd() : sock_alt_.fd();
+    const StunReplyPlan p = stun_plan_reply(req, len, from, adv, other_fd >= 0);
+    if (p.len == 0 || recv_fd < 0) return false;
+    const int fd = (p.src == StunSendSrc::Other && other_fd >= 0) ? other_fd : recv_fd;
+    sendto(fd, p.buf, p.len, 0,
+           reinterpret_cast<const sockaddr*>(&from), sizeof(from));
+    if (p.src == StunSendSrc::Other) stun_other_.fetch_add(1);
+    else stun_same_.fetch_add(1);
+    return true;
+}
+
 static void send_rsp(const UdpFd& sock, const sockaddr_in& to, uint8_t server_index,
                      uint16_t main_port, uint16_t alt_port, uint16_t probe_port) {
     NatDetectRsp rsp{};
@@ -83,13 +119,15 @@ void NatTypeCheck::probe_reply(const sockaddr_in& from) {
     send_rsp(sock_probe_, from, 2, main_port_, alt_port_, probe_port_);
 }
 
-bool NatTypeCheck::try_fast_handle(const uint8_t* data, size_t len, const sockaddr_in& from) {
+bool NatTypeCheck::try_fast_handle(const uint8_t* data, size_t len, const sockaddr_in& from,
+                                   uint8_t sock_idx) {
     PacketReader r(data, len);
     MsgHead h{};
     if (!r.read_struct(h)) return false;
     if (ntohs(h.magic) != NAT_MAGIC || h.version != PROTO_VER) return false;
     if (h.msg_id != MSG_NAT_DETECT_REQ) return false;
-    dual_reply(from, 0);
+    observe_.note(from, sock_idx);
+    dual_reply(from, sock_idx);
     return true;
 }
 
@@ -115,7 +153,12 @@ void NatTypeCheck::run_alt_thread() {
         if (alt_fd >= 0 && FD_ISSET(alt_fd, &rf)) {
             sockaddr_in from{};
             ssize_t r = sock_alt_.recv_from(buf, sizeof(buf), from);
-            if (r > 0) try_fast_handle(buf, (size_t)r, from);
+            if (r > 0) {
+                if (stun_is_binding_request(buf, (size_t)r))
+                    handle_stun(alt_fd, buf, (size_t)r, from, true);
+                else
+                    try_fast_handle(buf, (size_t)r, from, 1);
+            }
         }
         if (probe_fd >= 0 && FD_ISSET(probe_fd, &rf)) {
             sockaddr_in from{};

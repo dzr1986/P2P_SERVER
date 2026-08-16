@@ -8,7 +8,7 @@
 ls server
   config/         配置（EasyTier: config）
   peers/          注册表（EasyTier: peers；只做 UUID→地址，不做 mesh 路由）
-  connectivity/   服务端 STUN / NAT 探测（EasyTier: connectivity/stun）
+  connectivity/   STUN responder + 映射观察 + NAT 探测（EasyTier: stun/responder+collector）
   management/     防滥用、白名单、/metrics（EasyTier: management）
   rpc/            报文分发 on_msg_*（EasyTier: rpc）
   listener/       UDP bind + LocalListeners 防回环（EasyTier: listener）

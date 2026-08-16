@@ -33,6 +33,10 @@ int main() {
           "EDM×EDM → relay hint");
     CHECK(admit_connect_punch(NAT_UNKNOWN, NAT_FULL_CONE) == PunchAdmit::Unknown,
           "unknown → unknown");
+    CHECK(resolve_nattype(NAT_UNKNOWN, NAT_SYMMETRIC) == NAT_SYMMETRIC,
+          "observe fills unknown");
+    CHECK(resolve_nattype(NAT_FULL_CONE, NAT_SYMMETRIC) == NAT_FULL_CONE,
+          "reported wins over observe");
     CHECK(punch_admit_hint(PunchAdmit::Relay) == PUNCH_HINT_RELAY, "hint byte");
     CHECK(punch_wait_ms(PUNCH_HINT_RELAY, 6000) == 1500, "relay wait 1.5s");
     CHECK(punch_wait_ms(PUNCH_HINT_ICE, 6000) == 6000, "ice keeps 6s");
