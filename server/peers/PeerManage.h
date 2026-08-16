@@ -24,6 +24,7 @@ struct Peer {
     time_t      auth_expire;       // 鉴权有效期截止（0=无需鉴权/未鉴权）
     uint16_t    extlen;            // 扩展信息长度
     std::string extinfo;           // 扩展信息（上限 MAX_EXTINFO）
+    bool        need_p2p = false;  // 心跳 extinfo 含 np=1
 };
 
 // ---------------------------------------------------------------------------
@@ -56,6 +57,7 @@ public:
     size_t device_count() const;
     size_t client_count() const;
     size_t authed_count() const;
+    size_t need_p2p_count() const;
 
     void cleanup_timeout(int timeout_sec);
     // 清理超时节点并返回被移除的 uuid（供注册表同步广播删除）

@@ -1,9 +1,20 @@
 #include "server/peers/PeerManage.h"
+#include "core/connectivity/hole_punch/PunchAdmit.h"
 #include "core/packet/ProtoDef.h"
 
 #include <cstring>
 
 namespace p2p {
+
+namespace {
+
+void apply_extinfo(Peer& p, const std::string& extinfo) {
+    if (extinfo.size() <= (size_t)MAX_EXTINFO) p.extinfo = extinfo;
+    p.extlen = (uint16_t)p.extinfo.size();
+    p.need_p2p = extinfo_has_need_p2p(p.extinfo);
+}
+
+}  // namespace
 
 PeerManager::PeerManager() {}
 PeerManager::~PeerManager() {}
@@ -26,8 +37,7 @@ bool PeerManager::upsert(const std::string& uuid, const sockaddr_in& pub,
         p.last_heartbeat = now;
         p.register_time = now;
         p.auth_expire = 0;
-        if (extinfo.size() <= (size_t)MAX_EXTINFO) p.extinfo = extinfo;
-        p.extlen = (uint16_t)p.extinfo.size();
+        apply_extinfo(p, extinfo);
         peers_.emplace(uuid, std::move(p));
     } else {
         it->second.pub_addr = pub;
@@ -36,8 +46,7 @@ bool PeerManager::upsert(const std::string& uuid, const sockaddr_in& pub,
         if (nattype != 0 || it->second.nattype == 0)
             it->second.nattype = nattype;
         it->second.last_heartbeat = now;
-        if (extinfo.size() <= (size_t)MAX_EXTINFO) it->second.extinfo = extinfo;
-        it->second.extlen = (uint16_t)it->second.extinfo.size();
+        apply_extinfo(it->second, extinfo);
     }
     return true;
 }
@@ -64,8 +73,7 @@ bool PeerManager::upsert_synced(const std::string& uuid, const sockaddr_in& pub,
         p.last_heartbeat = hb_time;
         p.register_time = hb_time;
         p.auth_expire = hb_time + 3600;   // 源侧鉴权通过视为已鉴权
-        if (extinfo.size() <= (size_t)MAX_EXTINFO) p.extinfo = extinfo;
-        p.extlen = (uint16_t)p.extinfo.size();
+        apply_extinfo(p, extinfo);
         peers_.emplace(uuid, std::move(p));
     } else {
         it->second.pub_addr = pub;
@@ -74,8 +82,7 @@ bool PeerManager::upsert_synced(const std::string& uuid, const sockaddr_in& pub,
         if (nattype != 0 || it->second.nattype == 0)
             it->second.nattype = nattype;
         it->second.last_heartbeat = hb_time;
-        if (extinfo.size() <= (size_t)MAX_EXTINFO) it->second.extinfo = extinfo;
-        it->second.extlen = (uint16_t)it->second.extinfo.size();
+        apply_extinfo(it->second, extinfo);
         it->second.auth_expire = hb_time + 3600;
     }
     return true;
@@ -151,6 +158,13 @@ size_t PeerManager::authed_count() const {
     size_t n = 0;
     time_t now = time(nullptr);
     for (auto& kv : peers_) if (kv.second.auth_expire > now) n++;
+    return n;
+}
+
+size_t PeerManager::need_p2p_count() const {
+    std::lock_guard<std::mutex> lk(mu_);
+    size_t n = 0;
+    for (auto& kv : peers_) if (kv.second.need_p2p) n++;
     return n;
 }
 

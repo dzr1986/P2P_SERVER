@@ -62,6 +62,10 @@ int NatServer::init(const std::string& cfg_path, uint16_t nat_port,
         abuse_.set_password(cfg_->blacklist_pass);
         abuse_.load();   // 重启不丢；失败仅告警不影响启动
     }
+    if (!cfg_->jail_file.empty()) {
+        abuse_.set_jail_path(cfg_->jail_file);
+        abuse_.dump_jail();
+    }
     if (!cfg_->license_file.empty()) license_.set_path(cfg_->license_file);
     else license_.set_path("/tmp/licensep2p_clean.dat");
     license_.set_password(cfg_->license_pass);
@@ -270,21 +274,9 @@ bool NatServer::verify_auth_login(const std::string& uuid, const uint8_t nonce[1
 bool NatServer::verify_connect_token(const char* src_uuid, const char* dst_uuid,
                                      const uint8_t* trailer, size_t tlen) {
     auto cfg = cfg_;
-    if (!cfg || !cfg->enable_connect_token) return true;
-    if (cfg->auth_secret.empty()) return false;
-    if (!trailer || tlen < sizeof(ConnectToken)) return false;
-    ConnectToken tok{};
-    memcpy(&tok, trailer, sizeof(tok));
-    uint8_t key[AUTH_KEY_LEN];
-    uid_derive_auth_key(reinterpret_cast<const uint8_t*>(cfg->auth_secret.data()),
-                        cfg->auth_secret.size(), dst_uuid, key);
-    const uint32_t now = (uint32_t)time(nullptr);
-    if (!connect_token_verify(key, dst_uuid, src_uuid, tok, now)) return false;
-    if (!token_nonces_.claim(tok.nonce, ntohl(tok.expire), now)) {
-        LOGW("NatServer", "CONNECT token replay src[%s] dst[%s]", src_uuid, dst_uuid);
-        return false;
-    }
-    return true;
+    if (!cfg) return false;
+    return verify_connect_trailer(*cfg, token_nonces_, src_uuid, dst_uuid,
+                                  trailer, tlen);
 }
 
 // 心跳应答（明文 0x02 / 加密 0x1C）
@@ -316,7 +308,8 @@ void NatServer::send_heartbeat_rsp(const sockaddr_in& to, const char* uuid,
 // 心跳/注册处理（明文与加密共用）：鉴权/黑名单/白名单门 + 注册 + 应答
 void NatServer::handle_heartbeat(const UuidReq& req, const std::string& extinfo,
                                  const sockaddr_in& from, bool enc,
-                                 const uint8_t enc_iv[8]) {    auto cfg = cfg_;
+                                 const uint8_t enc_iv[8]) {
+    auto cfg = cfg_;
     ExtInfoRsp rsp;
     memset(&rsp, 0, sizeof(rsp));
     rsp.nat_sock2_port = htons(natcheck_.alt_port());
@@ -468,7 +461,10 @@ void NatServer::timer_thread() {
         peers_.cleanup_auth_sessions();   // 清理过期鉴权会话
         natcheck_.cleanup_observe(now);
         abuse_.sweep();
-        if (abuse_.needs_save() && abuse_.save()) abuse_.reset_dirty();  // 黑名单持久化
+        if (abuse_.needs_save()) {
+            if (abuse_.save()) abuse_.reset_dirty();
+            abuse_.dump_jail();
+        }
 
         // 配置热加载：先解析到新对象，再原子替换，避免并发读脏数据
         auto cur = std::make_shared<CfgData>(*cfg_);
@@ -476,6 +472,11 @@ void NatServer::timer_thread() {
             cfg_ = cur;
             sync_.set_cfg(cfg_);
             abuse_.configure(cur->flood_pkt_threshold, cur->blacklist_seconds);
+            if (!cur->blacklist_file.empty()) {
+                abuse_.set_path(cur->blacklist_file);
+                abuse_.set_password(cur->blacklist_pass);
+            }
+            abuse_.set_jail_path(cur->jail_file);
             LOGI("NatServer", "config reloaded");
         }
 
@@ -622,6 +623,11 @@ std::string NatServer::status_json() const {
        << ",\"stun_same\":" << natcheck_.stun_same()
        << ",\"stun_other\":" << natcheck_.stun_other()
        << ",\"blacklist_ips\":" << abuse_.ip_blacklist_size()
+       << ",\"flood_drop\":" << abuse_.dropped_flood_pkts()
+       << ",\"need_p2p\":" << peers_.need_p2p_count()
+       << ",\"private_mode\":" << (cfg && cfg->private_mode ? "true" : "false")
+       << ",\"sync\":" << (sync_.enabled() ? "true" : "false")
+       << ",\"relay_reject\":" << relay_reject_.load()
        << ",\"proxy_count\":" << (cfg ? cfg->proxy_ips.size() : 0)
        << ",\"region\":\"" << (region ? std::string(1, region) : "") << "\""
        << ",\"uptime_seconds\":" << (started_at_ ? (long)(time(nullptr) - started_at_) : 0)
@@ -649,6 +655,12 @@ std::string NatServer::status_metrics() const {
     gauge("p2p_online_apps", "Online app-role peers", (long)peers_.client_count());
     gauge("p2p_authed_peers", "Authenticated peers", (long)peers_.authed_count());
     gauge("p2p_blacklist_ips", "Blacklisted source IPs", (long)abuse_.ip_blacklist_size());
+    gauge("p2p_need_p2p_peers", "Peers advertising need_p2p (np=1)",
+          (long)peers_.need_p2p_count());
+    gauge("p2p_private_mode", "PrivateMode (1=on)",
+          (long)(cfg && cfg->private_mode ? 1 : 0));
+    gauge("p2p_registry_sync", "RegistrySync enabled (1=on)",
+          (long)(sync_.enabled() ? 1 : 0));
     gauge("p2p_proxy_configured", "Configured proxy endpoints",
           (long)(cfg ? cfg->proxy_ips.size() : 0));
     gauge("p2p_uptime_seconds", "Process uptime in seconds", uptime);
@@ -657,6 +669,10 @@ std::string NatServer::status_metrics() const {
     counter("p2p_connect_fail_total", "Failed CONNECT coordinations", connect_fail_.load());
     counter("p2p_login_ok_total", "Successful AUTH_LOGIN", login_ok_.load());
     counter("p2p_login_fail_total", "Failed AUTH_LOGIN", login_fail_.load());
+    counter("p2p_flood_drop_total", "Packets dropped by flood jail",
+            abuse_.dropped_flood_pkts());
+    counter("p2p_relay_reject_total", "MSG_PROXY_RELAY_DATA dropped by signaling core",
+            relay_reject_.load());
     os << "# HELP p2p_connect_punch_total CONNECT punch admission (EasyTier policy)\n"
        << "# TYPE p2p_connect_punch_total counter\n"
        << "p2p_connect_punch_total{strategy=\"ice\"} " << punch_ice_.load() << "\n"

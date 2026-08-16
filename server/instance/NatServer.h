@@ -3,6 +3,7 @@
 
 #include "server/management/AntiAbuse.h"
 #include "server/management/AuthChallenge.h"
+#include "server/management/ConnectAuth.h"
 #include "server/management/LicenseMgr.h"
 #include "server/management/RelayHealth.h"
 #include "server/config/CfgFile.h"
@@ -193,6 +194,7 @@ private:
     std::atomic<uint64_t> punch_ice_{0};
     std::atomic<uint64_t> punch_relay_{0};
     std::atomic<uint64_t> punch_unknown_{0};
+    std::atomic<uint64_t> relay_reject_{0};
     time_t started_at_ = 0;
 };
 

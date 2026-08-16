@@ -9,6 +9,7 @@
 #include "core/packet/ProtoDef.h"
 
 #include <cstdint>
+#include <string>
 
 namespace p2p {
 
@@ -22,9 +23,17 @@ enum class PunchAdmit : uint8_t {
 constexpr uint8_t PUNCH_HINT_NONE  = 0;
 constexpr uint8_t PUNCH_HINT_ICE   = 1;
 constexpr uint8_t PUNCH_HINT_RELAY = 2;
+constexpr uint8_t PUNCH_HINT_NEED  = 3;  // 任一侧 need_p2p：满超时打洞（EDM×EDM 仍 Relay）
+
+// 心跳 extinfo 里宣告 need_p2p；旧服务端当不透明串。
+constexpr const char* NEED_P2P_EXT = "np=1";
 
 // Relay 提示时仍打洞，但中继等待从 connect_timeout 收到这个值。
 constexpr uint32_t PUNCH_HINT_RELAY_WAIT_MS = 1500;
+
+inline bool extinfo_has_need_p2p(const std::string& ext) {
+    return ext.find(NEED_P2P_EXT) != std::string::npos;
+}
 
 inline const char* punch_admit_str(PunchAdmit a) {
     switch (a) {
@@ -35,12 +44,28 @@ inline const char* punch_admit_str(PunchAdmit a) {
     return "unknown";
 }
 
+inline const char* punch_hint_str(uint8_t hint) {
+    switch (hint) {
+    case PUNCH_HINT_ICE:   return "ice";
+    case PUNCH_HINT_RELAY: return "relay";
+    case PUNCH_HINT_NEED:  return "need";
+    default:               return "none";
+    }
+}
+
 inline uint8_t punch_admit_hint(PunchAdmit a) {
     switch (a) {
     case PunchAdmit::Ice:   return PUNCH_HINT_ICE;
     case PunchAdmit::Relay: return PUNCH_HINT_RELAY;
     default:                return PUNCH_HINT_NONE;
     }
+}
+
+// EDM×EDM 仍 Relay；其余任一侧 need_p2p 则 NEED。不改 force_relay。
+inline uint8_t compose_connect_hint(PunchAdmit admit, bool src_need, bool dst_need) {
+    const uint8_t hint = punch_admit_hint(admit);
+    if (hint != PUNCH_HINT_RELAY && (src_need || dst_need)) return PUNCH_HINT_NEED;
+    return hint;
 }
 
 // 心跳尚未带上自检结果时，用服务端观察值补全。
@@ -58,7 +83,7 @@ inline PunchAdmit admit_connect_punch(uint8_t src_nat, uint8_t dst_nat) {
 
 inline uint32_t punch_wait_ms(uint8_t hint, uint32_t default_ms) {
     if (hint == PUNCH_HINT_RELAY) return PUNCH_HINT_RELAY_WAIT_MS;
-    return default_ms;
+    return default_ms;  // Ice / Need / 旧服务端：满超时
 }
 
 }  // namespace p2p

@@ -135,6 +135,7 @@ static void parse_value(CfgData& out, const std::string& key, const std::string&
         {"AdminSecret",    [](CfgData& c, const std::string& v) { c.admin_secret = v; }},
         {"BlacklistFile",  [](CfgData& c, const std::string& v) { c.blacklist_file = v; }},
         {"BlacklistPass",  [](CfgData& c, const std::string& v) { c.blacklist_pass = v; }},
+        {"JailFile",       [](CfgData& c, const std::string& v) { c.jail_file = v; }},
         {"Region",         [](CfgData& c, const std::string& v) { c.region = parse_region_char(v); }},
         {"NatRegions",     [](CfgData& c, const std::string& v) { parse_ip_regions(v, c.nat_regions); }},
         {"ProxyRegions",   [](CfgData& c, const std::string& v) { parse_ip_regions(v, c.proxy_regions); }},
@@ -281,6 +282,7 @@ void apply_cfg_env(CfgData& cfg) {
     if (const char* v = env("P2P_ADMIN_SECRET")) cfg.admin_secret = v;
     if (const char* v = env("P2P_BLACKLIST_FILE")) cfg.blacklist_file = v;
     if (const char* v = env("P2P_BLACKLIST_PASS")) cfg.blacklist_pass = v;
+    if (const char* v = env("P2P_JAIL_FILE")) cfg.jail_file = v;
     if (const char* v = env("P2P_REGION")) cfg.region = parse_region_char(v);
     if (const char* v = env("P2P_WAKE_SERVER")) cfg.wake_server = v;
     if (const char* v = env("P2P_PROXY_ALT_PORT")) set_int_in_range(cfg.proxy_alt_port, v, 1, 65535);

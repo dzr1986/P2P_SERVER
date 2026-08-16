@@ -57,6 +57,11 @@ server/
 | `--private-mode` | `PrivateMode` / `P2P_PRIVATE_MODE`（强制 `EnableAuth`，仍需 `AuthSecret`） |
 | `--instance-name` | `InstanceName` |
 | `--rpc-portal-whitelist` | `StatusAllow` |
-| `--lazy-p2p` / `--need-p2p` | 客户端 `lazy_p2p` / `need_p2p` |
+| `--lazy-p2p` / `--need-p2p` | 客户端 `lazy_p2p` / `need_p2p`；心跳 `np=1` 跨对端宣告 |
 | `--disable-p2p` | `force_relay`（硬关，不因对端 need_p2p 打开） |
-| 空 `--relay-network-whitelist` + 只转发 RPC | **默认**：NatServer 从不转发业务载荷 |
+| 空 `--relay-network-whitelist` + 只转发 RPC | **默认**：NatServer 丢弃 `MSG_PROXY_RELAY_DATA` |
+| fail2ban / 主机加固 | `JailFile` / `P2P_JAIL_FILE`（一行一个拉黑 IP） |
+
+`management/` 另含 `ConnectAuth`（CONNECT Token 验签，从 NatServer 抽出）。
+
+收口说明见 [`p2p_server优化完毕.md`](p2p_server优化完毕.md)。

@@ -43,6 +43,7 @@ namespace p2p {
 //   StatusPort=N                    HTTP 状态口（0=关；也可 P2P_STATUS_PORT）
 //   StatusAllow=127.0.0.1,10.0.0.0/8  状态口来源白名单（空=不限制）
 //   PrivateMode=0|1                 对标 --private-mode：强制 EnableAuth（仍需 AuthSecret）
+//   JailFile=<path>                 fail2ban 导出：一行一个当前拉黑 IP
 // 覆盖顺序（学 EasyTier）：文件 < P2P_* 环境变量 < 命令行。
 // 文件值支持 ${ENV}；P2P_DISABLE_ENV_PARSING=1 只关展开，不关 P2P_* 覆盖。
 // ---------------------------------------------------------------------------
@@ -70,6 +71,7 @@ struct CfgData {
 
     std::string blacklist_file;
     std::string blacklist_pass;
+    std::string jail_file;            // fail2ban：一行一个 IP
     std::string wake_server;          // "ip:port"，空=不通知 wakeserver
 
     int         proc_workers = 4;

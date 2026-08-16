@@ -49,4 +49,8 @@ EasyTier：`配置文件 < 环境变量 < 命令行`。命令行覆盖文件；`
 - `--p2p-only`（丢弃中继流量；IoT 必须能降级中继）
 - 多配置文件启动多个虚拟网
 
-`need_p2p` 本轮只做本端半边（`want_direct`）。对端宣告走心跳 extinfo 尚未做。
+`need_p2p` 已做跨对端宣告：心跳 extinfo 带 ASCII `np=1`，注册表记 `Peer.need_p2p`，
+CONNECT 任一侧需要且准入不是 Relay 时 ACK/INVITE 尾部 hint=`PUNCH_HINT_NEED=3`。
+对端收到 NEED 置 `want_direct`。**`force_relay` 仍硬关打洞**，NEED 不能打开它。
+
+其它运维键：`JailFile` / `P2P_JAIL_FILE` 导出当前拉黑 IP（一行一个，给 fail2ban）。

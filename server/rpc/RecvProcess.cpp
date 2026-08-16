@@ -57,6 +57,10 @@ void NatServer::handle_packet(const uint8_t* data, size_t len, const sockaddr_in
     case MSG_SYNC_PEER_DEL:        on_msg_sync_del(p, plen, from); break;
     case MSG_SYNC_SNAPSHOT_REQ:    on_msg_sync_snapshot(p, plen, from); break;
     case MSG_SP_ASK_EXTINFO_RSP:   on_msg_proxy_avail(p, plen, from); break;
+    case MSG_PROXY_RELAY_DATA:
+        // 信令核不转发业务；业务只走 p2p_proxy
+        relay_reject_.fetch_add(1);
+        break;
     default:
         LOGW("NatServer", "invalid msg_id=0x%02x len=[%zu] from [%s]",
              h.msg_id, len, addr_to_str(from).c_str());
@@ -249,16 +253,17 @@ void NatServer::on_msg_connect_req(const uint8_t* p, size_t plen,
     ack.dst_nattype = dst_nat;
     const PunchAdmit admit = admit_connect_punch(src_nat, dst_nat);
     note_punch_admit(admit);
-    const uint8_t hint = punch_admit_hint(admit);
+    const uint8_t hint = compose_connect_hint(
+        admit, have_src && src.need_p2p, dst.need_p2p);
 
     uint8_t ackbuf[sizeof(ConnectAck) + 1];
     memcpy(ackbuf, &ack, sizeof(ack));
     ackbuf[sizeof(ack)] = hint;
     send_msg(from, MSG_CONNECT_ACK, ackbuf, sizeof(ackbuf));
     LOGI("NatServer", "ack===>to initiator [%s], dst pub[%s:%d] nattype[%d] "
-         "proxy[%d] punch=%s",
+         "proxy[%d] punch=%s hint=%s",
          req.src_uuid, ack.dst_pub_ip, ntohs(ack.dst_pub_port), dst.nattype,
-         ack.proxy_count, punch_admit_str(admit));
+         ack.proxy_count, punch_admit_str(admit), punch_hint_str(hint));
     if (admit == PunchAdmit::Relay && ack.proxy_count == 0)
         LOGW("NatServer", "EDM×EDM but no proxy candidate src[%s] dst[%s]",
              req.src_uuid, req.dst_uuid);
@@ -287,9 +292,9 @@ void NatServer::on_msg_connect_req(const uint8_t* p, size_t plen,
     memcpy(invbuf, &inv, sizeof(inv));
     invbuf[sizeof(inv)] = hint;
     send_msg(dst.pub_addr, MSG_CONNECT_INVITE, invbuf, sizeof(invbuf));
-    LOGI("NatServer", "invite===>to dst UUID[%s] port:[%d] nattype[%d] punch=%s",
+    LOGI("NatServer", "invite===>to dst UUID[%s] port:[%d] nattype[%d] punch=%s hint=%s",
          req.dst_uuid, ntohs(dst.pub_addr.sin_port), inv.src_nattype,
-         punch_admit_str(admit));
+         punch_admit_str(admit), punch_hint_str(hint));
 
     inc_connect_ok();
 }

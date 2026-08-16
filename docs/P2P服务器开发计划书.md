@@ -56,14 +56,17 @@ TUTK Kalay 平台的核心价值：设备烧录一个 **UID** 即可被全球任
 | AuthKey / Token 鉴权 | 报到与连线鉴权 | 每 UID AuthKey + `EnableConnectToken` + nonce 防重放 + X25519 FS | — |
 
 **结论**：UID / IOTC / AV / RDT / Tunnel / REGION 调度 / wakeserver 协议 /
-ICE restart / TURN-over-443 / TWCC+Kalman **核心已落地**（`test.sh` PASS=108）。
-下一档差距不在「再做一个 TUTK 通道」，而在：
+ICE restart / TURN-over-443 / TWCC+Kalman **核心已落地**。
+**p2p_server 信令核（P0–P8 可在本仓库完成的部分）已收口**，见
+[`p2p_server优化完毕.md`](p2p_server优化完毕.md)。
 
-1. **穿透增强**（P8）：PCP/UPnP（学 EasyTier）、NAT4E 预测、可选生日打洞、
-   DERP 式 TCP/443「先通再切」、TCP 打洞、IPv6 分统计、NAT 矩阵。
+下一档差距不在「再拆 NatServer」，而在环境/旁路：
+
+1. **现网验收**：10 万心跳、弱网 1080p、三平台 SDK、唤醒出图 <6s、真 `tc netem`、
+   docker+iptables NAT 矩阵。
 2. **观看拓扑**（P9）：1:1 保持 P2P；多看客走旁路 SFU/网关，禁止 mesh。
 3. **浏览器 / 国标接入**（P10/P9）：WHIP/WHEP、28181 网关，不改设备端主协议。
-4. **现网验收**：10 万心跳、弱网 1080p、三平台 SDK、唤醒出图 <6s。
+4. **P11 MoQ**：只调研，不进 1:1 主路径。
 
 模型取舍与公开穿透率对照见 [`P2P模型图谱.md`](P2P模型图谱.md)。
 中国家宽 >95% 在 CGNAT 后，中继按 **15–30%（国内可按 ~30%）** 做容量，不是「偶尔兜底」。
@@ -383,7 +386,9 @@ libp2p DCUtR ~70%、TUTK 号称 ~92%。本仓库有中心信令，**应显著高
 - 交付物：PCP/UPnP 客户端探测与续约、二维 NAT + NAT4E 字段、可选生日/TCP 打洞开关、
   v4/v6 直连率指标、矩阵脚本。TCP/TLS DERP 面、二维探测字段、策略表已落地（见上）。
   生日/懒打洞开关、开孔续约、v4/v6 分统计、TCP 打洞 + TCP STUN、用户态 NAT 矩阵已落地。
-  现网 iptables/netns 矩阵仍待补。
+  现网 iptables/netns 矩阵仍待补（本环境无 iptables/`ip`，`unshare` 被拒）。
+  p2p_server 侧：`need_p2p` 跨对端宣告、`ConnectAuth`、`JailFile`、信令核拒绝业务转发
+  已落地，见 [`p2p_server优化完毕.md`](p2p_server优化完毕.md)。
 - 验收：锥型组合直连 ≥85%；企业「只放 443/TCP」场景能在 <8s 出图（经 TLS 中继）；
   生日扫描默认关，打开时有端口上限与熔断。
 - **未含（本阶段不做）**：libp2p DHT、Iroh/QUIC 重写底座、系统级 VPN。

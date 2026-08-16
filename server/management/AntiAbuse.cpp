@@ -67,6 +67,33 @@ void AntiAbuse::set_password(const std::string& pass) {
     pass_ = pass;
 }
 
+void AntiAbuse::set_jail_path(const std::string& path) {
+    std::lock_guard<std::mutex> lk(mu_);
+    jail_path_ = path;
+}
+
+bool AntiAbuse::dump_jail() const {
+    std::string path, body;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (jail_path_.empty()) return false;
+        path = jail_path_;
+        const time_t now = time(nullptr);
+        for (auto& kv : ip_black_) {
+            if (kv.second <= now) continue;
+            body += ip_to_str(kv.first);
+            body += '\n';
+        }
+    }
+    FileHandle fp = open_file(path, "wb");
+    if (!fp) {
+        LOGW("AntiAbuse", "open jail %s failed", path.c_str());
+        return false;
+    }
+    fwrite(body.data(), 1, body.size(), fp.get());
+    return true;
+}
+
 bool AntiAbuse::needs_save() const {
     std::lock_guard<std::mutex> lk(mu_);
     return dirty_;

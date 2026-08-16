@@ -1,8 +1,12 @@
 // server_arch_test：guide 拆出的信令模块（同步 HMAC / 中继择优 / 挑战应答）
 #include "server/config/CfgFile.h"
+#include "server/management/AntiAbuse.h"
 #include "server/management/AuthChallenge.h"
+#include "server/management/ConnectAuth.h"
 #include "server/management/RelayHealth.h"
+#include "server/peers/PeerManage.h"
 #include "server/peers/RegistrySync.h"
+#include "core/connectivity/hole_punch/PunchAdmit.h"
 #include "core/foundation/Crypto.h"
 
 #include <arpa/inet.h>
@@ -10,6 +14,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <unistd.h>
 
 using namespace p2p;
 
@@ -62,6 +67,47 @@ int main() {
 
     sc->sync_auth_secret.clear();
     CHECK(sync.verify(body, 4, 4), "no secret = pass");
+
+    PeerManager pm;
+    sockaddr_in a{};
+    a.sin_family = AF_INET;
+    CHECK(pm.upsert("dev-need", a, a, 1, NAT_FULL_CONE, "np=1"), "upsert need");
+    Peer got;
+    CHECK(pm.get("dev-need", got) && got.need_p2p, "extinfo np=1 sets need_p2p");
+    CHECK(pm.need_p2p_count() == 1, "need_p2p_count");
+    CHECK(pm.upsert("dev-need", a, a, 1, NAT_FULL_CONE, ""), "upsert clear");
+    CHECK(pm.get("dev-need", got) && !got.need_p2p, "empty extinfo clears need_p2p");
+
+    CfgData tok_off;
+    TokenNonceCache nonces;
+    CHECK(verify_connect_trailer(tok_off, nonces, "s", "d", nullptr, 0),
+          "token off = pass");
+    CfgData tok_on;
+    tok_on.enable_connect_token = true;
+    CHECK(!verify_connect_trailer(tok_on, nonces, "s", "d", nullptr, 0),
+          "token on + empty secret fail");
+    tok_on.auth_secret = "s3cr3t";
+    CHECK(!verify_connect_trailer(tok_on, nonces, "s", "d", nullptr, 0),
+          "token on + no trailer fail");
+
+    AntiAbuse jail;
+    jail.configure(1, 60);
+    jail.set_jail_path("/tmp/p2p_jail_test.txt");
+    sockaddr_in flood{};
+    flood.sin_family = AF_INET;
+    inet_pton(AF_INET, "203.0.113.9", &flood.sin_addr);
+    jail.check_flood(flood);
+    jail.check_flood(flood);
+    CHECK(jail.dump_jail(), "dump_jail writes");
+    FILE* jf = fopen("/tmp/p2p_jail_test.txt", "r");
+    CHECK(jf != nullptr, "jail file exists");
+    char line[64] = {};
+    if (jf) {
+        CHECK(fgets(line, sizeof(line), jf) != nullptr, "jail has a line");
+        fclose(jf);
+    }
+    CHECK(std::string(line).find("203.0.113.9") != std::string::npos, "jail ip");
+    unlink("/tmp/p2p_jail_test.txt");
 
     if (g_fail) {
         printf("server_arch_test FAIL %d\n", g_fail);

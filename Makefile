@@ -173,11 +173,15 @@ $(BIN_CFGFILETEST): tests/cfg_file_test.cpp server/config/CfgFile.cpp server/con
 
 $(BIN_SERVERARCHTEST): tests/server_arch_test.cpp server/peers/RegistrySync.cpp \
 		server/peers/PeerManage.cpp server/management/RelayHealth.cpp \
-		server/config/CfgFile.cpp core/foundation/Crypto.cpp core/foundation/Uid.cpp
+		server/management/AntiAbuse.cpp server/config/CfgFile.cpp \
+		core/foundation/Crypto.cpp core/foundation/Uid.cpp \
+		core/foundation/ConnectToken.cpp
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tests/server_arch_test.cpp server/peers/RegistrySync.cpp \
 		server/peers/PeerManage.cpp server/management/RelayHealth.cpp \
-		server/config/CfgFile.cpp core/foundation/Crypto.cpp core/foundation/Uid.cpp \
+		server/management/AntiAbuse.cpp server/config/CfgFile.cpp \
+		core/foundation/Crypto.cpp core/foundation/Uid.cpp \
+		core/foundation/ConnectToken.cpp \
 		-pthread -lssl -lcrypto
 
 $(BIN_IOTCDEMO): client/demo/iotc_demo.cpp $(IOTC_SRCS) $(COMMON_SRCS) core/packet/ProtoDef.h $(LIBJUICE)

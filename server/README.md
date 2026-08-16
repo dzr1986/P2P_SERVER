@@ -9,7 +9,7 @@ ls server
   config/         配置（guide: config-file / configurations）
   peers/          注册表 + RegistrySync 集群（guide: host-public-server；不做 mesh）
   connectivity/   STUN / 映射观察 / NAT 探测（guide: aboutp2p）
-  management/     防滥用、白名单、AuthChallenge、RelayHealth、/metrics
+  management/     防滥用、JailFile、白名单、AuthChallenge、ConnectAuth、RelayHealth、/metrics
   rpc/            报文分发 on_msg_*
   listener/       UDP bind + LocalListeners 防回环
   instance/       生命周期组合根（只焊模块，不堆同步/择优实现）
@@ -26,4 +26,6 @@ ls server
 旧路径 `server/natserver/src/*.h` 只是转发头。二进制仍输出到 `server/natserver/bin/p2p_natserver`。
 
 配置覆盖顺序（学 EasyTier）：`P2pServers.cfg` < `P2P_*` 环境变量 < 命令行端口。
-文件值支持 `${ENV}`；`P2P_DISABLE_ENV_PARSING=1` 只关展开。状态口可用 `StatusAllow` / `P2P_STATUS_ALLOW` 做来源 CIDR 白名单。详见 [`docs/EasyTier配置对照.md`](../docs/EasyTier配置对照.md)。
+文件值支持 `${ENV}`；`P2P_DISABLE_ENV_PARSING=1` 只关展开。状态口可用 `StatusAllow` / `P2P_STATUS_ALLOW` 做来源 CIDR 白名单。
+`JailFile` 给 fail2ban 一行一个 IP。NatServer 收到 `MSG_PROXY_RELAY_DATA` 直接丢（业务只走 `p2p_proxy`）。
+详见 [`docs/EasyTier配置对照.md`](../docs/EasyTier配置对照.md)、[`docs/p2p_server优化完毕.md`](../docs/p2p_server优化完毕.md)。

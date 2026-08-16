@@ -25,6 +25,8 @@ public:
     // 黑名单持久化（重启不丢；带口令则 PBKDF2+AES-256 加密落盘）
     void set_path(const std::string& path);
     void set_password(const std::string& pass);
+    void set_jail_path(const std::string& path);  // fail2ban：一行一个 IP
+    bool dump_jail() const;
     bool load();                     // 启动时加载，失败不影响运行
     bool save() const;               // 有变更时写回
     bool needs_save() const;         // 是否有未落盘变更
@@ -67,6 +69,7 @@ private:
     // 持久化状态
     std::string path_;
     std::string pass_;
+    std::string jail_path_;
     mutable bool dirty_ = false;
 
     std::atomic<uint64_t> dropped_flood_{0};

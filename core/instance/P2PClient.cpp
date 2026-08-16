@@ -919,11 +919,12 @@ void P2PClient::do_heartbeat() {
     req.nattype = nat_type_;
     req.lan_port = htons(sock_.local_port());
     req.session_pts = htonl(1);
-    req.extlen = 0;
+    const size_t extra_n = cfg_.need_p2p ? strlen(NEED_P2P_EXT) : 0;
+    req.extlen = htons((uint16_t)extra_n);
 
     if (heartbeat_enc_) {
-        // 加密心跳：uuid(33B) || iv(8) || cipher(UuidReq)
-        uint8_t payload[33 + 8 + sizeof(UuidReq)];
+        // 加密心跳：uuid(33B) || iv(8) || cipher(UuidReq + extinfo)
+        uint8_t payload[33 + 8 + sizeof(UuidReq) + 8];
         memset(payload, 0, sizeof(payload));
         memcpy(payload, cfg_.uuid.c_str(), cfg_.uuid.size());
         uint8_t iv[8];
@@ -933,13 +934,21 @@ void P2PClient::do_heartbeat() {
         }
         memcpy(payload + 33, iv, sizeof(iv));
         memcpy(payload + 41, &req, sizeof(UuidReq));
-        // P1：流密钥用每 UID AuthKey（与服务端派生对称）
+        if (extra_n) memcpy(payload + 41 + sizeof(UuidReq), NEED_P2P_EXT, extra_n);
+        const size_t clen = sizeof(UuidReq) + extra_n;
         p2p_stream_xor(auth_key_, sizeof(auth_key_),
-                       (const char*)payload, iv, payload + 41, sizeof(UuidReq));
-        send_proto(MSG_HEARTBEAT_REQ_ENC, payload, sizeof(payload));
+                       (const char*)payload, iv, payload + 41, clen);
+        send_proto(MSG_HEARTBEAT_REQ_ENC, payload, 33 + 8 + clen);
         return;
     }
-    send_proto(MSG_HEARTBEAT_REQ, &req, sizeof(req));
+    if (extra_n == 0) {
+        send_proto(MSG_HEARTBEAT_REQ, &req, sizeof(req));
+        return;
+    }
+    uint8_t buf[sizeof(UuidReq) + 8];
+    memcpy(buf, &req, sizeof(req));
+    memcpy(buf + sizeof(req), NEED_P2P_EXT, extra_n);
+    send_proto(MSG_HEARTBEAT_REQ, buf, sizeof(req) + extra_n);
 }
 
 void P2PClient::on_heartbeat_rsp_enc(const uint8_t* p, size_t plen) {
@@ -1138,6 +1147,8 @@ void P2PClient::on_connect_ack(const uint8_t* p, size_t plen) {
     }
     auto& c = ensure_conn(peer);
     if (c.state == ConnState::Idle) c.state = ConnState::Connecting;
+    const uint8_t hint = plen > sizeof(ConnectAck) ? p[sizeof(ConnectAck)] : 0;
+    if (hint == PUNCH_HINT_NEED) c.want_direct = true;
     if (ack.result != CONNECT_OK) {
         if (ack.result == CONNECT_BAD_TOKEN) {
             if (on_error) on_error("connect " + peer + ": bad or expired connect token");
@@ -1167,8 +1178,7 @@ void P2PClient::on_connect_ack(const uint8_t* p, size_t plen) {
             }
         }
         c.punch.punch_deadline = plat_now_ms() + punch_wait_ms(
-            plen > sizeof(ConnectAck) ? p[sizeof(ConnectAck)] : 0,
-            cfg_.connect_timeout_ms);
+            hint, cfg_.connect_timeout_ms);
         ensure_ice_agent(c, true);   // CONNECT 已成功：发起方 gather → controlling
         auto pit = pending_remote_sdp_.find(peer);
         if (pit != pending_remote_sdp_.end()) {
@@ -1213,7 +1223,8 @@ void P2PClient::on_connect_invite(const uint8_t* p, size_t plen) {
 
     Conn& c = ensure_conn(peer);
     if (c.state == ConnState::Idle) c.state = ConnState::Connecting;
-    if (cfg_.need_p2p) c.want_direct = true;
+    const uint8_t hint = plen > sizeof(ConnectInvite) ? p[sizeof(ConnectInvite)] : 0;
+    if (cfg_.need_p2p || hint == PUNCH_HINT_NEED) c.want_direct = true;
     c.punch.direct_ok = false;
     c.self = this;
     if (cfg_.force_relay) {
@@ -1223,8 +1234,7 @@ void P2PClient::on_connect_invite(const uint8_t* p, size_t plen) {
         c.punch.have_direct = true;
         c.punch.next_punch = plat_now_ms() + 100;
         c.punch.punch_deadline = plat_now_ms() + punch_wait_ms(
-            plen > sizeof(ConnectInvite) ? p[sizeof(ConnectInvite)] : 0,
-            cfg_.connect_timeout_ms);
+            hint, cfg_.connect_timeout_ms);
         c.peer_nattype = inv.src_nattype;
 
         sockaddr_from(inv.src_pub_ip, ntohs(inv.src_pub_port), c.punch.direct);

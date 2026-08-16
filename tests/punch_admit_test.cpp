@@ -41,6 +41,16 @@ int main() {
     CHECK(punch_wait_ms(PUNCH_HINT_RELAY, 6000) == 1500, "relay wait 1.5s");
     CHECK(punch_wait_ms(PUNCH_HINT_ICE, 6000) == 6000, "ice keeps 6s");
     CHECK(punch_wait_ms(PUNCH_HINT_NONE, 6000) == 6000, "old server keeps 6s");
+    CHECK(punch_wait_ms(PUNCH_HINT_NEED, 6000) == 6000, "need keeps full timeout");
+    CHECK(compose_connect_hint(PunchAdmit::Ice, true, false) == PUNCH_HINT_NEED,
+          "need overlays ice");
+    CHECK(compose_connect_hint(PunchAdmit::Relay, true, true) == PUNCH_HINT_RELAY,
+          "EDM×EDM stays relay even if need_p2p");
+    CHECK(compose_connect_hint(PunchAdmit::Ice, false, false) == PUNCH_HINT_ICE,
+          "no need keeps ice");
+    CHECK(extinfo_has_need_p2p("np=1"), "np=1 parsed");
+    CHECK(!extinfo_has_need_p2p("np=0"), "np=0 is not need");
+    CHECK(std::string(punch_hint_str(PUNCH_HINT_NEED)) == "need", "hint str");
 
     LocalListeners loc;
     loc.add_any(18832);

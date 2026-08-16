@@ -31,6 +31,7 @@ static void unset_p2p_env() {
     unsetenv("P2P_STATUS_PORT");
     unsetenv("P2P_STATUS_ALLOW");
     unsetenv("P2P_PRIVATE_MODE");
+    unsetenv("P2P_JAIL_FILE");
     unsetenv("CFG_TEST_SECRET");
 }
 
@@ -85,6 +86,7 @@ int main() {
         fputs("StatusAllow=127.0.0.1,10.0.0.0/8\n", fp);
         fputs("AuthSecret=${CFG_TEST_SECRET}\n", fp);
         fputs("PrivateMode=1\n", fp);
+        fputs("JailFile=/tmp/p2p_jail.txt\n", fp);
         fclose(fp);
     }
     setenv("CFG_TEST_SECRET", "expanded", 1);
@@ -95,6 +97,11 @@ int main() {
     CHECK(loaded.status_allow.size() == 2, "file StatusAllow count");
     CHECK(loaded.auth_secret == "expanded", "file ${ENV} expand");
     CHECK(loaded.private_mode && loaded.enable_auth, "PrivateMode forces EnableAuth");
+    CHECK(loaded.jail_file == "/tmp/p2p_jail.txt", "file JailFile");
+    unset_p2p_env();
+    setenv("P2P_JAIL_FILE", "/tmp/from-env-jail.txt", 1);
+    apply_cfg_env(loaded);
+    CHECK(loaded.jail_file == "/tmp/from-env-jail.txt", "env overrides JailFile");
     unset_p2p_env();
     unlink(path);
 
