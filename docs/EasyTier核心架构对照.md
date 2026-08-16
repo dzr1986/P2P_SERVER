@@ -70,7 +70,7 @@ EasyTier 把「怎么连上」从「连上之后怎么转发」拆开：
 | `hole_punch/udp` | UDP 打洞引擎 | libjuice ICE + 自研 punch socks |
 | `hole_punch/tcp` | 同时 connect | `TcpPunch.h`（默认关，EDM 不发起） |
 | `hole_punch/port_mapping` | UPnP → NAT-PMP → PCP | `PortMap.*` |
-| `hole_punch/policy` | `should_try_p2p`、对称扫描开关 | `NatMatrix.h` + `force_relay` / `lazy_p2p` / `birthday_punch` |
+| `hole_punch/policy` | `should_try_p2p` / `should_background_p2p`、序列 BackOff | `PunchPolicy.h` + `force_relay`（硬关）/ `lazy_p2p` / `want_direct` |
 | `direct/` | 已知公网口直拨 | CONNECT 下发的 `direct` / LAN |
 | `transport/` | TCP/UDP 端点，`first_success` 竞速 | **`PathSelect.h`**（发送准入，不竞速拨号） |
 | `protocol/` | 端点升级成 tunnel（tcp/udp/wg/quic） | 隧道帧加密；不升级成 WG |
@@ -114,7 +114,7 @@ server/natserver|proxyserver  中心信令 + 专用中继（他们没有对等�
 | `rpc/` | `server/rpc/RecvProcess.cpp` |
 | `instance/` | `server/instance/NatServer.*` |
 | `listener/` | `server/listener/` UDP bind + LocalListeners 防 hairpin |
-| `hole_punch/policy` | CONNECT `PunchAdmit`：EDM×EDM 提示更快开中继（仍打洞，不改 force_relay） |
+| `hole_punch/policy` | CONNECT `PunchAdmit` + 客户端 `PunchPolicy`：序列 BackOff、lazy 后台打洞 |
 | `stun/responder` | CHANGE-REQUEST 从备用口回；OTHER-ADDRESS 广告备口 |
 | `stun/collector` | `MappingObserve`：主/备口映射补 CONNECT nattype |
 | `gateway/` | **不建**；中继是独立进程 `proxyserver/` |

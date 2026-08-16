@@ -30,6 +30,7 @@ BIN_TCPSTUNTEST := tests/bin/tcp_stun_test
 BIN_NATSIMTEST := tests/bin/nat_sim_test
 BIN_PATHSELECTTEST := tests/bin/path_select_test
 BIN_PUNCHADMITTEST := tests/bin/punch_admit_test
+BIN_PUNCHPOLICYTEST := tests/bin/punch_policy_test
 BIN_STUNRESPTEST := tests/bin/stun_responder_test
 BIN_IOTCDEMO := client/bin/iotc_demo
 BIN_WAKE    := server/wakeserver/bin/p2p_wakeserver
@@ -57,7 +58,7 @@ PROXY_SRCS := server/proxyserver/src/P2PProxy.cpp
 PEER_SRCS  := client/demo/peer.cpp \
               core/instance/P2PClient.cpp
 
-all: $(LIBJUICE) $(BIN_NAT) $(BIN_PROXY) $(BIN_PEER) $(BIN_CRYPTOTEST) $(BIN_SESSIONTEST) $(BIN_UIDTEST) $(BIN_UIDGEN) $(BIN_TOKENGEN) $(BIN_TOKENTEST) $(BIN_AVTEST) $(BIN_SCHEDTEST) $(BIN_STUNTEST) $(BIN_ABRTEST) $(BIN_ICESDPTEST) $(BIN_TWCCTEST) $(BIN_PORTMAPTEST) $(BIN_NATDETECTTEST) $(BIN_TCPPUNCHTEST) $(BIN_TCPSTUNTEST) $(BIN_NATSIMTEST) $(BIN_PATHSELECTTEST) $(BIN_PUNCHADMITTEST) $(BIN_STUNRESPTEST) $(BIN_IOTCDEMO) $(BIN_WAKE)
+all: $(LIBJUICE) $(BIN_NAT) $(BIN_PROXY) $(BIN_PEER) $(BIN_CRYPTOTEST) $(BIN_SESSIONTEST) $(BIN_UIDTEST) $(BIN_UIDGEN) $(BIN_TOKENGEN) $(BIN_TOKENTEST) $(BIN_AVTEST) $(BIN_SCHEDTEST) $(BIN_STUNTEST) $(BIN_ABRTEST) $(BIN_ICESDPTEST) $(BIN_TWCCTEST) $(BIN_PORTMAPTEST) $(BIN_NATDETECTTEST) $(BIN_TCPPUNCHTEST) $(BIN_TCPSTUNTEST) $(BIN_NATSIMTEST) $(BIN_PATHSELECTTEST) $(BIN_PUNCHADMITTEST) $(BIN_PUNCHPOLICYTEST) $(BIN_STUNRESPTEST) $(BIN_IOTCDEMO) $(BIN_WAKE)
 
 $(LIBJUICE):
 	cmake -B third_party/libjuice/build -S third_party/libjuice -DCMAKE_BUILD_TYPE=Release
@@ -151,6 +152,10 @@ $(BIN_PATHSELECTTEST): tests/path_select_test.cpp core/connectivity/transport/Pa
 $(BIN_PUNCHADMITTEST): tests/punch_admit_test.cpp core/connectivity/hole_punch/PunchAdmit.h server/listener/LocalListeners.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tests/punch_admit_test.cpp
+
+$(BIN_PUNCHPOLICYTEST): tests/punch_policy_test.cpp core/connectivity/hole_punch/PunchPolicy.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -o $@ tests/punch_policy_test.cpp
 
 $(BIN_STUNRESPTEST): tests/stun_responder_test.cpp core/packet/StunBind.h \
 		server/connectivity/StunResponder.h server/connectivity/MappingObserve.h \

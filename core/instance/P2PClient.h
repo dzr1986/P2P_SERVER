@@ -24,6 +24,7 @@
 #include "core/foundation/Uid.h"
 #include "core/foundation/Plat.h"
 #include "core/packet/Codec.h"
+#include "core/connectivity/hole_punch/PunchPolicy.h"
 #include "core/connectivity/stun/NatDetect.h"
 #include "core/socket/UdpSocket.h"
 #include "core/tunnel/Session.h"
@@ -202,26 +203,12 @@ private:
         std::vector<uint8_t> tcp_rbuf;
         uint8_t peer_nattype = NAT_UNKNOWN;
         std::string connect_token_hex;  // 本连接出示的连线 Token（可空）
-        uint32_t backoff_attempt = 0;   // #18 连接级退避尝试计数（CONNECT 重发/中继注册）
+        PunchBackOff punch_backoff{PunchBackOff::hole_punch()};
+        PunchBackOff retry_backoff{PunchBackOff::exp(1000, 30000)};
         P2PClient* self = nullptr;      // #19 反向指针，供 libjuice 回调触发 on_connected
 
         bool connecting() const { return state == ConnState::Connecting; }
         bool connected() const { return state == ConnState::Connected; }
-    };
-
-    // #18 统一指数退避辅助结构
-    struct BackOff {
-        uint32_t attempt = 0;
-        uint32_t base_ms = 1000;
-        uint32_t cap_ms = 30000;
-        uint32_t next_delay() {
-            uint32_t d = base_ms;
-            for (uint32_t i = 0; i + 1 < attempt && d < cap_ms; i++) d *= 2;
-            if (d > cap_ms) d = cap_ms;
-            attempt++;
-            return d;
-        }
-        void reset() { attempt = 0; }
     };
 
     // ---- 内部 ----
@@ -341,7 +328,7 @@ private:
     uint16_t   pub_port_ = 0;
     uint64_t   next_heartbeat_ms_ = 0;
     uint32_t   heartbeat_fail_ = 0;
-    BackOff heartbeat_backoff_;      // #18 心跳失败指数退避
+    PunchBackOff heartbeat_backoff_{PunchBackOff::exp(1000, 30000)};
 
     // 鉴权状态
     bool   has_cred_ = false;        // 持有鉴权凭据（secret 或 auth_key 任一）
@@ -352,7 +339,7 @@ private:
     uint8_t auth_nonce_[16] = {0};
     uint64_t next_auth_try_ = 0;
     bool   auth_inflight_ = false;
-    BackOff auth_backoff_;          // #18 鉴权失败指数退避
+    PunchBackOff auth_backoff_{PunchBackOff::exp(1000, 30000)};
 
     // 隧道负载加密
     bool tunnel_enc_ = false;   // PSK 或握手完成后开启

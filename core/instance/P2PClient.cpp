@@ -3,6 +3,7 @@
 #include "core/foundation/ConnectToken.h"
 #include "core/connectivity/hole_punch/NatMatrix.h"
 #include "core/connectivity/hole_punch/PunchAdmit.h"
+#include "core/connectivity/hole_punch/PunchPolicy.h"
 #include "core/socket/Packet.h"
 #include "core/connectivity/transport/PathSelect.h"
 #include "core/connectivity/hole_punch/TcpPunch.h"
@@ -229,6 +230,8 @@ void P2PClient::connect(const std::string& peer_uuid, const std::string& token_h
     c.relay.relay_ok = false;
     c.punch.punch_deadline = plat_now_ms() + cfg_.connect_timeout_ms;
     c.punch.next_punch = 0;
+    c.punch_backoff.reset();
+    c.retry_backoff = PunchBackOff::exp(cfg_.relay_register_ms, 30000);
     c.relay.next_relay_ping = 0;
     c.self = this; // #19 reverse ptr for ICE callback
     c.connect_token_hex = !token_hex.empty() ? token_hex : cfg_.connect_token_hex;
@@ -279,6 +282,7 @@ void P2PClient::begin_ice_restart(Conn& c, bool as_offerer) {
         c.punch.juice = nullptr;
     }
     reset_ice_flags(c);
+    c.punch_backoff.reset();
     c.punch.ice_restarting = true;
     c.punch.ice_gen++;
     ensure_ice_agent(c, as_offerer);
@@ -501,7 +505,7 @@ void P2PClient::tick_heartbeat(uint64_t now) {
         do_heartbeat();
         uint32_t gap;
         if (heartbeat_fail_ > 0) {
-            gap = heartbeat_backoff_.next_delay();   // #18 指数退避
+            gap = heartbeat_backoff_.next();   // EasyTier PunchBackOff
         } else {
             heartbeat_backoff_.reset();
             gap = cfg_.heartbeat_ms;
@@ -610,10 +614,15 @@ void P2PClient::tick_connections(uint64_t now) {
             if (!(c = conn_of(peer))) continue;
             tick_conn_fsm(*c, now);
         } else if (c->state == ConnState::Connected && !cfg_.force_relay) {
-            if (c->via_relay && (!cfg_.lazy_p2p || c->want_direct))
+            PunchGate g;
+            g.force_relay = cfg_.force_relay;
+            g.lazy_p2p = cfg_.lazy_p2p;
+            g.want_direct = c->want_direct;
+            if (c->via_relay && should_background_p2p(g))
                 tick_conn_punch(*c, now);
             if (!(c = conn_of(peer))) continue;
-            if (!c->tcp_ok && (!cfg_.lazy_p2p || c->want_direct || c->tcp_have_peer))
+            g.peer_need_p2p = c->tcp_have_peer;
+            if (!c->tcp_ok && should_background_p2p(g))
                 tick_tcp_punch(*c, now);
         }
     }
@@ -625,7 +634,7 @@ void P2PClient::tick_conn_punch(Conn& c, uint64_t now) {
     if (c.punch.have_direct && !c.punch.direct_ok && now >= c.punch.next_punch &&
         (now < c.punch.punch_deadline || upgrade)) {
         do_punch(c);
-        c.punch.next_punch = now + cfg_.punch_interval_ms;
+        c.punch.next_punch = now + c.punch_backoff.next();
     }
     tick_extra_ice_ports(c, now);
     if (upgrade) return;  // 中继已通，后台打洞失败不关连接
@@ -654,12 +663,7 @@ void P2PClient::tick_conn_relay(Conn& c, uint64_t now) {
         // 打洞超时或强制中继：走中继
         if (cfg_.auto_relay && !relay_registered_ && !proxies_.empty()) {
             relay_register();
-            // #18 中继注册重试指数退避（base=relay_register_ms, cap=30s）
-            uint32_t d = cfg_.relay_register_ms;
-            for (uint32_t i = 0; i + 1 < c.backoff_attempt && d < 30000; i++) d *= 2;
-            if (d > 30000) d = 30000;
-            c.backoff_attempt++;
-            next_relay_reg_ = now + d;
+            next_relay_reg_ = now + c.retry_backoff.next();
         }
         if (cfg_.auto_relay && !proxies_.empty() && now >= c.relay.next_relay_ping) {
             if (auto* s = session_for(c.peer_uuid)) {
@@ -995,7 +999,7 @@ void P2PClient::do_auth_challenge() {
 }
 
 void P2PClient::on_auth_challenge_rsp(const uint8_t* p, size_t plen) {
-    if (plen < 19) { auth_inflight_ = false; next_auth_try_ = plat_now_ms() + auth_backoff_.next_delay(); return; }
+    if (plen < 19) { auth_inflight_ = false; next_auth_try_ = plat_now_ms() + auth_backoff_.next(); return; }
     uint8_t result = p[0];
     if (result != 0) {
         auth_inflight_ = false;
@@ -1005,7 +1009,7 @@ void P2PClient::on_auth_challenge_rsp(const uint8_t* p, size_t plen) {
             auth_denied_ = true;
             next_auth_try_ = plat_now_ms() + 3600000;   // 永久性拒绝：不再重试
         } else {
-            next_auth_try_ = plat_now_ms() + auth_backoff_.next_delay();   // #18 指数退避
+            next_auth_try_ = plat_now_ms() + auth_backoff_.next();
         }
         return;
     }
@@ -1043,11 +1047,7 @@ void P2PClient::on_auth_login_rsp(const uint8_t* p, size_t plen) {
             Conn& c = *kv.second;
             if (c.connecting() && !c.punch.have_direct && !c.relay.relay_ok) {
                 send_connect_req(c);
-                // #18 CONNECT 重发指数退避（下次若仍无响应由 tick 驱动）
-                uint32_t d = cfg_.connect_timeout_ms;
-                for (uint32_t i = 0; i + 1 < c.backoff_attempt && d < 30000; i++) d *= 2;
-                if (d > 30000) d = 30000;
-                c.backoff_attempt++;
+                c.retry_backoff.reset();
             }
         }
     } else {
@@ -1059,7 +1059,7 @@ void P2PClient::on_auth_login_rsp(const uint8_t* p, size_t plen) {
             auth_denied_ = true;                  // 永久性拒绝：不再重试
             next_auth_try_ = plat_now_ms() + 3600000;
         } else {
-            next_auth_try_ = plat_now_ms() + auth_backoff_.next_delay();  // #18 nonce 失效指数退避
+            next_auth_try_ = plat_now_ms() + auth_backoff_.next();
         }
     }
 }
@@ -1087,7 +1087,7 @@ void P2PClient::on_proxy_register_rsp(const uint8_t* p, size_t plen) {
     uint8_t result = p[0];
     if (result == 0) {
         relay_registered_ = true;
-        for (auto& kv : conns_) kv.second->backoff_attempt = 0;
+        for (auto& kv : conns_) kv.second->retry_backoff.reset();
     } else if (on_error) {
         char tmp[64];
         snprintf(tmp, sizeof(tmp), "relay register failed result=%d", result);
@@ -1738,7 +1738,12 @@ void P2PClient::tick_tcp_stun(Conn& c, uint64_t now) {
 void P2PClient::tick_tcp_punch(Conn& c, uint64_t now) {
     if (!cfg_.tcp_punch || cfg_.force_relay) return;
     if (c.tcp_ok) return;
-    if (cfg_.lazy_p2p && !c.want_direct && !c.tcp_have_peer) return;
+    PunchGate g;
+    g.force_relay = cfg_.force_relay;
+    g.lazy_p2p = cfg_.lazy_p2p;
+    g.want_direct = c.want_direct;
+    g.peer_need_p2p = c.tcp_have_peer;
+    if (!should_background_p2p(g)) return;
     if (!c.tcp_have_peer && !tcp_punch_can_initiate(
             nat_mapping_ ? nat_mapping_ : four_type_to_mapping(nat_type_)))
         return;

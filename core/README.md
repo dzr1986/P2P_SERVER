@@ -22,7 +22,7 @@ foundation → socket → packet → tunnel → connectivity → instance
 | `packet/` | `packet/` | `ProtoDef`、`Codec`、STUN Binding、ICE SDP | 不要 include `tunnel/` 以上 |
 | `tunnel/` | `tunnel/` | `Session` 可靠帧、ABR/TWCC | 不要 include `connectivity/` / `instance/` |
 | `connectivity/stun/` | `connectivity/stun` | 客户端 NAT 自检 | 不要调 `juice_*` |
-| `connectivity/hole_punch/` | `hole_punch/*` | TCP 打洞、开孔、NAT 矩阵/仿真 | 策略纯函数，不持锁 |
+| `connectivity/hole_punch/` | `hole_punch/*` | TCP 打洞、开孔、NAT 矩阵、`PunchPolicy` BackOff/lazy | 策略纯函数，不持锁 |
 | `connectivity/transport/` | `transport` | `PathSelect` 发送准入 | 不碰 socket / juice |
 | `instance/` | `instance/` | `P2PClient` 生命周期 + worker | 对外门面；juice 只在 tick 里调 |
 
