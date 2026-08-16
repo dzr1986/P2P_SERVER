@@ -91,6 +91,7 @@ echo "== [0] unit tests =="
 ./tests/bin/tcp_stun_test > /tmp/tcp_stun_test.log 2>&1 && ok "TCP STUN mapping unit tests" || fail "tcp stun unit tests"
 ./tests/bin/nat_sim_test > /tmp/nat_sim_test.log 2>&1 && ok "userspace NAT matrix sim unit tests" || fail "nat sim unit tests"
 ./tests/bin/path_select_test > /tmp/path_select_test.log 2>&1 && ok "path select admission unit tests" || fail "path select unit tests"
+./tests/bin/punch_admit_test > /tmp/punch_admit_test.log 2>&1 && ok "CONNECT punch admit / listener hairpin unit tests" || fail "punch admit unit tests"
 
 # ---------------------------------------------------------------- 1. 直连
 echo "== [1] direct P2P (no auth) =="
@@ -381,6 +382,7 @@ PY
 )
 echo "$MET" | grep -q "p2p_online_peers" && ok "prometheus p2p_online_peers" || fail "metrics missing p2p_online_peers"
 echo "$MET" | grep -q "p2p_connect_ok_total" && ok "prometheus connect counter" || fail "metrics missing connect counter"
+echo "$MET" | grep -q "p2p_connect_punch_total" && ok "prometheus punch admit" || fail "metrics missing punch admit"
 echo "$MET" | grep -q 'p2p_node_region{region="C"}' && ok "prometheus region label" || fail "metrics missing region"
 JS=$(python3 - <<PY
 import urllib.request

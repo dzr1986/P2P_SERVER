@@ -10,6 +10,7 @@
 #include "core/packet/StunBind.h"
 #include "core/foundation/Uid.h"
 #include "core/foundation/Util.h"
+#include "server/listener/UdpListen.h"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -74,6 +75,12 @@ int NatServer::init(const std::string& cfg_path, uint16_t nat_port,
     uint16_t probe_port = cfg_->nat_sock3_port ? cfg_->nat_sock3_port : 0;
     if (natcheck_.init(nat_port_, alt_port, probe_port) != 0) return -1;
 
+    listeners_.clear();
+    listeners_.add_any(nat_port_);
+    listeners_.add_ip(wan_ip_.c_str(), nat_port_);
+    if (wan_ip_ == "0.0.0.0" || wan_ip_ == "127.0.0.1")
+        listeners_.add_ip("127.0.0.1", nat_port_);
+
     // 注册表同步：解析对端列表（启动后 run() 中发起首次全量快照）
     setup_sync_peers();
 
@@ -128,6 +135,7 @@ void NatServer::setup_sync_peers() {
         a.sin_family = AF_INET;
         a.sin_port = htons(port);
         if (inet_pton(AF_INET, ip.c_str(), &a.sin_addr) != 1) continue;
+        if (listeners_.is_local(a)) continue;  // EasyTier：不拨自己的 listener
         sync_addrs_.push_back(a);
         LOGI("NatServer", "sync peer [%s:%d]", ip.c_str(), port);
     }
@@ -412,15 +420,21 @@ void NatServer::handle_heartbeat(const UuidReq& req, const std::string& extinfo,
 // epoll 收包线程（idx=0 主 socket；idx>=1 为 SO_REUSEPORT 克隆 socket）：
 // NAT 探测走快速路径，其余入有界队列
 UdpFd NatServer::make_recv_socket(uint16_t port) {
-    UdpFd s;
-    if (!s.open()) { perror("[NatServer] socket"); return s; }
-    if (!s.set_reuse(true) || !s.bind_any(port)) {
+    UdpFd s = open_reuseport_udp(port);
+    if (!s.valid()) {
         perror("[NatServer] recv socket bind");
-        s.close();
         return s;
     }
     LOGI("NatServer", "recv clone socket fd=%d port=%d", s.fd(), port);
     return s;
+}
+
+void NatServer::note_punch_admit(PunchAdmit a) {
+    switch (a) {
+    case PunchAdmit::Ice:     punch_ice_.fetch_add(1); break;
+    case PunchAdmit::Relay:   punch_relay_.fetch_add(1); break;
+    case PunchAdmit::Unknown: punch_unknown_.fetch_add(1); break;
+    }
 }
 
 void NatServer::recv_thread(int idx) {
@@ -880,6 +894,8 @@ std::string NatServer::status_json() const {
        << ",\"connect_fail\":" << connect_fail_.load()
        << ",\"login_ok\":" << login_ok_.load()
        << ",\"login_fail\":" << login_fail_.load()
+       << ",\"punch_ice\":" << punch_ice_.load()
+       << ",\"punch_relay\":" << punch_relay_.load()
        << ",\"blacklist_ips\":" << abuse_.ip_blacklist_size()
        << ",\"proxy_count\":" << (cfg ? cfg->proxy_ips.size() : 0)
        << ",\"region\":\"" << (region ? std::string(1, region) : "") << "\""
@@ -916,6 +932,12 @@ std::string NatServer::status_metrics() const {
     counter("p2p_connect_fail_total", "Failed CONNECT coordinations", connect_fail_.load());
     counter("p2p_login_ok_total", "Successful AUTH_LOGIN", login_ok_.load());
     counter("p2p_login_fail_total", "Failed AUTH_LOGIN", login_fail_.load());
+    os << "# HELP p2p_connect_punch_total CONNECT punch admission (EasyTier policy)\n"
+       << "# TYPE p2p_connect_punch_total counter\n"
+       << "p2p_connect_punch_total{strategy=\"ice\"} " << punch_ice_.load() << "\n"
+       << "p2p_connect_punch_total{strategy=\"relay\"} " << punch_relay_.load() << "\n"
+       << "p2p_connect_punch_total{strategy=\"unknown\"} " << punch_unknown_.load()
+       << "\n";
     os << "# HELP p2p_node_region Node REGION label (1=set)\n"
        << "# TYPE p2p_node_region gauge\n"
        << "p2p_node_region{region=\"" << (region ? std::string(1, region) : "") << "\"} 1\n";

@@ -2,6 +2,7 @@
 #include "core/packet/IceSdp.h"
 #include "core/foundation/ConnectToken.h"
 #include "core/connectivity/hole_punch/NatMatrix.h"
+#include "core/connectivity/hole_punch/PunchAdmit.h"
 #include "core/socket/Packet.h"
 #include "core/connectivity/transport/PathSelect.h"
 #include "core/connectivity/hole_punch/TcpPunch.h"
@@ -1160,7 +1161,9 @@ void P2PClient::on_connect_ack(const uint8_t* p, size_t plen) {
                 addr_to_peer_[addr_key(c.punch.direct_lan)] = peer;
             }
         }
-        c.punch.punch_deadline = plat_now_ms() + cfg_.connect_timeout_ms;
+        c.punch.punch_deadline = plat_now_ms() + punch_wait_ms(
+            plen > sizeof(ConnectAck) ? p[sizeof(ConnectAck)] : 0,
+            cfg_.connect_timeout_ms);
         ensure_ice_agent(c, true);   // CONNECT 已成功：发起方 gather → controlling
         auto pit = pending_remote_sdp_.find(peer);
         if (pit != pending_remote_sdp_.end()) {
@@ -1213,7 +1216,9 @@ void P2PClient::on_connect_invite(const uint8_t* p, size_t plen) {
     } else {
         c.punch.have_direct = true;
         c.punch.next_punch = plat_now_ms() + 100;
-        c.punch.punch_deadline = plat_now_ms() + cfg_.connect_timeout_ms;
+        c.punch.punch_deadline = plat_now_ms() + punch_wait_ms(
+            plen > sizeof(ConnectInvite) ? p[sizeof(ConnectInvite)] : 0,
+            cfg_.connect_timeout_ms);
         c.peer_nattype = inv.src_nattype;
 
         sockaddr_from(inv.src_pub_ip, ntohs(inv.src_pub_port), c.punch.direct);

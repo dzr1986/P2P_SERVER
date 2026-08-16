@@ -113,7 +113,8 @@ server/natserver|proxyserver  中心信令 + 专用中继（他们没有对等�
 | `management/` | `server/management/` 防滥用、白名单、Status |
 | `rpc/` | `server/rpc/RecvProcess.cpp` |
 | `instance/` | `server/instance/NatServer.*` |
-| `listener/` | 暂合在 instance 的 epoll 收包 |
+| `listener/` | `server/listener/` UDP bind + LocalListeners 防 hairpin |
+| `hole_punch/policy` | CONNECT `PunchAdmit`：EDM×EDM 提示更快开中继（仍打洞，不改 force_relay） |
 | `gateway/` | **不建**；中继是独立进程 `proxyserver/` |
 
 `send_tunnel_via` 用 `PathSelect` 决定走哪条已就绪路径：

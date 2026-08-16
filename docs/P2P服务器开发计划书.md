@@ -375,7 +375,9 @@ libp2p DCUtR ~70%、TUTK 号称 ~92%。本仓库有中心信令，**应显著高
   9. **EasyTier-core 分层对照**【文档+选路已落地】：按目录学 `foundation → socket →
      packet → tunnel → connectivity → instance`，见 [`EasyTier核心架构对照.md`](EasyTier核心架构对照.md)。
      发送路径在 `core/connectivity/transport/PathSelect.h`。客户端核在 `core/`；
-     **p2p_server** 按 EasyTier 模块拆到 `server/{config,peers,connectivity,management,rpc,instance}`。
+     **p2p_server** 按 EasyTier 模块拆到
+     `server/{config,peers,connectivity,management,rpc,listener,instance}`。
+     CONNECT 准入 `PunchAdmit`：EDM×EDM 在 ACK 尾部提示更快开中继（仍打洞）。
      不抄 `gateway` / `peers/route` mesh / WASI / 虚拟网卡。
 - 依赖：P0 ICE/Proxy 已就绪；不改 `force_relay`「不打洞」语义（测试 [2]/[11] 依赖）。
 - 交付物：PCP/UPnP 客户端探测与续约、二维 NAT + NAT4E 字段、可选生日/TCP 打洞开关、

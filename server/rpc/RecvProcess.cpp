@@ -8,6 +8,7 @@
 #include "core/foundation/RegionSched.h"
 #include "core/foundation/Uid.h"
 #include "core/foundation/Util.h"
+#include "core/connectivity/hole_punch/PunchAdmit.h"
 
 #include <arpa/inet.h>
 #include <cstdio>
@@ -233,10 +234,25 @@ void NatServer::on_msg_connect_req(const uint8_t* p, size_t plen,
                                                  : cfg->proxy_alt_port;
         if (tcp) ack.proxy_tcp_port = htons(tcp);
     }
-    send_msg(from, MSG_CONNECT_ACK, &ack, sizeof(ack));
-    LOGI("NatServer", "ack===>to initiator [%s], dst pub[%s:%d] nattype[%d] proxy[%d]",
+
+    Peer src;
+    const bool have_src = peers_.get(req.src_uuid, src);
+    const PunchAdmit admit = admit_connect_punch(
+        have_src ? src.nattype : (uint8_t)NAT_UNKNOWN, dst.nattype);
+    note_punch_admit(admit);
+    const uint8_t hint = punch_admit_hint(admit);
+
+    uint8_t ackbuf[sizeof(ConnectAck) + 1];
+    memcpy(ackbuf, &ack, sizeof(ack));
+    ackbuf[sizeof(ack)] = hint;
+    send_msg(from, MSG_CONNECT_ACK, ackbuf, sizeof(ackbuf));
+    LOGI("NatServer", "ack===>to initiator [%s], dst pub[%s:%d] nattype[%d] "
+         "proxy[%d] punch=%s",
          req.src_uuid, ack.dst_pub_ip, ntohs(ack.dst_pub_port), dst.nattype,
-         ack.proxy_count);
+         ack.proxy_count, punch_admit_str(admit));
+    if (admit == PunchAdmit::Relay && ack.proxy_count == 0)
+        LOGW("NatServer", "EDM×EDM but no proxy candidate src[%s] dst[%s]",
+             req.src_uuid, req.dst_uuid);
 
     // ---- 通知目标方 ----
     ConnectInvite inv{};
@@ -244,8 +260,7 @@ void NatServer::on_msg_connect_req(const uint8_t* p, size_t plen,
     inet_ntop(AF_INET, &from.sin_addr, inv.src_pub_ip, MAX_IP_LEN);
     inv.src_pub_port = from.sin_port;
 
-    Peer src;
-    if (peers_.get(req.src_uuid, src)) {
+    if (have_src) {
         inet_ntop(AF_INET, &src.lan_addr.sin_addr, inv.src_lan_ip, MAX_IP_LEN);
         inv.src_lan_port = src.lan_addr.sin_port;
         inv.src_nattype = src.nattype;
@@ -260,9 +275,13 @@ void NatServer::on_msg_connect_req(const uint8_t* p, size_t plen,
                                                  : cfg->proxy_alt_port;
         if (tcp) inv.proxy_tcp_port = htons(tcp);
     }
-    send_msg(dst.pub_addr, MSG_CONNECT_INVITE, &inv, sizeof(inv));
-    LOGI("NatServer", "invite===>to dst UUID[%s] port:[%d] nattype[%d]",
-         req.dst_uuid, ntohs(dst.pub_addr.sin_port), inv.src_nattype);
+    uint8_t invbuf[sizeof(ConnectInvite) + 1];
+    memcpy(invbuf, &inv, sizeof(inv));
+    invbuf[sizeof(inv)] = hint;
+    send_msg(dst.pub_addr, MSG_CONNECT_INVITE, invbuf, sizeof(invbuf));
+    LOGI("NatServer", "invite===>to dst UUID[%s] port:[%d] nattype[%d] punch=%s",
+         req.dst_uuid, ntohs(dst.pub_addr.sin_port), inv.src_nattype,
+         punch_admit_str(admit));
 
     inc_connect_ok();
 }

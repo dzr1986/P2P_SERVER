@@ -6,6 +6,8 @@
 #include "core/foundation/ConnectToken.h"
 #include "server/management/LicenseMgr.h"
 #include "server/connectivity/NatTypeCheck.h"
+#include "core/connectivity/hole_punch/PunchAdmit.h"
+#include "server/listener/LocalListeners.h"
 #include "core/socket/Net.h"
 #include "server/peers/PeerManage.h"
 #include "core/packet/ProtoDef.h"
@@ -79,6 +81,7 @@ public:
                        const uint8_t* payload, size_t plen);
     void inc_connect_ok() { connect_ok_.fetch_add(1); }
     void inc_connect_fail() { connect_fail_.fetch_add(1); }
+    void note_punch_admit(PunchAdmit a);
     void inc_login_ok() { login_ok_.fetch_add(1); }
     void inc_login_fail() { login_fail_.fetch_add(1); }
 
@@ -177,6 +180,7 @@ private:
     LicenseMgr   license_;
     NatTypeCheck natcheck_;
     StatusServer status_;
+    LocalListeners listeners_;
 
     // 注册表同步状态
     bool sync_enabled_ = false;
@@ -208,6 +212,9 @@ private:
     std::atomic<uint64_t> connect_fail_{0};
     std::atomic<uint64_t> login_ok_{0};
     std::atomic<uint64_t> login_fail_{0};
+    std::atomic<uint64_t> punch_ice_{0};
+    std::atomic<uint64_t> punch_relay_{0};
+    std::atomic<uint64_t> punch_unknown_{0};
     time_t started_at_ = 0;
 };
 

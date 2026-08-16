@@ -11,7 +11,8 @@ ls server
   connectivity/   服务端 STUN / NAT 探测（EasyTier: connectivity/stun）
   management/     防滥用、白名单、/metrics（EasyTier: management）
   rpc/            报文分发 on_msg_*（EasyTier: rpc）
-  instance/       生命周期 + epoll 收包（EasyTier: instance；listener 暂合在这里）
+  listener/       UDP bind + LocalListeners 防回环（EasyTier: listener）
+  instance/       生命周期 + epoll 收包（EasyTier: instance）
   proxyserver/    专用中继（对标 DERP，不是 gateway）
   wakeserver/     IoT 唤醒（他们没有对等物）
 ```
