@@ -6,16 +6,18 @@
 
 ```
 ls server
-  config/         配置（EasyTier: config）
-  peers/          注册表（EasyTier: peers；只做 UUID→地址，不做 mesh 路由）
-  connectivity/   STUN responder + 映射观察 + NAT 探测（EasyTier: stun/responder+collector）
-  management/     防滥用、白名单、/metrics（EasyTier: management）
-  rpc/            报文分发 on_msg_*（EasyTier: rpc）
-  listener/       UDP bind + LocalListeners 防回环（EasyTier: listener）
-  instance/       生命周期 + epoll 收包（EasyTier: instance）
-  proxyserver/    专用中继（对标 DERP，不是 gateway）
-  wakeserver/     IoT 唤醒（他们没有对等物）
+  config/         配置（guide: config-file / configurations）
+  peers/          注册表 + RegistrySync 集群（guide: host-public-server；不做 mesh）
+  connectivity/   STUN / 映射观察 / NAT 探测（guide: aboutp2p）
+  management/     防滥用、白名单、AuthChallenge、RelayHealth、/metrics
+  rpc/            报文分发 on_msg_*
+  listener/       UDP bind + LocalListeners 防回环
+  instance/       生命周期组合根（只焊模块，不堆同步/择优实现）
+  proxyserver/    专用中继（guide：共享节点不转发业务）
+  wakeserver/     IoT 唤醒
 ```
+
+对照表见 [`docs/EasyTier指南架构对照.md`](../docs/EasyTier指南架构对照.md)。
 
 依赖：这些目录用 `core/foundation|socket|packet`，不要反向去 include `core/instance`（那是客户端门面）。
 

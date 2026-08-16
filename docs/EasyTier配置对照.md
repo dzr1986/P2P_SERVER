@@ -35,6 +35,7 @@ EasyTier：`配置文件 < 环境变量 < 命令行`。命令行覆盖文件；`
 | `--lazy-p2p` | `lazy_p2p` / `P2P_LAZY_P2P` / `peer -lazy` | 中继已通后不后台打洞，直到有业务 |
 | `--need-p2p` | `need_p2p` / `P2P_NEED_P2P` / `peer -need-p2p` | 本端尽快直连（lazy 下也立刻后台打洞） |
 | `--disable-p2p` | **`force_relay`（更硬）** | 本仓库硬关打洞；对端 `need_p2p` 也不能打。测试 [2]/[11]/[21] 依赖此语义，**不要改软** |
+| `--private-mode` | `PrivateMode` / `P2P_PRIVATE_MODE` | 强制 `EnableAuth`；仍需 `AuthSecret` |
 
 服务端其它 `P2P_*` 与文件键同名（如 `P2P_AUTH_SECRET` → `AuthSecret`），见 `CfgFile.h`。
 

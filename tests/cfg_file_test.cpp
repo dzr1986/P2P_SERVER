@@ -30,6 +30,7 @@ static void unset_p2p_env() {
     unsetenv("P2P_INSTANCE_NAME");
     unsetenv("P2P_STATUS_PORT");
     unsetenv("P2P_STATUS_ALLOW");
+    unsetenv("P2P_PRIVATE_MODE");
     unsetenv("CFG_TEST_SECRET");
 }
 
@@ -83,6 +84,7 @@ int main() {
         fputs("StatusPort=16011\n", fp);
         fputs("StatusAllow=127.0.0.1,10.0.0.0/8\n", fp);
         fputs("AuthSecret=${CFG_TEST_SECRET}\n", fp);
+        fputs("PrivateMode=1\n", fp);
         fclose(fp);
     }
     setenv("CFG_TEST_SECRET", "expanded", 1);
@@ -92,6 +94,7 @@ int main() {
     CHECK(loaded.status_port == 16011, "file StatusPort");
     CHECK(loaded.status_allow.size() == 2, "file StatusAllow count");
     CHECK(loaded.auth_secret == "expanded", "file ${ENV} expand");
+    CHECK(loaded.private_mode && loaded.enable_auth, "PrivateMode forces EnableAuth");
     unset_p2p_env();
     unlink(path);
 

@@ -42,6 +42,12 @@ int NatServer::init(const std::string& cfg_path, uint16_t nat_port,
 
     cfg_ = std::make_shared<CfgData>();
     load_server_set(*cfg_, cfg_path);
+    if (cfg_->private_mode && !cfg_->auth_enabled())
+        LOGW("NatServer", "PrivateMode=1 but AuthSecret empty; auth still off");
+    sync_.bind([this](const sockaddr_in& to, uint8_t id, const void* p, size_t n) {
+        return send_msg(to, id, p, n);
+    }, &peers_);
+    sync_.set_cfg(cfg_);
     status_port_ = status_port > 0 ? status_port : cfg_->status_port;
     if (cfg_->nat_ips.empty() || cfg_->proxy_ips.empty()) {
         LOGE("NatServer", "config empty");
@@ -110,38 +116,9 @@ int NatServer::init(const std::string& cfg_path, uint16_t nat_port,
     return 0;
 }
 
-// 解析同步对端列表：优先 SyncAddrs，否则用配置 NatServer* 列表（排除本机）
 void NatServer::setup_sync_peers() {
-    sync_addrs_.clear();
-    if (!cfg_->sync_enabled) { sync_enabled_ = false; return; }
-    sync_enabled_ = true;
-
-    std::vector<std::string> list = cfg_->sync_addrs;
-    if (list.empty()) list = cfg_->nat_ips;
-
-    std::string self_ip = wan_ip_;
-    if (self_ip == "0.0.0.0") self_ip = "127.0.0.1";
-    uint16_t self_port = nat_port_;
-
-    for (auto& s : list) {
-        std::string ip = s;
-        uint16_t port = nat_port_;
-        size_t pos = ip.find(':');
-        if (pos != std::string::npos) {
-            port = (uint16_t)atoi(ip.c_str() + pos + 1);
-            ip = ip.substr(0, pos);
-        }
-        if (ip == self_ip && port == self_port) continue;  // 跳过本机
-        sockaddr_in a;
-        memset(&a, 0, sizeof(a));
-        a.sin_family = AF_INET;
-        a.sin_port = htons(port);
-        if (inet_pton(AF_INET, ip.c_str(), &a.sin_addr) != 1) continue;
-        if (listeners_.is_local(a)) continue;  // EasyTier：不拨自己的 listener
-        sync_addrs_.push_back(a);
-        LOGI("NatServer", "sync peer [%s:%d]", ip.c_str(), port);
-    }
-    LOGI("NatServer", "registry sync enabled, %zu peer(s)", sync_addrs_.size());
+    sync_.set_cfg(cfg_);
+    sync_.setup(wan_ip_, nat_port_, listeners_);
 }
 
 // run() 线程组：收包（主 + 克隆）/处理池/定时器/NAT 备用 socket/状态服务
@@ -273,54 +250,20 @@ bool NatServer::send_msg(const sockaddr_in& to, uint8_t msg_id,
     return sendto(fd, buf, n, 0, (const sockaddr*)&to, sizeof(to)) > 0;
 }
 
-// 鉴权：签发挑战 nonce（30s 有效，一请求一签）
 bool NatServer::issue_auth_nonce(const std::string& uuid, uint8_t out_nonce[16]) {
-    if (p2p_random_bytes(out_nonce, 16) != 0) {
+    if (!auth_.issue(uuid, out_nonce)) {
         LOGE("NatServer", "secure random unavailable, refuse auth nonce");
         return false;
     }
-    std::lock_guard<std::mutex> lk(nonce_mu_);
-    std::array<uint8_t, 16> n;
-    memcpy(n.data(), out_nonce, 16);
-    auth_nonces_[uuid] = {n, time(nullptr) + 30};
     return true;
 }
 
-// 鉴权：验证 uuid||nonce 的 HMAC（常量时间比较），成功则延长在线期
 bool NatServer::verify_auth_login(const std::string& uuid, const uint8_t nonce[16],
                                   const uint8_t mac[32]) {
     auto cfg = cfg_;
-    if (!cfg->auth_enabled()) return true;  // 未启用鉴权时放行（兼容模式）
-
-    std::array<uint8_t, 16> n;
-    time_t expire = 0;
-    {
-        std::lock_guard<std::mutex> lk(nonce_mu_);
-        auto it = auth_nonces_.find(uuid);
-        if (it == auth_nonces_.end()) return false;
-        if (time(nullptr) > it->second.second) { auth_nonces_.erase(it); return false; }
-        n = it->second.first;
-        expire = it->second.second;
-        auth_nonces_.erase(it);   // 一次性使用
-    }
-    if (!p2p_const_time_eq(n.data(), nonce, 16)) return false;
-
-    // P1：每 UID 独立密钥（AuthKey = HMAC(master, uid)），单设备泄露不影响全网
-    // expected = HMAC-SHA256(AuthKey, uuid || nonce)
-    uint8_t uid_key[AUTH_KEY_LEN];
-    uid_derive_auth_key((const uint8_t*)cfg->auth_secret.data(),
-                        cfg->auth_secret.size(), uuid.c_str(), uid_key);
-    uint8_t msg[16 + MAX_UUID_LEN + 1];
-    memset(msg, 0, sizeof(msg));
-    memcpy(msg, uuid.c_str(), uuid.size());
-    memcpy(msg + MAX_UUID_LEN + 1, nonce, 16);
-    uint8_t expect[32];
-    hmac_sha256(uid_key, AUTH_KEY_LEN, msg, 16 + MAX_UUID_LEN + 1, expect);
-
-    if (!p2p_const_time_eq(expect, mac, 32)) return false;
-
-    peers_.set_auth_expire(uuid, (time_t)time(nullptr) + 3600);
-    (void)expire;
+    if (!auth_.verify(*cfg, uuid, nonce, mac)) return false;
+    if (cfg->auth_enabled())
+        peers_.set_auth_expire(uuid, (time_t)time(nullptr) + 3600);
     return true;
 }
 
@@ -531,6 +474,7 @@ void NatServer::timer_thread() {
         auto cur = std::make_shared<CfgData>(*cfg_);
         if (reload_if_changed(*cur, cfg_->cfg_path, &cfg_mtime_)) {
             cfg_ = cur;
+            sync_.set_cfg(cfg_);
             abuse_.configure(cur->flood_pkt_threshold, cur->blacklist_seconds);
             LOGI("NatServer", "config reloaded");
         }
@@ -574,293 +518,54 @@ void NatServer::send_proxy_avail_query(const std::string& proxy_ip) {
 }
 
 void NatServer::collect_proxy_avail(const sockaddr_in& from, const ProxyAvailRsp& rsp) {
-    char ip[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &from.sin_addr, ip, sizeof(ip));
-    std::lock_guard<std::mutex> lk(proxy_mu_);
-    for (auto& p : proxy_health_) {
-        if (p.ip == ip && p.port == proxy_port_) {
-            p.available = rsp.available;
-            p.used = ntohs(rsp.used);
-            p.max_proxy = ntohs(rsp.max_proxy);
-            p.last_seen = time(nullptr);
-            p.down = 0;
-            return;
-        }
-    }
-    ProxyHealth h;
-    h.ip = ip;
-    h.port = proxy_port_;
-    h.available = rsp.available;
-    h.used = ntohs(rsp.used);
-    h.max_proxy = ntohs(rsp.max_proxy);
-    h.last_seen = time(nullptr);
-    h.down = 0;
-    proxy_health_.push_back(h);
+    relays_.collect(from, proxy_port_, rsp);
 }
 
-// 周期探测未收到应答的代理 down++（封顶 255），超过阈值降权/剔除
 void NatServer::mark_proxy_stale() {
-    time_t now = time(nullptr);
-    std::lock_guard<std::mutex> lk(proxy_mu_);
-    for (auto& p : proxy_health_) {
-        if (now - p.last_seen >= 10) {
-            if (p.down < 255) p.down++;
-            p.available = 0;
-        }
-    }
+    relays_.mark_stale();
 }
 
-// 代理择优调度：健康代理按空闲度加权随机（分散首选，天然失败转移）；
-// 无健康数据时回退配置顺序。始终给出至多 3 个候选。
 void NatServer::pick_proxy(ProxyCandidate out[3], uint8_t& count, char prefer_region) {
-    count = 0;
     auto cfg = cfg_;
-    const char local = cfg ? cfg->region : 0;
-    struct Cand {
-        std::string ip;
-        double weight;
-    };
-    std::vector<Cand> cands;
-    {
-        std::lock_guard<std::mutex> lk(proxy_mu_);
-        time_t now = time(nullptr);
-        for (auto& p : proxy_health_) {
-            bool fresh = now - p.last_seen <= 30;
-            bool healthy = fresh && p.available && p.down < 2;
-            if (!healthy) continue;
-            double util = p.max_proxy ? (double)p.used / p.max_proxy : 1.0;
-            double w = 1.0 - util;
-            if (w < 0.05) w = 0.05;
-            w *= 1.0 - 0.3 * p.down;   // 连续失联扣分
-            if (w < 0.02) w = 0.02;
-            const char r = cfg ? region_of(p.ip, cfg->proxy_regions, local) : 0;
-            w *= region_weight_boost(r, prefer_region, local);
-            cands.push_back({p.ip, w});
-        }
-    }
-
-    // 加权随机挑选（不打乱去重顺序，保证候选互不重复）
-    auto pick_weighted = [&]() -> std::string {
-        double total = 0;
-        for (auto& c : cands) total += c.weight;
-        if (total <= 0) return "";
-        double r = (double)(rand_u32() % 10000) / 10000.0 * total;
-        for (auto& c : cands) {
-            if (r < c.weight) return c.ip;
-            r -= c.weight;
-        }
-        return cands.back().ip;
-    };
-    auto dup = [&](const std::string& s) {
-        for (uint8_t i = 0; i < count; i++)
-            if (s == out[i].ip) return true;
-        return false;
-    };
-
-    for (int k = 0; k < 3 && !cands.empty(); k++) {
-        std::string ip = pick_weighted();
-        if (!ip.empty() && !dup(ip)) {
-            memset(out + count, 0, sizeof(ProxyCandidate));
-            strncpy(out[count].ip, ip.c_str(), MAX_IP_LEN - 1);
-            out[count].port = htons(proxy_port_);
-            count++;
-        }
-    }
-
-    // 候选不足时按区域亲和 + 配置顺序回退（保证永远给足 3 个入口）
-    std::vector<std::string> fallback = cfg ? cfg->proxy_ips : std::vector<std::string>{};
-    if (cfg) sort_ips_by_region(fallback, cfg->proxy_regions, prefer_region, local);
-    for (auto& ip : fallback) {
-        if (count >= 3) break;
-        if (dup(ip)) continue;
-        memset(out + count, 0, sizeof(ProxyCandidate));
-        strncpy(out[count].ip, ip.c_str(), MAX_IP_LEN - 1);
-        out[count].port = htons(proxy_port_);
-        count++;
-    }
-    // TURN-over-443：同一 IP 再宣告兼听端口，企业网只放 UDP/443 时客户端可回退
-    if (cfg && cfg->proxy_alt_port && count > 0 && count < 3) {
-        memset(out + count, 0, sizeof(ProxyCandidate));
-        memcpy(out[count].ip, out[0].ip, MAX_IP_LEN);
-        out[count].ip[MAX_IP_LEN - 1] = 0;
-        out[count].port = htons(cfg->proxy_alt_port);
-        count++;
-    }
+    if (!cfg) { count = 0; return; }
+    relays_.pick(out, count, *cfg, proxy_port_, prefer_region);
 }
 
-// 负载末尾附加 HMAC-SHA256(SyncAuthSecret, payload) 后发送（未配置密钥则原样发送）
 void NatServer::sync_send_msg(const sockaddr_in& to, uint8_t msg_id,
                               const uint8_t* payload, size_t plen) {
-    auto cfg = cfg_;
-    uint8_t buf[MAX_PKT];
-    if (plen > sizeof(buf) - 32) return;
-    memcpy(buf, payload, plen);
-    if (!cfg->sync_auth_secret.empty()) {
-        uint8_t mac[32];
-        hmac_sha256((const uint8_t*)cfg->sync_auth_secret.data(),
-                    cfg->sync_auth_secret.size(), payload, plen, mac);
-        memcpy(buf + plen, mac, 32);
-        plen += 32;
-    }
-    send_msg(to, msg_id, buf, plen);
+    sync_.send_signed(to, msg_id, payload, plen);
 }
 
-// 校验同步消息末尾 HMAC；未配置 SyncAuthSecret 视为放行（兼容旧版）
 bool NatServer::sync_verify(const uint8_t* payload, size_t plen,
                             size_t body_len) const {
-    auto cfg = cfg_;
-    if (cfg->sync_auth_secret.empty()) return true;
-    if (body_len + 32 > plen) return false;
-    uint8_t expect[32];
-    hmac_sha256((const uint8_t*)cfg->sync_auth_secret.data(),
-                cfg->sync_auth_secret.size(), payload, body_len, expect);
-    return p2p_const_time_eq(expect, payload + body_len, 32);
+    return sync_.verify(payload, plen, body_len);
 }
 
-// 向所有同步对端广播一条消息（except 可选排除来源）
 void NatServer::broadcast_sync_msg(uint8_t msg_id, const void* payload, size_t plen,
                                    const sockaddr_in* except) {
-    for (auto& to : sync_addrs_) {
-        if (except && except->sin_addr.s_addr == to.sin_addr.s_addr &&
-            except->sin_port == to.sin_port)
-            continue;
-        sync_send_msg(to, msg_id, (const uint8_t*)payload, plen);
-    }
+    sync_.broadcast(msg_id, payload, plen, except);
 }
 
-// 防环去重：已见过相同 (uuid, hb_time, src) 的条目返回 true
-bool NatServer::seen_sync_entry(const std::string& uuid, uint32_t hb_time,
-                                const sockaddr_in& from) {
-    char key[160];
-    snprintf(key, sizeof(key), "%s|%u|%u:%u", uuid.c_str(), hb_time,
-             ntohl(from.sin_addr.s_addr), ntohs(from.sin_port));
-    time_t now = time(nullptr);
-    std::lock_guard<std::mutex> lk(sync_mu_);
-    auto it = sync_seen_.find(key);
-    if (it != sync_seen_.end() && now - it->second < 300) return true;
-    sync_seen_[key] = now;
-    if (sync_seen_.size() > 16384) {
-        for (auto jt = sync_seen_.begin(); jt != sync_seen_.end();) {
-            if (now - jt->second >= 300) jt = sync_seen_.erase(jt);
-            else ++jt;
-        }
-    }
-    return false;
-}
-
-// 向对端 to 发送一条对等节点记录
-void NatServer::send_peer_entry(const sockaddr_in& to, const Peer& p, uint8_t hop) {
-    uint8_t buf[sizeof(SyncPeerEntry) + MAX_EXTINFO];
-    memset(buf, 0, sizeof(buf));
-    SyncPeerEntry* e = reinterpret_cast<SyncPeerEntry*>(buf);
-    strncpy(e->uuid, p.uuid.c_str(), MAX_UUID_LEN);
-    inet_ntop(AF_INET, &p.pub_addr.sin_addr, e->pub_ip, MAX_IP_LEN);
-    e->pub_port = p.pub_addr.sin_port;
-    inet_ntop(AF_INET, &p.lan_addr.sin_addr, e->lan_ip, MAX_IP_LEN);
-    e->lan_port = p.lan_addr.sin_port;
-    e->dev_type = p.dev_type;
-    e->nattype = p.nattype;
-    e->hop = hop;
-    e->hb_time = htonl((uint32_t)p.last_heartbeat);
-    e->extlen = htons((uint16_t)p.extlen);
-    size_t total = sizeof(SyncPeerEntry);
-    if (p.extlen > 0 && p.extlen <= MAX_EXTINFO) {
-        memcpy(buf + total, p.extinfo.data(), p.extlen);
-        total += p.extlen;
-    }
-    sync_send_msg(to, MSG_SYNC_PEER_ENTRY, buf, total);
-}
-
-// 广播一条注册记录（增量：hop=1 开始）
 void NatServer::broadcast_peer_entry(const UuidReq& req, const std::string& extinfo,
                                      const sockaddr_in& pub) {
-    if (!sync_enabled()) return;
-    Peer p;
-    p.uuid = req.uuid;
-    p.pub_addr = pub;
-    p.lan_addr = pub;
-    p.lan_addr.sin_port = req.lan_port;
-    p.dev_type = req.dev_type;
-    p.nattype = req.nattype;
-    p.last_heartbeat = time(nullptr);
-    p.extinfo = extinfo;
-    p.extlen = (uint16_t)extinfo.size();
-    send_peer_entry(sync_addrs_[0], p, 1);
-    for (size_t i = 1; i < sync_addrs_.size(); i++)
-        send_peer_entry(sync_addrs_[i], p, 1);
+    sync_.broadcast_peer(req, extinfo, pub);
 }
 
-// 收到对端广播/快照的对等节点记录：去重 -> 落地 -> 转发（防环）
 void NatServer::handle_sync_entry(const SyncPeerEntry& e, const std::string& extinfo,
                                   const sockaddr_in& from) {
-    if (!sync_enabled()) return;
-
-    uint8_t hop = e.hop;
-    uint32_t hb_time = ntohl(e.hb_time);
-    std::string uuid(e.uuid);
-    if (uuid.empty()) return;
-
-    if (hop != SYNC_HOP_SNAP && seen_sync_entry(uuid, hb_time, from)) {
-        LOGI("NatServer", "sync entry dup skip uuid[%s] hb[%u] from [%s:%d]",
-             uuid.c_str(), hb_time, inet_ntoa(from.sin_addr), ntohs(from.sin_port));
-        return;
-    }
-
-    sockaddr_in pub, lan;
-    memset(&pub, 0, sizeof(pub));
-    pub.sin_family = AF_INET;
-    pub.sin_port = e.pub_port;
-    inet_pton(AF_INET, e.pub_ip, &pub.sin_addr);
-    lan = pub;
-    lan.sin_port = e.lan_port;
-    inet_pton(AF_INET, e.lan_ip, &lan.sin_addr);
-    peers_.upsert_synced(uuid, pub, lan, e.dev_type, e.nattype, extinfo, (time_t)hb_time);
-
-    LOGI("NatServer", "sync entry uuid[%s] hop[%d] hb[%u] pub[%s:%d] from [%s:%d]",
-         uuid.c_str(), hop, hb_time, e.pub_ip, ntohs(e.pub_port),
-         inet_ntoa(from.sin_addr), ntohs(from.sin_port));
-
-    // 增量条目逐跳转发（快照条目不转发）
-    if (hop != SYNC_HOP_SNAP && hop < SYNC_HOP_MAX) {
-        SyncPeerEntry f = e;
-        f.hop = hop + 1;
-        broadcast_sync_msg(MSG_SYNC_PEER_ENTRY, &f, sizeof(f) + extinfo.size(),
-                           &from);
-    }
+    sync_.handle_entry(e, extinfo, from);
 }
 
-// 收到对端删除通知：转发并本地删除
 void NatServer::handle_sync_del(const std::string& uuid, const sockaddr_in& from) {
-    if (!sync_enabled()) return;
-    SyncPeerDel d;
-    memset(&d, 0, sizeof(d));
-    strncpy(d.uuid, uuid.c_str(), MAX_UUID_LEN);
-    broadcast_sync_msg(MSG_SYNC_PEER_DEL, &d, sizeof(d), &from);
-    peers_.remove(uuid);
-    LOGI("NatServer", "sync del uuid[%s] from [%s:%d]",
-         uuid.c_str(), inet_ntoa(from.sin_addr), ntohs(from.sin_port));
+    sync_.handle_del(uuid, from);
 }
 
-// 向对端 to 全量快照本机注册表（快照条目不转发）
-void NatServer::send_sync_snapshot(const sockaddr_in& to) {
-    auto snap = peers_.snapshot();
-    for (auto& p : snap) send_peer_entry(to, p, SYNC_HOP_SNAP);
-    LOGI("NatServer", "sync snapshot sent %zu entries to [%s:%d]", snap.size(),
-         inet_ntoa(to.sin_addr), ntohs(to.sin_port));
-}
-
-// 收到全量快照请求：以多条 MSG_SYNC_PEER_ENTRY 应答
 void NatServer::handle_sync_snapshot_req(const sockaddr_in& from) {
-    if (!sync_enabled()) return;
-    send_sync_snapshot(from);
+    sync_.handle_snapshot_req(from);
 }
 
-// 向所有同步对端请求全量快照（带时间戳防重放；广播逻辑会附加尾部 HMAC）
 void NatServer::request_sync_snapshot() {
-    if (!sync_enabled()) return;
-    SyncSnapshotReq req;
-    req.ts = htonl((uint32_t)time(nullptr));
-    broadcast_sync_msg(MSG_SYNC_SNAPSHOT_REQ, &req, sizeof(req), nullptr);
+    sync_.request_snapshot();
 }
 
 void NatServer::notify_wake(const char* uuid) {
@@ -970,19 +675,19 @@ std::string NatServer::status_metrics() const {
     os << "# HELP p2p_node_instance Node instance name (1=set)\n"
        << "# TYPE p2p_node_instance gauge\n"
        << "p2p_node_instance{instance=\"" << inst << "\"} 1\n";
+    os << "# HELP p2p_proxy_used Current relay sessions on a proxy\n"
+       << "# TYPE p2p_proxy_used gauge\n";
+    relays_.visit([&](const ProxyHealth& p) {
+        os << "p2p_proxy_used{ip=\"" << p.ip << "\"} " << p.used << "\n";
+    });
+    os << "# HELP p2p_proxy_up Proxy liveness (1=fresh and available)\n"
+       << "# TYPE p2p_proxy_up gauge\n";
     {
-        std::lock_guard<std::mutex> lk(proxy_mu_);
-        os << "# HELP p2p_proxy_used Current relay sessions on a proxy\n"
-           << "# TYPE p2p_proxy_used gauge\n";
-        for (auto& p : proxy_health_)
-            os << "p2p_proxy_used{ip=\"" << p.ip << "\"} " << p.used << "\n";
-        os << "# HELP p2p_proxy_up Proxy liveness (1=fresh and available)\n"
-           << "# TYPE p2p_proxy_up gauge\n";
         time_t now = time(nullptr);
-        for (auto& p : proxy_health_) {
+        relays_.visit([&](const ProxyHealth& p) {
             const int up = (now - p.last_seen <= 30 && p.available && p.down < 2) ? 1 : 0;
             os << "p2p_proxy_up{ip=\"" << p.ip << "\"} " << up << "\n";
-        }
+        });
     }
     return os.str();
 }

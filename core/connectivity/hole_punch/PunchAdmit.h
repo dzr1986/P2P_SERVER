@@ -1,9 +1,9 @@
 #ifndef P2P_CORE_HOLE_PUNCH_PUNCH_ADMIT_H
 #define P2P_CORE_HOLE_PUNCH_PUNCH_ADMIT_H
 
-// CONNECT 打洞准入（学 EasyTier hole_punch/policy + NatMatrix）。
+// CONNECT 打洞准入（学 guide/aboutp2p.md 难度表 + hole_punch/policy）。
+// 锥×锥 / 锥×对称 → Ice；对称×对称（极难）→ Relay。
 // 只给「建议」：Relay 时客户端仍打洞，但更快开中继。不改 force_relay。
-// 生日扫描只在客户端开关，服务端按默认关计算（EDM×EDM → Relay）。
 
 #include "core/connectivity/hole_punch/NatMatrix.h"
 #include "core/packet/ProtoDef.h"

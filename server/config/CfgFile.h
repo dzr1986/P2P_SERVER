@@ -42,6 +42,7 @@ namespace p2p {
 //   InstanceName=nat-cn-1           实例名（状态 JSON / 日志）
 //   StatusPort=N                    HTTP 状态口（0=关；也可 P2P_STATUS_PORT）
 //   StatusAllow=127.0.0.1,10.0.0.0/8  状态口来源白名单（空=不限制）
+//   PrivateMode=0|1                 对标 --private-mode：强制 EnableAuth（仍需 AuthSecret）
 // 覆盖顺序（学 EasyTier）：文件 < P2P_* 环境变量 < 命令行。
 // 文件值支持 ${ENV}；P2P_DISABLE_ENV_PARSING=1 只关展开，不关 P2P_* 覆盖。
 // ---------------------------------------------------------------------------
@@ -54,6 +55,7 @@ struct CfgData {
 
     std::string auth_secret;
     bool        enable_auth = false;
+    bool        private_mode = false;   // 学 guide --private-mode：强制 EnableAuth
     bool        uid_strict = false;     // 仅接受结构化 UID（P1：UID 体系）
     bool        enable_connect_token = false;  // CONNECT 必须出示连线 Token
     bool        enable_license = false;

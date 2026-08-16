@@ -521,12 +521,7 @@ void NatServer::on_msg_admin_stats(const sockaddr_in& from) {
     rsp.apps = htonl((uint32_t)peers_.client_count());
     rsp.blacklist_ips = htonl((uint32_t)abuse_.ip_blacklist_size());
     rsp.authed_peers = htonl((uint32_t)peers_.authed_count());
-    {
-        std::lock_guard<std::mutex> lk(proxy_mu_);
-        uint32_t ok = 0;
-        for (auto& p : proxy_health_) if (p.available) ok++;
-        rsp.proxy_ok = htonl(ok);
-    }
+    rsp.proxy_ok = htonl(relays_.available_count());
     rsp.connect_ok = htonl((uint32_t)connect_ok_.load());
     rsp.connect_fail = htonl((uint32_t)connect_fail_.load());
     send_msg(from, MSG_ADMIN_STATS_RSP, &rsp, sizeof(rsp));

@@ -108,7 +108,7 @@ server/natserver|proxyserver  中心信令 + 专用中继（他们没有对等�
 | EasyTier | 本仓库 p2p_server |
 |----------|-------------------|
 | `config/` | `server/config/CfgFile.*` |
-| `peers/` | `server/peers/PeerManage.*`（仅注册表） |
+| `peers/` | `server/peers/PeerManage.*` + `RegistrySync`（仅注册表集群，对照 guide 共享节点） |
 | `connectivity/` | `server/connectivity/` STUN responder + 映射观察 + NAT 探测 |
 | `management/` | `server/management/` 防滥用、白名单、Status |
 | `rpc/` | `server/rpc/RecvProcess.cpp` |

@@ -33,6 +33,7 @@ BIN_PUNCHADMITTEST := tests/bin/punch_admit_test
 BIN_PUNCHPOLICYTEST := tests/bin/punch_policy_test
 BIN_STUNRESPTEST := tests/bin/stun_responder_test
 BIN_CFGFILETEST := tests/bin/cfg_file_test
+BIN_SERVERARCHTEST := tests/bin/server_arch_test
 BIN_IOTCDEMO := client/bin/iotc_demo
 BIN_WAKE    := server/wakeserver/bin/p2p_wakeserver
 
@@ -48,9 +49,11 @@ IOTC_SRCS := client/sdk/iotc/IOTC.cpp \
 NAT_SRCS := server/instance/NatServer.cpp \
             server/rpc/RecvProcess.cpp \
             server/peers/PeerManage.cpp \
+            server/peers/RegistrySync.cpp \
             server/config/CfgFile.cpp \
             server/management/AntiAbuse.cpp \
             server/management/LicenseMgr.cpp \
+            server/management/RelayHealth.cpp \
             server/connectivity/NatTypeCheck.cpp \
             server/management/StatusServer.cpp
 
@@ -59,7 +62,7 @@ PROXY_SRCS := server/proxyserver/src/P2PProxy.cpp
 PEER_SRCS  := client/demo/peer.cpp \
               core/instance/P2PClient.cpp
 
-all: $(LIBJUICE) $(BIN_NAT) $(BIN_PROXY) $(BIN_PEER) $(BIN_CRYPTOTEST) $(BIN_SESSIONTEST) $(BIN_UIDTEST) $(BIN_UIDGEN) $(BIN_TOKENGEN) $(BIN_TOKENTEST) $(BIN_AVTEST) $(BIN_SCHEDTEST) $(BIN_STUNTEST) $(BIN_ABRTEST) $(BIN_ICESDPTEST) $(BIN_TWCCTEST) $(BIN_PORTMAPTEST) $(BIN_NATDETECTTEST) $(BIN_TCPPUNCHTEST) $(BIN_TCPSTUNTEST) $(BIN_NATSIMTEST) $(BIN_PATHSELECTTEST) $(BIN_PUNCHADMITTEST) $(BIN_PUNCHPOLICYTEST) $(BIN_STUNRESPTEST) $(BIN_CFGFILETEST) $(BIN_IOTCDEMO) $(BIN_WAKE)
+all: $(LIBJUICE) $(BIN_NAT) $(BIN_PROXY) $(BIN_PEER) $(BIN_CRYPTOTEST) $(BIN_SESSIONTEST) $(BIN_UIDTEST) $(BIN_UIDGEN) $(BIN_TOKENGEN) $(BIN_TOKENTEST) $(BIN_AVTEST) $(BIN_SCHEDTEST) $(BIN_STUNTEST) $(BIN_ABRTEST) $(BIN_ICESDPTEST) $(BIN_TWCCTEST) $(BIN_PORTMAPTEST) $(BIN_NATDETECTTEST) $(BIN_TCPPUNCHTEST) $(BIN_TCPSTUNTEST) $(BIN_NATSIMTEST) $(BIN_PATHSELECTTEST) $(BIN_PUNCHADMITTEST) $(BIN_PUNCHPOLICYTEST) $(BIN_STUNRESPTEST) $(BIN_CFGFILETEST) $(BIN_SERVERARCHTEST) $(BIN_IOTCDEMO) $(BIN_WAKE)
 
 $(LIBJUICE):
 	cmake -B third_party/libjuice/build -S third_party/libjuice -DCMAKE_BUILD_TYPE=Release
@@ -167,6 +170,15 @@ $(BIN_STUNRESPTEST): tests/stun_responder_test.cpp core/packet/StunBind.h \
 $(BIN_CFGFILETEST): tests/cfg_file_test.cpp server/config/CfgFile.cpp server/config/CfgFile.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tests/cfg_file_test.cpp server/config/CfgFile.cpp
+
+$(BIN_SERVERARCHTEST): tests/server_arch_test.cpp server/peers/RegistrySync.cpp \
+		server/peers/PeerManage.cpp server/management/RelayHealth.cpp \
+		server/config/CfgFile.cpp core/foundation/Crypto.cpp core/foundation/Uid.cpp
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -o $@ tests/server_arch_test.cpp server/peers/RegistrySync.cpp \
+		server/peers/PeerManage.cpp server/management/RelayHealth.cpp \
+		server/config/CfgFile.cpp core/foundation/Crypto.cpp core/foundation/Uid.cpp \
+		-pthread -lssl -lcrypto
 
 $(BIN_IOTCDEMO): client/demo/iotc_demo.cpp $(IOTC_SRCS) $(COMMON_SRCS) core/packet/ProtoDef.h $(LIBJUICE)
 	@mkdir -p $(dir $@)

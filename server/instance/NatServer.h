@@ -2,14 +2,17 @@
 #define P2P_NAT_SERVER_H
 
 #include "server/management/AntiAbuse.h"
+#include "server/management/AuthChallenge.h"
+#include "server/management/LicenseMgr.h"
+#include "server/management/RelayHealth.h"
 #include "server/config/CfgFile.h"
 #include "core/foundation/ConnectToken.h"
-#include "server/management/LicenseMgr.h"
 #include "server/connectivity/NatTypeCheck.h"
 #include "core/connectivity/hole_punch/PunchAdmit.h"
 #include "server/listener/LocalListeners.h"
 #include "core/socket/Net.h"
 #include "server/peers/PeerManage.h"
+#include "server/peers/RegistrySync.h"
 #include "core/packet/ProtoDef.h"
 #include "server/management/StatusServer.h"
 
@@ -36,19 +39,10 @@ struct IncomingPacket {
     sockaddr_in from;
 };
 
-struct ProxyHealth {
-    std::string ip;
-    uint16_t    port;
-    uint8_t     available;
-    uint16_t    used;
-    uint16_t    max_proxy;
-    time_t      last_seen;
-    uint8_t     down;        // 连续探测未响应次数（>=2 视为不可用）
-};
-
 // ---------------------------------------------------------------------------
-// NatServer：UDP 汇聚/打洞协调服务端
-// 线程模型（对标原版 NatServer.cpp + RecvProcess.cpp）：
+// NatServer：信令核组合根（学 guide：共享节点只帮建连，不转发业务）
+//   config / peers / connectivity / management / rpc / listener
+// 线程模型：
 //   recv_thread    ：epoll 收主 socket，NAT 探测走快速路径，其余入有界队列
 //   proc_pool xN    ：出队处理业务报文
 //   nattype_thread  ：select 备用 socket（端口变更/重协商快速路径）
@@ -103,6 +97,9 @@ public:
     // 校验同步消息尾部 HMAC（未配置 SyncAuthSecret 视为放行）
     //   plen=收到负载总长，body_len=被签名负载长度（MAC 位于 payload+body_len 起 32B）
     bool sync_verify(const uint8_t* payload, size_t plen, size_t body_len) const;
+    bool sync_enabled() const { return sync_.enabled(); }
+    void broadcast_sync_msg(uint8_t msg_id, const void* payload, size_t plen,
+                            const sockaddr_in* except);
 
 private:
     void recv_thread(int idx);
@@ -153,18 +150,10 @@ private:
     std::string status_json() const;
     std::string status_metrics() const;
 
-    // 注册表同步
-    void setup_sync_peers();                          // init 后解析同步对端
-    void broadcast_sync_msg(uint8_t msg_id, const void* payload, size_t plen,
-                            const sockaddr_in* except);
+    void setup_sync_peers();
     void broadcast_peer_entry(const UuidReq& req, const std::string& extinfo,
                               const sockaddr_in& pub);
-    void send_peer_entry(const sockaddr_in& to, const Peer& p, uint8_t hop);
-    void send_sync_snapshot(const sockaddr_in& to);
-    void request_sync_snapshot();                     // 向所有同步对端请求全量
-    bool sync_enabled() const { return sync_enabled_ && !sync_addrs_.empty(); }
-    bool seen_sync_entry(const std::string& uuid, uint32_t hb_time,
-                         const sockaddr_in& from);    // 防环去重，返回 true=已见
+    void request_sync_snapshot();
 
     // 配置（shared_ptr 原子替换，支持热加载）
     std::shared_ptr<CfgData> cfg_;
@@ -175,18 +164,15 @@ private:
     uint16_t status_port_ = 0;
     std::string wan_ip_ = "0.0.0.0";
 
-    PeerManager  peers_;
-    AntiAbuse    abuse_;
-    LicenseMgr   license_;
-    NatTypeCheck natcheck_;
-    StatusServer status_;
+    PeerManager    peers_;
+    RegistrySync   sync_;
+    AntiAbuse      abuse_;
+    LicenseMgr     license_;
+    AuthChallenge  auth_;
+    RelayHealth    relays_;
+    NatTypeCheck   natcheck_;
+    StatusServer   status_;
     LocalListeners listeners_;
-
-    // 注册表同步状态
-    bool sync_enabled_ = false;
-    std::vector<sockaddr_in> sync_addrs_;       // 已解析的同步对端
-    std::mutex  sync_mu_;
-    std::map<std::string, time_t> sync_seen_;   // 已见条目：uuid|hb_time|src -> 时间
 
     std::mutex              mq_mu_;
     std::condition_variable mq_cv_;
@@ -196,14 +182,6 @@ private:
     std::vector<UdpFd>      recv_socks_;
     TcpFd                   stun_tcp_;   // 与 UDP nat_port 同口，供 TCP 打洞取映射
 
-    // 代理健康表（SP_ASK_EXTINFO_RSP 刷新）
-    mutable std::mutex proxy_mu_;
-    std::vector<ProxyHealth> proxy_health_;
-
-    // 鉴权 nonce 表（uuid -> {nonce, 过期}）
-    std::mutex nonce_mu_;
-    std::unordered_map<std::string, std::pair<std::array<uint8_t, 16>, time_t>> auth_nonces_;
-    // 连线 Token 已用 nonce（过期前拒绝重放）
     TokenNonceCache token_nonces_;
 
     std::atomic<bool> running_{false};

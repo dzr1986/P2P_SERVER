@@ -109,6 +109,10 @@ static void parse_value(CfgData& out, const std::string& key, const std::string&
     static const std::unordered_map<std::string, Setter> kSetters = {
         {"AuthSecret",     [](CfgData& c, const std::string& v) { c.auth_secret = v; }},
         {"EnableAuth",     [](CfgData& c, const std::string& v) { c.enable_auth = to_bool(v); }},
+        {"PrivateMode",    [](CfgData& c, const std::string& v) {
+             c.private_mode = to_bool(v);
+             if (c.private_mode) c.enable_auth = true;
+         }},
         {"UidStrict",      [](CfgData& c, const std::string& v) { c.uid_strict = to_bool(v); }},
         {"EnableConnectToken", [](CfgData& c, const std::string& v) { c.enable_connect_token = to_bool(v); }},
         {"EnableLicense",  [](CfgData& c, const std::string& v) { c.enable_license = to_bool(v); }},
@@ -253,6 +257,10 @@ void apply_cfg_env(CfgData& cfg) {
     auto env = [](const char* name) -> const char* { return getenv(name); };
     if (const char* v = env("P2P_AUTH_SECRET")) cfg.auth_secret = v;
     if (const char* v = env("P2P_ENABLE_AUTH")) cfg.enable_auth = to_bool(v);
+    if (const char* v = env("P2P_PRIVATE_MODE")) {
+        cfg.private_mode = to_bool(v);
+        if (cfg.private_mode) cfg.enable_auth = true;
+    }
     if (const char* v = env("P2P_UID_STRICT")) cfg.uid_strict = to_bool(v);
     if (const char* v = env("P2P_ENABLE_CONNECT_TOKEN")) cfg.enable_connect_token = to_bool(v);
     if (const char* v = env("P2P_ENABLE_LICENSE")) cfg.enable_license = to_bool(v);
