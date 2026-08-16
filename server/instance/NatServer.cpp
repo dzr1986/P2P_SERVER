@@ -966,8 +966,10 @@ std::string NatServer::status_metrics() const {
     const std::string inst = json_safe_name(cfg ? cfg->instance_name : "");
     os << "# HELP p2p_node_region Node REGION label (1=set)\n"
        << "# TYPE p2p_node_region gauge\n"
-       << "p2p_node_region{region=\"" << (region ? std::string(1, region) : "")
-       << "\",instance=\"" << inst << "\"} 1\n";
+       << "p2p_node_region{region=\"" << (region ? std::string(1, region) : "") << "\"} 1\n";
+    os << "# HELP p2p_node_instance Node instance name (1=set)\n"
+       << "# TYPE p2p_node_instance gauge\n"
+       << "p2p_node_instance{instance=\"" << inst << "\"} 1\n";
     {
         std::lock_guard<std::mutex> lk(proxy_mu_);
         os << "# HELP p2p_proxy_used Current relay sessions on a proxy\n"
