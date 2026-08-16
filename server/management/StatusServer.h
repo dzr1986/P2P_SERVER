@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace p2p {
 
@@ -19,9 +20,11 @@ public:
     ~StatusServer();
 
     // json_provider / metrics_provider 由调用方提供线程安全的状态快照
+    // allow 空=不限制（学 EasyTier --rpc-portal-whitelist）
     int  init(uint16_t port,
               std::function<std::string()> json_provider,
-              std::function<std::string()> metrics_provider = {});
+              std::function<std::string()> metrics_provider = {},
+              std::vector<std::string> allow = {});
     void run();
     void request_stop() { running_ = false; }
     bool running() const { return running_; }
@@ -32,6 +35,7 @@ private:
     std::atomic<bool> running_{false};
     std::function<std::string()> json_provider_;
     std::function<std::string()> metrics_provider_;
+    std::vector<std::string> allow_;
 };
 
 } // namespace p2p

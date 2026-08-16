@@ -2,6 +2,7 @@
 #include "core/foundation/File.h"
 #include "core/foundation/Log.h"
 
+#include <arpa/inet.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -136,6 +137,12 @@ static void parse_value(CfgData& out, const std::string& key, const std::string&
         {"WakeServer",     [](CfgData& c, const std::string& v) { c.wake_server = v; }},
         {"ProxyAltPort",   [](CfgData& c, const std::string& v) { set_int_in_range(c.proxy_alt_port, v, 1, 65535); }},
         {"ProxyTcpPort",   [](CfgData& c, const std::string& v) { set_int_in_range(c.proxy_tcp_port, v, 1, 65535); }},
+        {"InstanceName",   [](CfgData& c, const std::string& v) { c.instance_name = v; }},
+        {"StatusPort",     [](CfgData& c, const std::string& v) { set_int_in_range(c.status_port, v, 0, 65535); }},
+        {"StatusAllow",    [](CfgData& c, const std::string& v) {
+             c.status_allow = split_csv(v);
+             for (auto& s : c.status_allow) trim(s);
+         }},
     };
     auto it = kSetters.find(key);
     if (it != kSetters.end()) it->second(out, val);
@@ -164,6 +171,8 @@ static bool parse_file(CfgData& out, const std::string& path) {
         trim(key);
         trim(val);
         if (key.empty()) continue;
+        const char* no_exp = getenv("P2P_DISABLE_ENV_PARSING");
+        val = expand_cfg_env(val, no_exp && no_exp[0] == '1');
         parse_value(fresh, key, val);
     }
 
@@ -189,10 +198,12 @@ bool load_server_set(CfgData& out, const std::string& path) {
         out.proxy_ips = {"127.0.0.1"};
         out.cfg_path = path;
     }
-    LOGI("CfgFile", "loaded %s: nat[%zu] proxy[%zu] auth[%d] license[%d] region[%c]",
+    apply_cfg_env(out);
+    LOGI("CfgFile", "loaded %s: nat[%zu] proxy[%zu] auth[%d] license[%d] region[%c] instance[%s]",
          path.c_str(), out.nat_ips.size(), out.proxy_ips.size(),
          (int)out.enable_auth, (int)out.enable_license,
-         out.region ? out.region : '-');
+         out.region ? out.region : '-',
+         out.instance_name.empty() ? "-" : out.instance_name.c_str());
     return ok;
 }
 
@@ -201,6 +212,7 @@ bool reload_if_changed(CfgData& out, const std::string& path, uint64_t* last_mti
     if (mt == 0 || mt == *last_mtime) return false;
     *last_mtime = mt;
     if (parse_file(out, path)) {
+        apply_cfg_env(out);
         LOGI("CfgFile", "hot reload %s", path.c_str());
         return true;
     }
@@ -213,6 +225,95 @@ const char* first_nat_ip(const CfgData& cfg) {
 
 const char* first_proxy_ip(const CfgData& cfg) {
     return cfg.proxy_ips.empty() ? "127.0.0.1" : cfg.proxy_ips[0].c_str();
+}
+
+std::string expand_cfg_env(const std::string& in, bool disable_env_parsing) {
+    if (disable_env_parsing) return in;
+    std::string out;
+    out.reserve(in.size());
+    for (size_t i = 0; i < in.size(); ) {
+        if (in[i] == '$' && i + 1 < in.size() && in[i + 1] == '{') {
+            const size_t end = in.find('}', i + 2);
+            if (end == std::string::npos) {
+                out.append(in, i, std::string::npos);
+                break;
+            }
+            const std::string name = in.substr(i + 2, end - (i + 2));
+            if (const char* ev = getenv(name.c_str())) out += ev;
+            else out.append(in, i, end - i + 1);
+            i = end + 1;
+        } else {
+            out += in[i++];
+        }
+    }
+    return out;
+}
+
+void apply_cfg_env(CfgData& cfg) {
+    auto env = [](const char* name) -> const char* { return getenv(name); };
+    if (const char* v = env("P2P_AUTH_SECRET")) cfg.auth_secret = v;
+    if (const char* v = env("P2P_ENABLE_AUTH")) cfg.enable_auth = to_bool(v);
+    if (const char* v = env("P2P_UID_STRICT")) cfg.uid_strict = to_bool(v);
+    if (const char* v = env("P2P_ENABLE_CONNECT_TOKEN")) cfg.enable_connect_token = to_bool(v);
+    if (const char* v = env("P2P_ENABLE_LICENSE")) cfg.enable_license = to_bool(v);
+    if (const char* v = env("P2P_LICENSE_FILE")) cfg.license_file = v;
+    if (const char* v = env("P2P_LICENSE_PASS")) cfg.license_pass = v;
+    if (const char* v = env("P2P_ALLOWED_UUIDS")) cfg.allowed_uuids = split_csv(v);
+    if (const char* v = env("P2P_PROC_WORKERS")) set_int_in_range(cfg.proc_workers, v, 1, 64);
+    if (const char* v = env("P2P_RECV_THREADS")) set_int_in_range(cfg.recv_threads, v, 1, 16);
+    if (const char* v = env("P2P_FLOOD_PKT_THRESHOLD"))
+        set_int_in_range(cfg.flood_pkt_threshold, v, 1, 0x7FFFFFFF);
+    if (const char* v = env("P2P_BLACKLIST_SECONDS"))
+        set_int_in_range(cfg.blacklist_seconds, v, 1, 0x7FFFFFFF);
+    if (const char* v = env("P2P_NAT_SOCK2_PORT")) set_int_in_range(cfg.nat_sock2_port, v, 1, 65535);
+    if (const char* v = env("P2P_NAT_SOCK3_PORT")) set_int_in_range(cfg.nat_sock3_port, v, 1, 65535);
+    if (const char* v = env("P2P_SYNC_PEERS")) cfg.sync_enabled = to_bool(v);
+    if (const char* v = env("P2P_SYNC_ADDRS")) cfg.sync_addrs = split_csv(v);
+    if (const char* v = env("P2P_SYNC_AUTH_SECRET")) cfg.sync_auth_secret = v;
+    if (const char* v = env("P2P_ADMIN_SECRET")) cfg.admin_secret = v;
+    if (const char* v = env("P2P_BLACKLIST_FILE")) cfg.blacklist_file = v;
+    if (const char* v = env("P2P_BLACKLIST_PASS")) cfg.blacklist_pass = v;
+    if (const char* v = env("P2P_REGION")) cfg.region = parse_region_char(v);
+    if (const char* v = env("P2P_WAKE_SERVER")) cfg.wake_server = v;
+    if (const char* v = env("P2P_PROXY_ALT_PORT")) set_int_in_range(cfg.proxy_alt_port, v, 1, 65535);
+    if (const char* v = env("P2P_PROXY_TCP_PORT")) set_int_in_range(cfg.proxy_tcp_port, v, 1, 65535);
+    if (const char* v = env("P2P_INSTANCE_NAME")) cfg.instance_name = v;
+    if (const char* v = env("P2P_STATUS_PORT")) set_int_in_range(cfg.status_port, v, 0, 65535);
+    if (const char* v = env("P2P_STATUS_ALLOW")) {
+        cfg.status_allow = split_csv(v);
+        for (auto& s : cfg.status_allow) trim(s);
+    }
+}
+
+static bool parse_ipv4_host(const std::string& s, uint32_t& host) {
+    unsigned a = 0, b = 0, c = 0, d = 0;
+    char extra = 0;
+    if (sscanf(s.c_str(), "%u.%u.%u.%u%c", &a, &b, &c, &d, &extra) != 4) return false;
+    if (a > 255 || b > 255 || c > 255 || d > 255) return false;
+    host = (a << 24) | (b << 16) | (c << 8) | d;
+    return true;
+}
+
+bool ipv4_in_allow_list(uint32_t addr_be, const std::vector<std::string>& rules) {
+    if (rules.empty()) return true;
+    const uint32_t addr = ntohl(addr_be);
+    for (std::string r : rules) {
+        trim(r);
+        if (r.empty()) continue;
+        int prefix = 32;
+        const size_t slash = r.find('/');
+        std::string ip = r;
+        if (slash != std::string::npos) {
+            ip = r.substr(0, slash);
+            prefix = atoi(r.c_str() + slash + 1);
+            if (prefix < 0 || prefix > 32) continue;
+        }
+        uint32_t net = 0;
+        if (!parse_ipv4_host(ip, net)) continue;
+        const uint32_t mask = (prefix == 0) ? 0u : (~0u << (32 - prefix));
+        if ((addr & mask) == (net & mask)) return true;
+    }
+    return false;
 }
 
 } // namespace p2p

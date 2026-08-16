@@ -22,3 +22,6 @@ ls server
 **不建**：`gateway/`、`peers/route`、`wasi/`。节点不为别人转发。
 
 旧路径 `server/natserver/src/*.h` 只是转发头。二进制仍输出到 `server/natserver/bin/p2p_natserver`。
+
+配置覆盖顺序（学 EasyTier）：`P2pServers.cfg` < `P2P_*` 环境变量 < 命令行端口。
+文件值支持 `${ENV}`；`P2P_DISABLE_ENV_PARSING=1` 只关展开。状态口可用 `StatusAllow` / `P2P_STATUS_ALLOW` 做来源 CIDR 白名单。详见 [`docs/EasyTier配置对照.md`](../docs/EasyTier配置对照.md)。

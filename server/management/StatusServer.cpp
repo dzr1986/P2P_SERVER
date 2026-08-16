@@ -1,4 +1,5 @@
 #include "server/management/StatusServer.h"
+#include "server/config/CfgFile.h"
 #include "core/foundation/Log.h"
 
 #include <arpa/inet.h>
@@ -17,10 +18,12 @@ StatusServer::~StatusServer() {
 
 int StatusServer::init(uint16_t port,
                        std::function<std::string()> json_provider,
-                       std::function<std::string()> metrics_provider) {
+                       std::function<std::string()> metrics_provider,
+                       std::vector<std::string> allow) {
     port_ = port;
     json_provider_ = std::move(json_provider);
     metrics_provider_ = std::move(metrics_provider);
+    allow_ = std::move(allow);
 
     sock_ = socket(AF_INET, SOCK_STREAM, 0);
     if (sock_ < 0) { perror("[StatusServer] socket"); return -1; }
@@ -45,7 +48,8 @@ int StatusServer::init(uint16_t port,
         return -1;
     }
     running_ = true;
-    LOGI("StatusServer", "listening on port %u (/ and /metrics)", (unsigned)port_);
+    LOGI("StatusServer", "listening on port %u (/ and /metrics) allow=%zu",
+         (unsigned)port_, allow_.size());
     return 0;
 }
 
@@ -70,6 +74,14 @@ void StatusServer::run() {
         if (fd < 0) {
             if (errno == EINTR) continue;
             if (!running_) break;
+            continue;
+        }
+        if (!ipv4_in_allow_list(cli.sin_addr.s_addr, allow_)) {
+            const char k403[] =
+                "HTTP/1.0 403 Forbidden\r\nContent-Length: 9\r\n"
+                "Connection: close\r\n\r\nforbidden";
+            send(fd, k403, sizeof(k403) - 1, 0);
+            close(fd);
             continue;
         }
 

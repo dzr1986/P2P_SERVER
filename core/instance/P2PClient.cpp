@@ -49,6 +49,7 @@ P2PClient::Conn& P2PClient::ensure_conn(const std::string& uuid) {
         auto c = std::make_unique<Conn>();
         c->peer_uuid = uuid;
         c->self = this;
+        c->want_direct = cfg_.need_p2p;
         it = conns_.emplace(uuid, std::move(c)).first;
     }
     return *it->second;
@@ -82,6 +83,10 @@ bool P2PClient::start(const Config& cfg) {
     if (const char* lz = getenv("P2P_LAZY_P2P")) {
         if (lz[0] == '1') cfg_.lazy_p2p = true;
         else if (lz[0] == '0') cfg_.lazy_p2p = false;
+    }
+    if (const char* np = getenv("P2P_NEED_P2P")) {
+        if (np[0] == '1') cfg_.need_p2p = true;
+        else if (np[0] == '0') cfg_.need_p2p = false;
     }
     if (const char* tp = getenv("P2P_TCP_PUNCH")) {
         if (tp[0] == '1') cfg_.tcp_punch = true;
@@ -226,7 +231,7 @@ void P2PClient::connect(const std::string& peer_uuid, const std::string& token_h
     c.punch.extra_ports_tripped = false;
     c.punch.extra_ports_next_ms = 0;
     c.punch.path_note_direct = false;
-    c.want_direct = false;
+    c.want_direct = cfg_.need_p2p;
     c.relay.relay_ok = false;
     c.punch.punch_deadline = plat_now_ms() + cfg_.connect_timeout_ms;
     c.punch.next_punch = 0;
@@ -1208,6 +1213,7 @@ void P2PClient::on_connect_invite(const uint8_t* p, size_t plen) {
 
     Conn& c = ensure_conn(peer);
     if (c.state == ConnState::Idle) c.state = ConnState::Connecting;
+    if (cfg_.need_p2p) c.want_direct = true;
     c.punch.direct_ok = false;
     c.self = this;
     if (cfg_.force_relay) {

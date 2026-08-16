@@ -52,7 +52,7 @@ gateway             SOCKS / smoltcp / VPN 门户  ← 明确不抄
 | `instance/` | 生命周期组合 | 一个门面焊齐 STUN/打洞/中继 | 数据面扩展 / VPN portal | `P2PClient` |
 | `events.rs` | 核心 → Host 通知 | 回调契约（勿在回调里重入） | 对等体增删当 VPN 事件 | `on_ready` / `on_connected` |
 | `host/` | DNS、环境、能力缝 | 平台差异外置 | WASI Host | `Plat.h` |
-| `config/` | TOML + 运行时配置 | 开关默认关、能力勿虚报 | 网关/浏览器配置整棵 | `P2PClient::Config` |
+| `config/` | TOML + 运行时配置 | 文件 < 环境 < 命令行；`${ENV}`；状态口白名单 | 网关/浏览器配置整棵 | `CfgFile` + `P2PClient::Config`（见 [EasyTier配置对照.md](EasyTier配置对照.md)） |
 | `rpc/` `management/` | 管理 RPC | 运维口与数据面分离 | 把管理面做成平台 | NatServer Status / 管理报文 |
 | `gateway/` | SOCKS / smoltcp / 端口转发 | — | **整目录不抄** | 将来旁路网关进程，不进 NatServer |
 | `wasi/` | WASM 适配 | — | 不抄 | — |

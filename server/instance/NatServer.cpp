@@ -1,6 +1,7 @@
 // NatServer 主程序：启动参数仿原实现
 //   ./p2p_natserver <NatServerPort> <ProxyServerPort> <WanIP> [P2pServers.cfg]
-//   可选环境变量 P2P_STATUS_PORT=NNN 启用 JSON 状态服务
+//   可选：P2pServers.cfg 的 StatusPort / P2P_STATUS_PORT 启用 JSON 状态服务
+//   覆盖顺序：文件 < P2P_* 环境变量 < 本函数 status_port 参数
 #include "server/instance/NatServer.h"
 #include "core/foundation/Crypto.h"
 #include "core/foundation/Log.h"
@@ -37,11 +38,11 @@ int NatServer::init(const std::string& cfg_path, uint16_t nat_port,
                     uint16_t status_port) {
     nat_port_ = nat_port;
     proxy_port_ = proxy_port;
-    status_port_ = status_port;
     wan_ip_ = wan_ip;
 
     cfg_ = std::make_shared<CfgData>();
     load_server_set(*cfg_, cfg_path);
+    status_port_ = status_port > 0 ? status_port : cfg_->status_port;
     if (cfg_->nat_ips.empty() || cfg_->proxy_ips.empty()) {
         LOGE("NatServer", "config empty");
         return -1;
@@ -180,7 +181,8 @@ void NatServer::start_threads(RunThreads& t) {
     if (status_port_ > 0) {
         status_.init(status_port_,
                      [this] { return status_json(); },
-                     [this] { return status_metrics(); });
+                     [this] { return status_metrics(); },
+                     cfg_->status_allow);
         t.status = std::thread(&StatusServer::run, &status_);
     }
     if (stun_tcp_.valid())
@@ -882,12 +884,25 @@ void NatServer::notify_wake(const char* uuid) {
     LOGI("NatServer", "wake trigger uuid[%s] -> %s:%u", uuid, ip.c_str(), (unsigned)port);
 }
 
+static std::string json_safe_name(const std::string& s) {
+    std::string o;
+    for (char c : s) {
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-')
+            o += c;
+        if (o.size() >= 64) break;
+    }
+    return o;
+}
+
 std::string NatServer::status_json() const {
     auto cfg = cfg_;
     const char region = cfg ? cfg->region : 0;
+    const std::string inst = json_safe_name(cfg ? cfg->instance_name : "");
     std::ostringstream os;
     os << "{"
-       << "\"online\":" << peers_.size()
+       << "\"instance\":\"" << inst << "\""
+       << ",\"online\":" << peers_.size()
        << ",\"devices\":" << peers_.device_count()
        << ",\"apps\":" << peers_.client_count()
        << ",\"authed\":" << peers_.authed_count()
@@ -948,9 +963,11 @@ std::string NatServer::status_metrics() const {
        << "p2p_stun_reply_total{src=\"same\"} " << natcheck_.stun_same() << "\n"
        << "p2p_stun_reply_total{src=\"other\"} " << natcheck_.stun_other()
        << "\n";
+    const std::string inst = json_safe_name(cfg ? cfg->instance_name : "");
     os << "# HELP p2p_node_region Node REGION label (1=set)\n"
        << "# TYPE p2p_node_region gauge\n"
-       << "p2p_node_region{region=\"" << (region ? std::string(1, region) : "") << "\"} 1\n";
+       << "p2p_node_region{region=\"" << (region ? std::string(1, region) : "")
+       << "\",instance=\"" << inst << "\"} 1\n";
     {
         std::lock_guard<std::mutex> lk(proxy_mu_);
         os << "# HELP p2p_proxy_used Current relay sessions on a proxy\n"
@@ -971,7 +988,10 @@ std::string NatServer::status_metrics() const {
 int main(int argc, char** argv) {
     if (argc < 4) {
         printf("Usage: %s <NatServerPort> <ProxyServerPort> <WanIP> [P2pServers.cfg]\n"
-               "  env P2P_STATUS_PORT=NNN  启用 HTTP 状态服务（GET / JSON，GET /metrics Prometheus）\n",
+               "  覆盖顺序：文件 < P2P_* 环境变量 < 本命令行端口\n"
+               "  env P2P_STATUS_PORT=NNN     启用 HTTP 状态服务（GET / JSON，GET /metrics）\n"
+               "  env P2P_STATUS_ALLOW=cidr   状态口来源白名单（空=不限制）\n"
+               "  env P2P_INSTANCE_NAME=name  实例名（状态 JSON instance 字段）\n",
                argv[0]);
         return 1;
     }

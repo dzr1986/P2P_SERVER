@@ -94,6 +94,7 @@ echo "== [0] unit tests =="
 ./tests/bin/punch_admit_test > /tmp/punch_admit_test.log 2>&1 && ok "CONNECT punch admit / listener hairpin unit tests" || fail "punch admit unit tests"
 ./tests/bin/punch_policy_test > /tmp/punch_policy_test.log 2>&1 && ok "hole_punch BackOff / lazy_p2p policy unit tests" || fail "punch policy unit tests"
 ./tests/bin/stun_responder_test > /tmp/stun_responder_test.log 2>&1 && ok "STUN responder / mapping observe unit tests" || fail "stun responder unit tests"
+./tests/bin/cfg_file_test > /tmp/cfg_file_test.log 2>&1 && ok "CfgFile env expand / StatusAllow unit tests" || fail "cfg file unit tests"
 
 # ---------------------------------------------------------------- 1. 直连
 echo "== [1] direct P2P (no auth) =="

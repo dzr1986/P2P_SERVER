@@ -66,6 +66,7 @@ public:
         uint16_t birthday_n = 64;              // 扫描目的口上限（硬顶 256）
         uint32_t birthday_interval_ms = 40;    // 每批间隔
         bool lazy_p2p = false;                 // 中继已通则不后台打洞，直到有业务发送
+        bool need_p2p = false;                 // 学 EasyTier --need-p2p：本端尽快直连（不改 force_relay）
         bool tcp_punch = false;                // EasyTier 式 TCP 同时 connect，默认关
     };
 

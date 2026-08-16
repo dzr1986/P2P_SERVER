@@ -39,6 +39,11 @@ namespace p2p {
 //   EnableConnectToken=0|1          CONNECT 必须携带连线 Token（需 AuthSecret）
 //   ProxyAltPort=N                  中继 UDP 兼听端口（生产 443；0=不向客户端宣告）
 //   ProxyTcpPort=N                  DERP TCP/TLS 面（生产 443；0=不宣告）
+//   InstanceName=nat-cn-1           实例名（状态 JSON / 日志）
+//   StatusPort=N                    HTTP 状态口（0=关；也可 P2P_STATUS_PORT）
+//   StatusAllow=127.0.0.1,10.0.0.0/8  状态口来源白名单（空=不限制）
+// 覆盖顺序（学 EasyTier）：文件 < P2P_* 环境变量 < 命令行。
+// 文件值支持 ${ENV}；P2P_DISABLE_ENV_PARSING=1 只关展开，不关 P2P_* 覆盖。
 // ---------------------------------------------------------------------------
 struct CfgData {
     std::vector<std::string> nat_ips;
@@ -74,6 +79,10 @@ struct CfgData {
     uint16_t    proxy_alt_port = 0;    // TURN-over-443 UDP 兼听端口（0=不宣告）
     uint16_t    proxy_tcp_port = 0;    // DERP TCP/TLS 面（0=不宣告）
 
+    std::string instance_name;         // 空=未命名
+    uint16_t    status_port = 0;       // 0=不启 StatusServer
+    std::vector<std::string> status_allow;  // 空=不限制
+
     std::string cfg_path;
     bool        loaded = false;
 
@@ -98,6 +107,15 @@ uint64_t cfg_file_mtime(const std::string& path);
 // 常用辅助
 const char* first_nat_ip(const CfgData& cfg);
 const char* first_proxy_ip(const CfgData& cfg);
+
+// 文件加载后套一层 P2P_*（已设置的才覆盖）。单测可直接调。
+void apply_cfg_env(CfgData& cfg);
+
+// 展开 ${NAME}；未定义保持原样。disable_env_parsing 时原样返回。
+std::string expand_cfg_env(const std::string& in, bool disable_env_parsing);
+
+// StatusAllow：空规则=放行；支持 a.b.c.d 或 a.b.c.d/n。
+bool ipv4_in_allow_list(uint32_t addr_be, const std::vector<std::string>& rules);
 
 } // namespace p2p
 

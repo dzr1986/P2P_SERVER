@@ -30,7 +30,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "usage: %s <NatServerIP> <NatServerPort> <UUID> [peerUUID] "
                         "[ProxyIP] [ProxyPort] [-s secret] [-k authkey_hex] [-t token_hex] "
                         "[-relay] [-tcp PORT] [-tls|-notls] [-restart] [-lan|-nolan] "
-                        "[-birthday] [-lazy] [-tcp-punch]\n",
+                        "[-birthday] [-lazy] [-need-p2p] [-tcp-punch]\n",
                 argv[0]);
         return 1;
     }
@@ -41,6 +41,7 @@ int main(int argc, char** argv) {
     bool force_relay = false;
     bool birthday = false;
     bool lazy_p2p = false;
+    bool need_p2p = false;
     bool tcp_punch = false;
     bool do_restart = false;
     bool lan_discover = true;
@@ -54,6 +55,7 @@ int main(int argc, char** argv) {
         else if (strcmp(argv[i], "-relay") == 0) force_relay = true;
         else if (strcmp(argv[i], "-birthday") == 0) birthday = true;
         else if (strcmp(argv[i], "-lazy") == 0) lazy_p2p = true;
+        else if (strcmp(argv[i], "-need-p2p") == 0) need_p2p = true;
         else if (strcmp(argv[i], "-tcp-punch") == 0) tcp_punch = true;
         else if (strcmp(argv[i], "-tcp") == 0 && i + 1 < argc)
             proxy_tcp_port = (uint16_t)atoi(argv[++i]);
@@ -109,6 +111,7 @@ int main(int argc, char** argv) {
     cfg.force_relay = force_relay;
     cfg.birthday_punch = birthday;
     cfg.lazy_p2p = lazy_p2p;
+    cfg.need_p2p = need_p2p;
     cfg.tcp_punch = tcp_punch;
     cfg.proxy_tcp_port = proxy_tcp_port;
     cfg.proxy_tcp_tls = proxy_tcp_tls;
