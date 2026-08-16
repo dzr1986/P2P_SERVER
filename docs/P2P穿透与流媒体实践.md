@@ -301,6 +301,9 @@ IOTC_Session
 档 A 已落地：ICE restart、TURN-over-443、DERP TCP/TLS、Kalman+TWCC、
 Token nonce、PortMap / PunchAdmit / PunchPolicy / TCP 打洞与 TCP STUN。
 
+「连接核 vs 流媒体平台」缺 Master/计量/会话遥测/1:N，见
+[`P2P流媒体服务器能力缺口.md`](P2P流媒体服务器能力缺口.md)。下面只列穿透/帧通道相关。
+
 | 优先级 | 项 | 归属 |
 |--------|----|------|
 | B5 | 真 `tc netem` 1080p（卡顿 / P99）；无权限时继续用户态丢包 | 档 B |

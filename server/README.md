@@ -18,6 +18,8 @@ ls server
 ```
 
 对照表见 [`docs/EasyTier指南架构对照.md`](../docs/EasyTier指南架构对照.md)。
+文档地图 [`docs/README.md`](../docs/README.md)；做成流媒体**平台**还缺什么见
+[`docs/P2P流媒体服务器能力缺口.md`](../docs/P2P流媒体服务器能力缺口.md)（不要把 Master/SFU/计费堆回本目录）。
 
 依赖：这些目录用 `core/foundation|socket|packet`，不要反向去 include `core/instance`（那是客户端门面）。
 
