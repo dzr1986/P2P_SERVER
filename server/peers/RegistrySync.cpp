@@ -44,7 +44,7 @@ void RegistrySync::setup(const std::string& wan_ip, uint16_t nat_port,
         addrs_.push_back(a);
         LOGI("RegistrySync", "peer [%s:%d]", ip.c_str(), port);
     }
-    LOGI("RegistrySync", "enabled, %zu peer(s)", addrs_.size());
+    LOGI("RegistrySync", "registry sync enabled, %zu peer(s)", addrs_.size());
 }
 
 void RegistrySync::send_signed(const sockaddr_in& to, uint8_t msg_id,
@@ -160,8 +160,9 @@ void RegistrySync::handle_entry(const SyncPeerEntry& e, const std::string& extin
     lan.sin_port = e.lan_port;
     inet_pton(AF_INET, e.lan_ip, &lan.sin_addr);
     peers_->upsert_synced(uuid, pub, lan, e.dev_type, e.nattype, extinfo, (time_t)hb_time);
-    LOGI("RegistrySync", "entry uuid[%s] hop[%d] pub[%s:%d]",
-         uuid.c_str(), hop, e.pub_ip, ntohs(e.pub_port));
+    LOGI("RegistrySync", "sync entry uuid[%s] hop[%d] hb[%u] pub[%s:%d] from [%s:%d]",
+         uuid.c_str(), hop, hb_time, e.pub_ip, ntohs(e.pub_port),
+         inet_ntoa(from.sin_addr), ntohs(from.sin_port));
     if (hop != SYNC_HOP_SNAP && hop < SYNC_HOP_MAX) {
         SyncPeerEntry f = e;
         f.hop = hop + 1;
@@ -182,7 +183,8 @@ void RegistrySync::handle_snapshot_req(const sockaddr_in& from) {
     if (!enabled() || !peers_) return;
     auto snap = peers_->snapshot();
     for (auto& p : snap) send_peer_entry(from, p, SYNC_HOP_SNAP);
-    LOGI("RegistrySync", "snapshot sent %zu", snap.size());
+    LOGI("RegistrySync", "sync snapshot sent %zu entries to [%s:%d]", snap.size(),
+         inet_ntoa(from.sin_addr), ntohs(from.sin_port));
 }
 
 void RegistrySync::request_snapshot() {
