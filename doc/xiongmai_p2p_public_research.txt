@@ -1,0 +1,147 @@
+雄迈（Xiongmai / XM / XMEye）P2P 公开资料与 LISTWIFIAP 检索记录
+================================================================
+
+检索日期：2026-09-24
+范围：互联网公开文档、公开 SDK 头文件及第三方项目；不分析或修改本项目业务代码。
+本文为资料摘要与来源索引，不转载整份第三方协议头，不收录设备标识、凭据或 SDK 二进制。
+
+一、问题与证据边界
+------------------
+
+检索起点是用户提供的以下信息：
+  - xnat_list_wifi_ap 发出 0x0201，payload 为 8 字节全零，与 Covering 一致。
+  - 本项目协议头与雄迈官方 avioctl.h 同源。
+
+以上是待外部资料印证的前提，不是本次通过互联网独立验证的结论。
+特别是 Covering 的具体项目地址、SDK 版本及 avioctl.h 发布包尚未提供，
+不能仅凭函数名或同名 LISTWIFIAP 将其他厂商的结构认定为目标设备的线格式。
+
+资料必须区分三个层次：
+  1. P2P/NAT 连接、云序列号登录：解决如何连接设备。
+  2. 设备控制协议：连接之后发送的控制消息及响应。
+  3. SDK API 数据结构：可能由 SDK 从线格式转换而来，不一定能直接映射网络 payload。
+
+二、已核实的雄迈开放平台资料
+----------------------------
+
+2.1 文档入口与来源性质
+
+xmeye/openplatform-docs 是雄迈开放平台文档的公开仓库，其 CNAME 指向
+docs-open.xmeye.net，README 列出 FunSDK、Web SDK、MyEyeSDK 等开发接口。[S1]
+本次直接读取了 GitHub 仓库内容；站点域名在当前环境解析失败，因此以固定提交
+中的文档作为可复查证据，不把域名访问失败解释为平台已经关闭。
+
+2.2 云连接接口：有 API 说明，但不是底层打洞协议
+
+NetSDK 的 H264_DVR_LoginEx_V2 参数说明提到：socketType 为 1 时，
+sDVRIP 填设备云序列号。[S2]
+同仓库 FAQ 对 H264_DVR_Login 的云序列号登录示例却要求第七个参数为 2。[S3]
+这两处涉及不同接口，文档也没有充分解释差异；不能抽象成跨版本通用的
+“云登录类型常量”，更不能从这个参数反推出 UDP 报文命令号。
+
+SocketStyle 枚举还同时列出了 TCP、UDP、插座连接和 P2P_TUTKSOCKET。[S4]
+这说明公开 API 中存在多个连接类别；不能据此断言雄迈所有设备都使用同一套
+TUTK 控制命令，或断言 XNAT 与 TUTK 的数值编号一致。
+
+2.3 找到的雄迈 Wi-Fi 扫描结果结构：SDK_NetWifiDeviceAll
+
+公开 NetSDK 文档将 E_SDK_CONFIG_NET_WIFI_AP_LIST 对应到
+SDK_NetWifiDeviceAll。[S4：第 206–207、2481–2508 行]
+
+SDK_NetWifiDeviceAll 的字段含义：
+  nDevNumber                 int，扫描到的 AP 数量
+  vNetWifiDeviceAll           SDK_NetWifiDevice 数组，容量 NET_MAX_AP_NUMBER
+
+SDK_NetWifiDevice 的字段顺序：
+  sSSID                      char[36]，SSID
+  nRSSI                      int，引用 SDK_RSSI_SINGNAL 信号等级枚举
+  nChannel                   int，信道
+  sNetType                   char[32]，网络类型
+  sEncrypType                 char[32]，加密类型
+  sAuth                      char[32]，认证类型
+
+同一文档中 NET_MAX_AP_NUMBER 的宏值为 32；旁边仍保留“暂定10”的旧注释，
+摘要以宏值为准，不把注释中的 10 当作数组容量。[S4：第 28 行]
+nRSSI 是这里定义的等级值，不能直接当作 dBm 或百分比。
+
+仅按 8 位字节、32 位 int 和通常的 4 字节对齐计算，单项为
+36 + 4 + 4 + 32 + 32 + 32 = 140 字节，固定容量容器为 4 + 32 × 140 = 4484 字节。
+这是有条件的 C 内存布局计算，不是已确认的网络响应长度。
+它与 LISTWIFIAP/avioctl.h 的对应关系尚无直接证据，不能用来替代 0x0201 的响应定义。
+
+第三方 IPCAS 仓库所附 netsdk.h 也能找到这两个结构，属于独立的公开镜像线索，
+不等于官方发布包的真实性或版本兼容性认证。[S6]
+
+三、雄迈 P2P 相关资料索引及适用范围
+----------------------------------
+
+3.1 NetSDK / XNetSDK 下载索引 [S5]
+
+开放平台文档列有 Windows、Linux、Mac、CGI 和 XNetSDK 下载入口。
+其中可以继续追踪的包名包括 NETSDK(20181023).zip、Linux(20170519).zip、
+XNetSDK_181130.zip。这里只核实了文档中的链接；未下载、运行这些二进制包，
+也未验证包是否仍可下载、是否包含 avioctl.h 或 LISTWIFIAP。
+文件名中的日期不是当前推荐版本，历史 SDK 应另行核对来源、授权和安全更新。
+
+3.2 hifided/IPCAS：通过云 ID 调用 NetSDK 的实际示例 [S6]
+
+README 明确说明项目通过 P2P CloudID 连接雄迈设备；
+src/IPCAS/IPCAS.cpp 中 main 调用了 H264_DVR_Login_Cloud，
+随后使用录像检索与下载 API；仓库还附有 netsdk.h 和 NetSDK Programming Manual.pdf。
+它适合研究应用如何使用 SDK，不是开源重实现雄迈 P2P 握手协议。
+其作者说明 SDK 库来自互联网，手册早于 DLL；不应将其作为官方最新版分发渠道，
+也不要照搬示例里的硬编码登录信息。
+
+3.3 OpenIPC/python-dvr：DVRIP / NetSurveillance / Sofia 设备控制资料 [S7]
+
+README 明确将这一协议描述为 TCP 协议，并索引：
+  - 雄迈数字视频录像机接口协议_V1.0.0.pdf
+  - 配置交换格式V2.0.pdf
+  - 码流帧格式文档.pdf
+  - XiongmaiV1.0 的俄文接口说明
+
+本次核实了 README 和 doc 目录中的文件存在，未逐页审阅这些 PDF/DOC 的内容。
+这批资料适合继续研究设备控制与音视频负载；不能仅凭“雄迈协议”标题，
+就声称它们给出了云 P2P 注册、打洞、中继或 0x0201 的响应结构。
+
+3.4 FunSDK 的用户模式与本地模式 [S8]
+
+开放平台 FAQ 区分 SysInitLocal 与 SysInitNet，并说明部分平台功能依赖用户系统，
+例如报警推送和 DSS 转发。这是 SDK 使用模式说明，不是底层报文规范。
+需要申请的平台应用凭据应保持私密，不能随资料文档提交。
+
+四、可复查来源
+--------------
+
+下列 GitHub 链接固定到本次实际读取的提交，避免默认分支更新后证据漂移。
+“已读取”只代表核实相关文字，不代表测试过设备兼容性。
+
+[S1] 雄迈开放平台公开文档仓库：已读取简介及站点绑定。
+https://github.com/xmeye/openplatform-docs/blob/7db946442bb3254402f9f20e16baba97a85e4b56/docs/README.md
+https://github.com/xmeye/openplatform-docs/blob/7db946442bb3254402f9f20e16baba97a85e4b56/docs/CNAME
+
+[S2] NetSDK 接口函数：已读取云序列号参数说明。
+https://github.com/xmeye/openplatform-docs/blob/7db946442bb3254402f9f20e16baba97a85e4b56/docs/NetSDKWindows/NetSDKWindows-InterfaceFunctionUsage.md#L100-L134
+
+[S3] NetSDK 常见问题：已读取“云序列号登陆问题”，与 [S2] 分开记录。
+https://github.com/xmeye/openplatform-docs/blob/7db946442bb3254402f9f20e16baba97a85e4b56/docs/NetSDKWindows/NetSDKWindows-Commonproblem.md
+
+[S4] NetSDK 枚举与结构：已读取扫描结构、容量宏和 SocketStyle。
+https://github.com/xmeye/openplatform-docs/blob/7db946442bb3254402f9f20e16baba97a85e4b56/docs/NetSDKWindows/NetSDKWindows-enumerationandstruction.md#L2481-L2508
+https://github.com/xmeye/openplatform-docs/blob/7db946442bb3254402f9f20e16baba97a85e4b56/docs/NetSDKWindows/NetSDKWindows-enumerationandstruction.md#L28
+https://github.com/xmeye/openplatform-docs/blob/7db946442bb3254402f9f20e16baba97a85e4b56/docs/NetSDKWindows/NetSDKWindows-enumerationandstruction.md#L4240-L4259
+
+[S5] NetSDK 下载索引：已读取页面，压缩包内容和可用性未验证。
+https://github.com/xmeye/openplatform-docs/blob/7db946442bb3254402f9f20e16baba97a85e4b56/docs/downloadcenter/downloadcenter-NetSDKdownloadWin32.md
+
+[S6] IPCAS：第三方 NetSDK 云登录使用示例及头文件镜像，已读取相关内容。
+https://github.com/hifided/IPCAS/blob/9d048b6214bb09db9820e25bd83ea89ac54d62fc/README.md
+https://github.com/hifided/IPCAS/blob/9d048b6214bb09db9820e25bd83ea89ac54d62fc/src/IPCAS/IPCAS.cpp#L273-L289
+https://github.com/hifided/IPCAS/blob/9d048b6214bb09db9820e25bd83ea89ac54d62fc/netsdk/netsdk.h#L1829-L1843
+
+[S7] OpenIPC/python-dvr：第三方控制协议实现与历史文档索引，已读取索引。
+https://github.com/OpenIPC/python-dvr/blob/8292e2ce5caad4dc96047b438143d6b71fafccc8/README.md#L13-L27
+https://github.com/OpenIPC/python-dvr/tree/8292e2ce5caad4dc96047b438143d6b71fafccc8/doc
+
+[S8] FunSDK FAQ：已读取用户模式、本地模式和平台功能说明。
+https://github.com/xmeye/openplatform-docs/blob/7db946442bb3254402f9f20e16baba97a85e4b56/docs/FunSDKDevelopmentGuide/FunSDKDevelopmentGuide-FAQ.md
