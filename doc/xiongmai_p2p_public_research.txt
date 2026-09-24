@@ -5,6 +5,13 @@
 范围：互联网公开文档、公开 SDK 头文件及第三方项目；不分析或修改本项目业务代码。
 本文为资料摘要与来源索引，不转载整份第三方协议头，不收录设备标识、凭据或 SDK 二进制。
 
+核心结论：
+  已找到公开的 LISTWIFIAP 响应定义，但可确认的来源属于 TUTK 系列，
+  请求/响应是 0x0340/0x0341，请求体为 4 字节；不是已核实的雄迈
+  0x0201 + 8 字节协议。雄迈开放平台另外公开了 NetSDK 的 Wi-Fi 扫描结果结构。
+  本次未找到能够确认官方雄迈来源、同时对应上述 0x0201 请求的 avioctl.h；
+  不能把“同名结构”或“疑似同源”写成目标响应已经确定。
+
 一、问题与证据边界
 ------------------
 
@@ -21,17 +28,87 @@
   2. 设备控制协议：连接之后发送的控制消息及响应。
   3. SDK API 数据结构：可能由 SDK 从线格式转换而来，不一定能直接映射网络 payload。
 
-二、已核实的雄迈开放平台资料
+二、LISTWIFIAP：找到的具体响应定义
+----------------------------------
+
+2.1 TUTK 系列公开头文件 [S9]
+
+cnping/TUTK 的 AVIOCTRLDEFs.h 文件署名 Author: TUTK。
+它是第三方公开 SDK 镜像中的 TUTK 署名头文件，不是已认证的雄迈官方头文件。
+
+  请求命令：IOTYPE_USER_IPCAM_LISTWIFIAP_REQ  = 0x0340
+  响应命令：IOTYPE_USER_IPCAM_LISTWIFIAP_RESP = 0x0341
+  请求结构：SMsgAVIoctrlListWifiApReq，只有 unsigned char reserved[4]
+  响应结构：SMsgAVIoctrlListWifiApResp，unsigned int number + SWifiAp stWifiAp[1]
+
+响应中的单个 SWifiAp，字段顺序如下（偏移按 8 位字节计算）：
+  偏移  长度  字段      类型       含义
+  0     32    ssid      char[32]   SSID
+  32    1     mode      char       网络模式枚举
+  33    1     enctype   char       加密方式枚举
+  34    1     signal    char       信号强度，头文件标注 0–100%，不是 dBm
+  35    1     status    char       连接/选中状态
+
+status 的注释含义：
+  0：无效 SSID 或断开连接
+  1：已连接，且为默认网关
+  2：密码不匹配
+  3：信号弱但已连接
+  4：已选中且密码匹配，但未连接，或已连接但不是默认网关
+
+该 C 头文件的 mode 枚举为 0=null、1=managed、2=ad hoc。
+enctype 枚举为 0=invalid、1=none、2=WEP，3–6 为 WPA/WPA2 的 TKIP/AES
+组合，7–10 为另行命名的相应 PSK 组合；不要仅靠名字合并不同枚举值。[S9]
+
+布局解释及限制：
+  - 头文件也将每个 AP 描述为 36 字节；相关声明没有显式 packing 标注。
+  - 若 unsigned int 为 4 字节，则响应前缀为 4 字节；声明中单元素结构的
+    名义 sizeof 为 40。按 number 个条目解释时，负载长度是 4 + 36 × number。
+    不能把 stWifiAp[1] 理解成协议最多只能返回一个 AP。
+  - 注释给出 1024 字节 IO-control 包下最多 28 个 AP；这只是该版本的约束。
+  - 此头文件没有明确规定计数的字节序，也没有保证满 32 字节 SSID 以 NUL 结尾。
+  - cybernhl/e7go 的 TUTK 客户端发出 4 字节请求，并用小端方式读取响应首部计数，
+    从偏移 4 开始读取 AP，末尾字段位于条目内偏移 32–35。[S10]
+    这佐证该客户端采用的布局，不足以证明雄迈目标设备也采用小端。
+
+2.2 公开副本存在真实差异，不能混用
+
+lindenis-v536-softwinner 的 TUTK wrapper 保留相同请求/响应编号、4 字节请求及
+AP 字段，但将响应数组声明成 stWifiAp[20]。[S11]
+按上述 ABI 假设，其 C 容器大小是 4 + 20 × 36 = 724 字节。
+仅凭声明不能判定实际每次都发送 724 字节；该副本还保留“最多 28 个 AP”的旧注释。
+同目录实现标明 Allwinner 来源，不是雄迈归属证据。
+
+另外，TutkKalay 的 Java 示例将 ad hoc 定义为 0，而 [S9] 的 C 枚举是 2。[S12]
+即使名字和大部分字段相同，具体枚举也需要按设备所用版本核对。
+
+[S9] 中相邻的 SETWIFI_REQ_2 / GETWIFI_RESP_2（0x0346 / 0x0347）扩展了
+凭据字段，但属于设置/查询当前 Wi-Fi，不是第二版 LISTWIFIAP 扫描响应。
+同一头文件中 0x0320 是 SETSTREAMCTRL_REQ，也不是 LISTWIFIAP。
+
+2.3 与用户提供的雄迈请求进行对照
+
+  项目             用户提供的目标行为             已核实的 TUTK 头文件
+  请求编号         0x0201                         0x0340
+  请求体长度       8 字节，全零                   4 字节 reserved
+  响应编号         本次未确认                     0x0341
+  响应布局         本次未确认                     number + SWifiAp 条目
+  雄迈官方归属     用户提供的同源线索，待核实     无此归属证据
+
+因此，number + 36 字节 AP 条目只能作为比对候选，不能直接称为
+“雄迈 0x0201 的响应结构”。本次也没有证据支持猜测响应号为 0x0202。
+
+三、已核实的雄迈开放平台资料
 ----------------------------
 
-2.1 文档入口与来源性质
+3.1 文档入口与来源性质
 
 xmeye/openplatform-docs 是雄迈开放平台文档的公开仓库，其 CNAME 指向
 docs-open.xmeye.net，README 列出 FunSDK、Web SDK、MyEyeSDK 等开发接口。[S1]
 本次直接读取了 GitHub 仓库内容；站点域名在当前环境解析失败，因此以固定提交
 中的文档作为可复查证据，不把域名访问失败解释为平台已经关闭。
 
-2.2 云连接接口：有 API 说明，但不是底层打洞协议
+3.2 云连接接口：有 API 说明，但不是底层打洞协议
 
 NetSDK 的 H264_DVR_LoginEx_V2 参数说明提到：socketType 为 1 时，
 sDVRIP 填设备云序列号。[S2]
@@ -43,7 +120,7 @@ SocketStyle 枚举还同时列出了 TCP、UDP、插座连接和 P2P_TUTKSOCKET�
 这说明公开 API 中存在多个连接类别；不能据此断言雄迈所有设备都使用同一套
 TUTK 控制命令，或断言 XNAT 与 TUTK 的数值编号一致。
 
-2.3 找到的雄迈 Wi-Fi 扫描结果结构：SDK_NetWifiDeviceAll
+3.3 找到的雄迈 Wi-Fi 扫描结果结构：SDK_NetWifiDeviceAll
 
 公开 NetSDK 文档将 E_SDK_CONFIG_NET_WIFI_AP_LIST 对应到
 SDK_NetWifiDeviceAll。[S4：第 206–207、2481–2508 行]
@@ -72,10 +149,10 @@ nRSSI 是这里定义的等级值，不能直接当作 dBm 或百分比。
 第三方 IPCAS 仓库所附 netsdk.h 也能找到这两个结构，属于独立的公开镜像线索，
 不等于官方发布包的真实性或版本兼容性认证。[S6]
 
-三、雄迈 P2P 相关资料索引及适用范围
+四、雄迈 P2P 相关资料索引及适用范围
 ----------------------------------
 
-3.1 NetSDK / XNetSDK 下载索引 [S5]
+4.1 NetSDK / XNetSDK 下载索引 [S5]
 
 开放平台文档列有 Windows、Linux、Mac、CGI 和 XNetSDK 下载入口。
 其中可以继续追踪的包名包括 NETSDK(20181023).zip、Linux(20170519).zip、
@@ -83,7 +160,7 @@ XNetSDK_181130.zip。这里只核实了文档中的链接；未下载、运行�
 也未验证包是否仍可下载、是否包含 avioctl.h 或 LISTWIFIAP。
 文件名中的日期不是当前推荐版本，历史 SDK 应另行核对来源、授权和安全更新。
 
-3.2 hifided/IPCAS：通过云 ID 调用 NetSDK 的实际示例 [S6]
+4.2 hifided/IPCAS：通过云 ID 调用 NetSDK 的实际示例 [S6]
 
 README 明确说明项目通过 P2P CloudID 连接雄迈设备；
 src/IPCAS/IPCAS.cpp 中 main 调用了 H264_DVR_Login_Cloud，
@@ -92,7 +169,7 @@ src/IPCAS/IPCAS.cpp 中 main 调用了 H264_DVR_Login_Cloud，
 其作者说明 SDK 库来自互联网，手册早于 DLL；不应将其作为官方最新版分发渠道，
 也不要照搬示例里的硬编码登录信息。
 
-3.3 OpenIPC/python-dvr：DVRIP / NetSurveillance / Sofia 设备控制资料 [S7]
+4.3 OpenIPC/python-dvr：DVRIP / NetSurveillance / Sofia 设备控制资料 [S7]
 
 README 明确将这一协议描述为 TCP 协议，并索引：
   - 雄迈数字视频录像机接口协议_V1.0.0.pdf
@@ -104,13 +181,36 @@ README 明确将这一协议描述为 TCP 协议，并索引：
 这批资料适合继续研究设备控制与音视频负载；不能仅凭“雄迈协议”标题，
 就声称它们给出了云 P2P 注册、打洞、中继或 0x0201 的响应结构。
 
-3.4 FunSDK 的用户模式与本地模式 [S8]
+4.4 FunSDK 的用户模式与本地模式 [S8]
 
 开放平台 FAQ 区分 SysInitLocal 与 SysInitNet，并说明部分平台功能依赖用户系统，
 例如报警推送和 DSS 转发。这是 SDK 使用模式说明，不是底层报文规范。
 需要申请的平台应用凭据应保持私密，不能随资料文档提交。
 
-四、可复查来源
+五、检索限制与尚缺的证据
+------------------------
+
+本次使用 GitHub 代码/仓库检索和网页搜索，组合检索了：
+  avioctl.h、LISTWIFIAP、SMsgAVIoctrlListWifiApResp、xnat_list_wifi_ap、
+  Xiongmai、雄迈、XMEye、XNAT、Covering、0x0201。
+也检查了 xmeye、jlinklab 名下的相关公开线索。
+
+结果边界：
+  - 没有取得能够确认雄迈官方来源的目标 avioctl.h；搜索无结果不证明文件不存在。
+  - 同一文件同时命中 LISTWIFIAP 与 0x0201，不代表二者关联；查看到的这类
+    命中存在将 0x0201 分配给其他操作的情况，未作为目标响应证据。
+  - jlinklab 的两个 XNetSDK demo 仓库在核查的提交中只有 README 和 LICENSE，
+    没有 SDK 头文件，不能当成已找到 XNetSDK 源码。[S13]
+  - 雄迈官网下载页及 docs-open.xmeye.net 在当前环境域名解析失败。
+    搜索引擎摘要未作为结构定义依据；可读的公开 GitHub 原文是主要证据。
+  - 没有对真实设备、云服务或 SDK 二进制进行操作、抓包或兼容性测试。
+
+要把候选提升为“已确认”，仍需要带版本与可追溯发布来源的雄迈 avioctl.h，
+或目标设备上合法取得、已去除标识和凭据的请求/响应样本，并核对响应编号、
+前缀字段、条目长度、计数、字节序及是否存在分包。
+在补足这些证据前，应保留“官方 NetSDK API 结构”与“TUTK 控制响应候选”的区别。
+
+六、可复查来源
 --------------
 
 下列 GitHub 链接固定到本次实际读取的提交，避免默认分支更新后证据漂移。
@@ -145,3 +245,24 @@ https://github.com/OpenIPC/python-dvr/tree/8292e2ce5caad4dc96047b438143d6b71fafc
 
 [S8] FunSDK FAQ：已读取用户模式、本地模式和平台功能说明。
 https://github.com/xmeye/openplatform-docs/blob/7db946442bb3254402f9f20e16baba97a85e4b56/docs/FunSDKDevelopmentGuide/FunSDKDevelopmentGuide-FAQ.md
+
+[S9] TUTK 署名头文件镜像：已核实命令号、枚举及 LISTWIFIAP 请求/响应声明。
+https://github.com/cnping/TUTK/blob/06be95c1c55a96ff77b02b0ce183a9c5f8bb04a9/TUTK_IOTC_Platform_14W36/Sample/Linux/Sample_AVAPIs/AVIOCTRLDEFs.h#L1-L7
+https://github.com/cnping/TUTK/blob/06be95c1c55a96ff77b02b0ce183a9c5f8bb04a9/TUTK_IOTC_Platform_14W36/Sample/Linux/Sample_AVAPIs/AVIOCTRLDEFs.h#L94-L120
+https://github.com/cnping/TUTK/blob/06be95c1c55a96ff77b02b0ce183a9c5f8bb04a9/TUTK_IOTC_Platform_14W36/Sample/Linux/Sample_AVAPIs/AVIOCTRLDEFs.h#L255-L278
+https://github.com/cnping/TUTK/blob/06be95c1c55a96ff77b02b0ce183a9c5f8bb04a9/TUTK_IOTC_Platform_14W36/Sample/Linux/Sample_AVAPIs/AVIOCTRLDEFs.h#L533-L565
+https://github.com/cnping/TUTK/blob/06be95c1c55a96ff77b02b0ce183a9c5f8bb04a9/TUTK_IOTC_Platform_14W36/Sample/Linux/Sample_AVAPIs/AVIOCTRLDEFs.h#L567-L633
+
+[S10] e7go 的 TUTK Wi-Fi 扫描客户端：已核实 4 字节请求、小端计数及条目偏移。
+https://github.com/cybernhl/e7go/blob/fdacf7356717aae190fc9dbc51c1e9898131346c/app/src/main/java/tw/haotek/command/Tutk/SearchWiFiAPTCommand.java#L37-L65
+
+[S11] Allwinner 相关 TUTK wrapper：已核实 20 元素数组变体及来源标记。
+https://github.com/lindenis-org/lindenis-v536-softwinner/blob/d5d2c4631c829c403a8a7e7047688b555b2b2a32/eyesee-mpp/awcdr/apps/cdr/tutk/wrapper/AVIOCTRLDEFs.h#L743-L774
+https://github.com/lindenis-org/lindenis-v536-softwinner/blob/d5d2c4631c829c403a8a7e7047688b555b2b2a32/eyesee-mpp/awcdr/apps/cdr/tutk/wrapper/av_ctrl.cpp#L1-L16
+
+[S12] TutkKalay Java 示例：已核实 ad hoc 枚举值与 [S9] 不同。
+https://github.com/TutkKalay/Kalay_Kit_Sample_App/blob/4b2146a76bab22da0afacf476fa893e3daaf1569/Sample_AVAPIs_Server/src/main/java/com/tutk/IOTC/AVIOCTRLDEFs.java#L172-L187
+
+[S13] XNetSDK 仓库线索：已核实这些提交只有说明和许可证，没有协议头。
+https://github.com/jlinklab/jlink-xnetsdk-linux-demo/tree/fa782c95c40066f16a6ede4d798dc70c19313713
+https://github.com/jlinklab/jlink-xnetsdk-windows-demo/tree/5d115ee75409ac119f432ddc16169c80f35e9e5f
