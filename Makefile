@@ -11,6 +11,7 @@ BIN_NAT   := server/natserver/bin/p2p_natserver
 BIN_PROXY := server/proxyserver/bin/p2p_proxy
 BIN_PEER  := client/bin/peer
 BIN_CRYPTOTEST := tests/bin/crypto_test
+BIN_PROXYTEST := tests/bin/proxy_registry_test
 
 COMMON_SRCS := common/Crypto.cpp
 
@@ -28,23 +29,27 @@ PROXY_SRCS := server/proxyserver/src/P2PProxy.cpp
 PEER_SRCS  := client/demo/peer.cpp \
               client/sdk/api/P2PClient.cpp
 
-all: $(BIN_NAT) $(BIN_PROXY) $(BIN_PEER) $(BIN_CRYPTOTEST)
+all: $(BIN_NAT) $(BIN_PROXY) $(BIN_PEER) $(BIN_CRYPTOTEST) $(BIN_PROXYTEST)
 
 $(BIN_NAT): $(NAT_SRCS) $(COMMON_SRCS) common/ProtoDef.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ $(NAT_SRCS) $(COMMON_SRCS) $(LDFLAGS)
 
-$(BIN_PROXY): $(PROXY_SRCS) $(COMMON_SRCS) common/ProtoDef.h
+$(BIN_PROXY): $(PROXY_SRCS) $(COMMON_SRCS) common/ProtoDef.h server/proxyserver/src/P2PProxy.h server/proxyserver/src/ProxyRegistry.h common/Util.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ $(PROXY_SRCS) $(COMMON_SRCS) $(LDFLAGS)
 
-$(BIN_PEER): $(PEER_SRCS) $(COMMON_SRCS) common/ProtoDef.h
+$(BIN_PEER): $(PEER_SRCS) $(COMMON_SRCS) common/ProtoDef.h client/sdk/api/P2PClient.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ $(PEER_SRCS) $(COMMON_SRCS) $(LDFLAGS)
 
 $(BIN_CRYPTOTEST): tests/crypto_test.cpp $(COMMON_SRCS) common/ProtoDef.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -o $@ tests/crypto_test.cpp $(COMMON_SRCS) $(LDFLAGS)
+
+$(BIN_PROXYTEST): tests/proxy_registry_test.cpp server/proxyserver/src/ProxyRegistry.h common/ProtoDef.h common/Util.h
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -o $@ tests/proxy_registry_test.cpp
 
 clean:
 	rm -rf server/natserver/bin server/proxyserver/bin client/bin tests/bin

@@ -44,7 +44,7 @@ public:
         uint32_t connect_timeout_ms = 6000;    // 打洞超时后降级中继
         uint32_t punch_interval_ms  = 1000;    // 打洞发包间隔
         uint32_t auth_timeout_ms    = 3000;
-        uint32_t relay_register_ms  = 1000;    // 中继注册间隔
+        uint32_t relay_register_ms  = 1000;    // 中继注册重试基准间隔（成功后 30 秒续租）
         bool nat_detect_enabled = true;
         bool auto_relay = true;                // 打洞失败自动降级中继
         bool force_relay = false;              // 跳过打洞，强制走中继（测试/合规场景）
@@ -230,6 +230,7 @@ private:
     // 中继状态
     std::vector<ServerAddr> proxies_;
     uint64_t next_relay_reg_ = 0;
+    uint32_t relay_retry_ms_ = 1000;
     bool     relay_registered_ = false;
 
     // 会话与连接
