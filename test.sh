@@ -254,6 +254,10 @@ sleep 1
 grep -q "sync entry MAC invalid" /tmp/nat2.log && ok "forged sync entry rejected" || fail "forged sync entry not rejected"
 stop_all
 
+echo "== [9] proxy registry lifecycle and protocol regressions =="
+./tests/bin/proxy_registry_test && ok "proxy registry unit tests" || fail "proxy registry unit tests"
+python3 tests/proxy_protocol_test.py && ok "proxy protocol and SDK renewal" || fail "proxy protocol or SDK renewal"
+
 echo
 echo "======================================"
 echo "PASS=$PASS FAIL=$FAIL"

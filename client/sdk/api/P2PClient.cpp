@@ -1,11 +1,14 @@
 #include "client/sdk/api/P2PClient.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
 namespace p2p {
 
 namespace {
+
+constexpr uint32_t RELAY_REFRESH_MS = 30000; // 小于代理的 120 秒注册租约
 
 inline uint64_t addr_key(const sockaddr_in& a) {
     return ((uint64_t)(uint32_t)ntohl(a.sin_addr.s_addr) << 16) |
@@ -62,6 +65,7 @@ bool P2PClient::start(const Config& cfg) {
 
     proxies_ = cfg.proxy_servers;        // 启动即可用命令行/配置中的中继
     next_relay_reg_ = proxies_.empty() ? 0 : plat_now_ms();
+    relay_retry_ms_ = std::max(1u, std::min(cfg_.relay_register_ms, RELAY_REFRESH_MS));
     running_.store(true);
     pending_remote_sdp_.clear();
     thread_ = std::thread([this] { worker_loop(); });
@@ -70,7 +74,8 @@ bool P2PClient::start(const Config& cfg) {
 
 void P2PClient::stop() {
     if (!running_.exchange(false)) return;
-    // 尽力注销中继
+    if (thread_.joinable()) thread_.join();
+    // 工作线程停止后再读取注册状态并尽力注销中继。
     if (relay_registered_ && !proxies_.empty()) {
         ProxyRegReq req;
         memset(&req, 0, sizeof(req));
@@ -79,7 +84,6 @@ void P2PClient::stop() {
         if (sockaddr_from(proxies_[0].ip, proxies_[0].port, to))
             send_proto(MSG_PROXY_UNREGISTER_REQ, &req, sizeof(req), to);
     }
-    if (thread_.joinable()) thread_.join();
     sock_.close();
     conns_.clear();
     sessions_.clear();
@@ -245,12 +249,13 @@ void P2PClient::tick_nat_detect(uint64_t now) {
     }
 }
 
-// 中继注册重试
+// 中继注册重试与续租（不依赖是否正在转发数据）
 void P2PClient::tick_relay(uint64_t now) {
-    if (cfg_.auto_relay && !relay_registered_ && !proxies_.empty() &&
+    if (cfg_.auto_relay && !proxies_.empty() &&
         now >= next_relay_reg_) {
         relay_register();
-        next_relay_reg_ = now + cfg_.relay_register_ms;
+        next_relay_reg_ = now + (relay_registered_ ? RELAY_REFRESH_MS : relay_retry_ms_);
+        if (!relay_registered_) relay_retry_ms_ = std::min(relay_retry_ms_ * 2, RELAY_REFRESH_MS);
     }
 }
 
@@ -286,15 +291,6 @@ void P2PClient::tick_conn_relay(Conn& c, uint64_t now) {
         (c.punch.have_direct && now >= c.punch.punch_deadline && !c.punch.direct_ok);
     if (need_relay) {
         // 打洞超时或强制中继：走中继
-        if (cfg_.auto_relay && !relay_registered_ && !proxies_.empty()) {
-            relay_register();
-            // #18 中继注册重试指数退避（base=relay_register_ms, cap=30s）
-            uint32_t d = cfg_.relay_register_ms;
-            for (uint32_t i = 0; i + 1 < c.backoff_attempt && d < 30000; i++) d *= 2;
-            if (d > 30000) d = 30000;
-            c.backoff_attempt++;
-            next_relay_reg_ = now + d;
-        }
         if (cfg_.auto_relay && !proxies_.empty() && now >= c.relay.next_relay_ping) {
             if (auto* s = session_for(c.peer_uuid)) {
                 std::vector<uint8_t> frame(14);
@@ -369,7 +365,7 @@ void P2PClient::handle_packet(const uint8_t* buf, size_t len,
 }
 
 void P2PClient::handle_proto(uint8_t msg_id, const uint8_t* p, size_t plen,
-                             const sockaddr_in&) {
+                             const sockaddr_in& from) {
     switch (msg_id) {
     case MSG_HEARTBEAT_RSP:          on_heartbeat_rsp(p, plen); break;
     case MSG_HEARTBEAT_RSP_ENC:      on_heartbeat_rsp_enc(p, plen); break;
@@ -383,15 +379,24 @@ void P2PClient::handle_proto(uint8_t msg_id, const uint8_t* p, size_t plen,
     case MSG_CONNECT_INVITE:         on_connect_invite(p, plen); break;
     case MSG_ICE_SDP:                on_ice_sdp(p, plen); break;
     case MSG_PROXY_REGISTER_RSP: {
-        if (plen >= 1) {
+        sockaddr_in proxy_addr;
+        if (plen == sizeof(ProxyRegRsp) && !proxies_.empty() &&
+            sockaddr_from(proxies_[0].ip, proxies_[0].port, proxy_addr) &&
+            addr_key(from) == addr_key(proxy_addr)) {
             uint8_t result = p[0];
             if (result == 0) {
                 relay_registered_ = true;
+                relay_retry_ms_ = std::max(1u, std::min(cfg_.relay_register_ms, RELAY_REFRESH_MS));
+                next_relay_reg_ = plat_now_ms() + RELAY_REFRESH_MS;
                 for (auto& kv : conns_) kv.second.backoff_attempt = 0;  // #18 注册成功重置退避
-            } else if (on_error) {
-                char tmp[64];
-                snprintf(tmp, sizeof(tmp), "relay register failed result=%d", result);
-                on_error(tmp);
+            } else {
+                relay_registered_ = false;
+                next_relay_reg_ = plat_now_ms() + relay_retry_ms_;
+                if (on_error) {
+                    char tmp[64];
+                    snprintf(tmp, sizeof(tmp), "relay register failed result=%d", result);
+                    on_error(tmp);
+                }
             }
         }
         break;
